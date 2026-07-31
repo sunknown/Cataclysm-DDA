@@ -1,6 +1,8 @@
 #include <cstdint>
 
+#include "calendar.h"
 #include "cata_catch.h"
+#include "determinism_probe.h"
 #include "rng.h"
 
 TEST_CASE( "rng_call_counter_increments", "[.][determinism_probe]" )
@@ -23,4 +25,32 @@ TEST_CASE( "rng_call_counter_increments", "[.][determinism_probe]" )
     rng_peek_engine();
     rng_peek_engine();
     CHECK( rng_call_count() == 0 );
+}
+
+TEST_CASE( "fnv1a_is_order_sensitive", "[.][determinism_probe]" )
+{
+    const uint64_t seed = 1469598103934665603ULL;
+    CHECK( fnv1a_u64( fnv1a_u64( seed, 1 ), 2 ) != fnv1a_u64( fnv1a_u64( seed, 2 ), 1 ) );
+    CHECK( fnv1a_u64( seed, 7 ) == fnv1a_u64( seed, 7 ) );
+}
+
+TEST_CASE( "sample_world_state_reports_rng_counter", "[.][determinism_probe]" )
+{
+    rng_reset_call_count();
+    rng( 0, 10 );
+    rng( 0, 10 );
+
+    const determinism_sample s = sample_world_state();
+    CHECK( s.rng_calls == 2 );
+    CHECK( s.turn == to_turn<int>( calendar::turn ) );
+
+    // Sampling must not perturb what it measures, and an unchanged world must
+    // hash identically. This is the whole premise of the probe: if two samples
+    // of a world nobody touched disagree, every later comparison is noise.
+    const determinism_sample again = sample_world_state();
+    CHECK( again.rng_calls == s.rng_calls );
+    CHECK( again.rng_state == s.rng_state );
+    CHECK( again.creature_hash == s.creature_hash );
+    CHECK( again.player_hash == s.player_hash );
+    CHECK( again.combined == s.combined );
 }
