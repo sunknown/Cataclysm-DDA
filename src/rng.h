@@ -33,9 +33,8 @@ cata_default_random_engine::result_type rng_get_first_seed();
 cata_default_random_engine &rng_get_engine();
 
 // Number of times rng_get_engine() has been called since the last reset.
-// Every logical random draw touches the engine exactly once, so this counts
-// logical RNG uses. Used by the determinism probe to locate the exact turn on
-// which two runs consumed a different number of random values.
+// Note: counts accesses to the engine handle, not individual random draws.
+// Operations like std::shuffle can consume many draws in one access.
 uint64_t rng_call_count();
 void rng_reset_call_count();
 
