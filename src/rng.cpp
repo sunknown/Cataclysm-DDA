@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cmath>
 
 #include "calendar.h"
@@ -204,11 +205,34 @@ cata_default_random_engine::result_type rng_get_first_seed()
     return static_cast<cata_default_random_engine::result_type>( seed );
 }
 
-cata_default_random_engine &rng_get_engine()
+static uint64_t rng_calls = 0;
+
+static cata_default_random_engine &rng_engine_uncounted()
 {
     // NOLINTNEXTLINE(cata-determinism)
     static cata_default_random_engine eng( rng_get_first_seed() );
     return eng;
+}
+
+uint64_t rng_call_count()
+{
+    return rng_calls;
+}
+
+void rng_reset_call_count()
+{
+    rng_calls = 0;
+}
+
+const cata_default_random_engine &rng_peek_engine()
+{
+    return rng_engine_uncounted();
+}
+
+cata_default_random_engine &rng_get_engine()
+{
+    ++rng_calls;
+    return rng_engine_uncounted();
 }
 
 void rng_set_engine_seed( unsigned int seed )

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <optional>
@@ -30,6 +31,20 @@ void rng_set_engine_seed( unsigned int seed );
 using cata_default_random_engine = std::minstd_rand0;
 cata_default_random_engine::result_type rng_get_first_seed();
 cata_default_random_engine &rng_get_engine();
+
+// Number of times rng_get_engine() has been called since the last reset.
+// Every logical random draw touches the engine exactly once, so this counts
+// logical RNG uses. Used by the determinism probe to locate the exact turn on
+// which two runs consumed a different number of random values.
+uint64_t rng_call_count();
+void rng_reset_call_count();
+
+// The engine without counting the access. Diagnostics that inspect engine
+// state must use this: reading through rng_get_engine() would advance the
+// very counter the diagnostic reports, so the instrument would perturb its
+// own measurement. Never use this to draw random values.
+const cata_default_random_engine &rng_peek_engine();
+
 unsigned int rng_bits();
 
 int rng( int lo, int hi );
