@@ -1,21 +1,40 @@
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "avatar.h"
 #include "calendar.h"
 #include "cata_catch.h"
+#include "coordinates.h"
 #include "determinism_probe.h"
 #include "game.h"
 #include "map_helpers_tests.h"
+#include "monster.h"
 #include "options_helpers.h"
 #include "player_helpers.h"
+#include "point.h"
 #include "rng.h"
 #include "type_id.h"
 
 static const trait_id trait_HEAVYSLEEPER2( "HEAVYSLEEPER2" );
+
+// Calibration hook. A diagnostic that has never been observed to fire has not
+// been shown to be capable of firing, and a probe that cannot fail turns every
+// clean result it produces into a false green. Setting
+// CDDA_DETERMINISM_INJECT=<0-based turn index> makes the 500-turn scenario
+// consume one extra random value on that turn. That is the minimal realistic
+// perturbation - "one run drew a different number of values" is exactly the
+// RNG-desync signature the probe exists to catch. An injected run compared
+// against a clean one MUST report DIVERGED at that turn.
+static int injected_divergence_turn()
+{
+    const char *env = std::getenv( "CDDA_DETERMINISM_INJECT" );
+    return env ? std::atoi( env ) : -1;
+}
 
 TEST_CASE( "rng_call_counter_increments", "[.][determinism_probe]" )
 {
@@ -74,7 +93,7 @@ TEST_CASE( "write_sample_log_round_trips", "[.][determinism_probe]" )
     samples.push_back( determinism_sample{ 1, 2, 3, 4, 5, 6 } );
     samples.push_back( determinism_sample{ 7, 8, 9, 10, 11, 12 } );
 
-    write_sample_log( path, samples );
+    REQUIRE( write_sample_log( path, samples ) );
 
     std::ifstream in( path );
     REQUIRE( in.good() );
@@ -92,6 +111,14 @@ TEST_CASE( "write_sample_log_round_trips", "[.][determinism_probe]" )
 
     in.close();
     std::remove( path.c_str() );
+}
+
+TEST_CASE( "write_sample_log_reports_failure", "[.][determinism_probe]" )
+{
+    // A probe run whose log silently failed to write leaves the comparison
+    // step reading a stale file from a previous run and calling it clean.
+    const std::vector<determinism_sample> samples{ determinism_sample{ 1, 2, 3, 4, 5, 6 } };
+    CHECK_FALSE( write_sample_log( "no_such_directory_determinism/probe.csv", samples ) );
 }
 
 TEST_CASE( "do_turn_runs_headless_for_sleeping_avatar", "[.][determinism_probe]" )
@@ -162,13 +189,29 @@ TEST_CASE( "determinism_probe_500_turns", "[.][determinism_probe]" )
     // turn advance. Consume it here, before the RNG counter is reset, so all
     // 500 loop iterations below are genuine turn-advancing calls and the
     // warm-up call's own RNG usage does not pollute the measured count.
+    const int turn_before_warmup = to_turn<int>( calendar::turn );
     g->do_turn();
+    // If that call advanced the clock, the one-time pass was already consumed
+    // by an earlier test in this process and this scenario is not starting from
+    // the state the reference logs were recorded in. Two logs are only
+    // comparable when both runs began identically, so fail loudly rather than
+    // emit a log that quietly is not comparable. Run this scenario by exact
+    // name (not via the [determinism_probe] tag, which would run the smoke test
+    // first) - see docs/superpowers/reports/2026-07-31-mvp0-determinism-findings.md
+    REQUIRE( to_turn<int>( calendar::turn ) == turn_before_warmup );
 
     rng_reset_call_count();
+
+    const int inject_turn = injected_divergence_turn();
 
     std::vector<determinism_sample> samples;
     samples.reserve( 500 );
     for( int i = 0; i < 500; ++i ) {
+        if( i == inject_turn ) {
+            // See injected_divergence_turn(): deliberate perturbation used to
+            // prove the probe can detect one. Never set in a measurement run.
+            rng( 0, 1000 );
+        }
         // Re-apply sleep before each turn: the avatar can wake from combat noise
         // or ambient light (this test runs outdoors on t_pavement), and without
         // re-application do_turn() would take the real input-handling branch.
@@ -181,10 +224,49 @@ TEST_CASE( "determinism_probe_500_turns", "[.][determinism_probe]" )
     }
 
     const char *env = std::getenv( "CDDA_DETERMINISM_LOG" );
-    write_sample_log( env ? env : "determinism_probe.csv", samples );
+    REQUIRE( write_sample_log( env ? env : "determinism_probe.csv", samples ) );
 
-    CHECK( samples.size() == 500 );
-    // The last sample must show RNG activity, otherwise the scenario is inert
-    // and the probe would report a meaningless clean result.
-    CHECK( samples.back().rng_calls > 0 );
+    REQUIRE( samples.size() == 500 );
+
+    // Everything below is liveness: proof that the 500 turns simulated a world
+    // that was actually moving. Without it, a clean IDENTICAL result is
+    // worthless - two runs of a frozen world are identical by definition, and
+    // the freeze has a concrete mechanism here. If the avatar dies, game::
+    // is_game_over() latches uquit = QUIT_DIED and every subsequent do_turn()
+    // short-circuits into cleanup_at_end(), which despawns every monster and
+    // never advances the clock (src/do_turn.cpp). The remaining samples would
+    // then be a constant row. A probe that cannot fail is a false green, so
+    // these are REQUIREs, not CHECKs.
+
+    // The crowd is hostile ("thug" is the hells-raiders template) and the
+    // avatar is asleep and cannot dodge, so this is a live possibility.
+    REQUIRE_FALSE( u.is_dead_state() );
+
+    // 500 genuine turn advances, no short-circuit partway through.
+    REQUIRE( samples.back().turn == samples.front().turn + 499 );
+
+    // RNG was actually consumed.
+    REQUIRE( samples.back().rng_calls > 0 );
+
+    // The world evolved rather than sitting still: creature_hash covers
+    // position, hp, moves, AI anger/morale and the creature count, so a world
+    // where anything is happening produces a large number of distinct values.
+    std::set<uint64_t> distinct_creature_hashes;
+    for( const determinism_sample &s : samples ) {
+        distinct_creature_hashes.insert( s.creature_hash );
+    }
+    REQUIRE( distinct_creature_hashes.size() > 100 );
+
+    // The crowd is still there at the end - not despawned by cleanup_at_end().
+    int monsters_alive = 0;
+    for( monster &m : g->all_monsters() ) {
+        static_cast<void>( m );
+        ++monsters_alive;
+    }
+    REQUIRE( monsters_alive > 0 );
+
+    // Note: this scenario deliberately leaves global state mutated (calendar
+    // advanced ~500 turns, gamemode set, crowd alive, avatar carrying
+    // HEAVYSLEEPER2). It is tagged [.] and is meant to be run alone by exact
+    // name; running it alongside other tests in one process poisons them.
 }

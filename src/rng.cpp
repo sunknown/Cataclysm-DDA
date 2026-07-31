@@ -1,9 +1,10 @@
 #include "rng.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 
 #include "calendar.h"
 #include "cata_assert.h"
@@ -205,7 +206,11 @@ cata_default_random_engine::result_type rng_get_first_seed()
     return static_cast<cata_default_random_engine::result_type>( seed );
 }
 
-static uint64_t rng_calls = 0;
+// Atomic because the engine is not single-threaded: sfx::sound_thread draws
+// from it on a detached thread (src/sounds.cpp), so a plain counter here would
+// be a data race. Relaxed ordering is enough - the counter is a diagnostic
+// tally, it orders nothing.
+static std::atomic<uint64_t> rng_calls{ 0 };
 
 static cata_default_random_engine &rng_engine_uncounted()
 {
@@ -216,12 +221,12 @@ static cata_default_random_engine &rng_engine_uncounted()
 
 uint64_t rng_call_count()
 {
-    return rng_calls;
+    return rng_calls.load( std::memory_order_relaxed );
 }
 
 void rng_reset_call_count()
 {
-    rng_calls = 0;
+    rng_calls.store( 0, std::memory_order_relaxed );
 }
 
 const cata_default_random_engine &rng_peek_engine()
@@ -231,7 +236,7 @@ const cata_default_random_engine &rng_peek_engine()
 
 cata_default_random_engine &rng_get_engine()
 {
-    ++rng_calls;
+    rng_calls.fetch_add( 1, std::memory_order_relaxed );
     return rng_engine_uncounted();
 }
 

@@ -26,6 +26,9 @@ uint64_t fnv1a_u64( uint64_t hash, uint64_t value );
 determinism_sample sample_world_state();
 
 // Write samples as CSV with a header line, for tools/determinism_probe/compare_logs.py
-void write_sample_log( const std::string &path, const std::vector<determinism_sample> &samples );
+// Returns false if the file could not be written. Callers must check: a probe
+// run that silently produced no log leaves the comparison step reading a stale
+// file from a previous run and calling it a clean result.
+bool write_sample_log( const std::string &path, const std::vector<determinism_sample> &samples );
 
 #endif // CATA_TESTS_DETERMINISM_PROBE_H

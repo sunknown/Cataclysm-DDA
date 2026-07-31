@@ -35,6 +35,9 @@ cata_default_random_engine &rng_get_engine();
 // Number of times rng_get_engine() has been called since the last reset.
 // Note: counts accesses to the engine handle, not individual random draws.
 // Operations like std::shuffle can consume many draws in one access.
+// The count aggregates every thread that touched the engine, including
+// sfx::sound_thread, so it is only a stable measurement in builds where no
+// audio thread is running (SOUND=0, or test_mode).
 uint64_t rng_call_count();
 void rng_reset_call_count();
 

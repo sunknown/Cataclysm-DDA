@@ -3,7 +3,9 @@
 
 Usage: compare_logs.py run_a.csv run_b.csv
 
-Exit code 0 means the two runs matched on every turn, 1 means they diverged.
+Exit code 0 means the two runs matched on every turn, 1 means they diverged,
+2 means the inputs could not be read or were not probe logs.
+
 The report names the first divergent turn and which component moved first,
 which is what tells you where to look: an rng_calls delta means one run
 consumed a different number of random values, while a creature_hash delta at
@@ -13,12 +15,48 @@ pointing at iteration order rather than at the RNG.
 import csv
 import sys
 
-FIELDS = ["rng_calls", "rng_state", "creature_hash", "player_hash", "combined"]
+HEADER = ["turn", "rng_calls", "rng_state", "creature_hash",
+          "player_hash", "combined"]
+FIELDS = HEADER[1:]
 
 
 def load(path):
+    """Read a probe log, or raise ValueError if it is not one."""
     with open(path, newline="") as handle:
-        return list(csv.DictReader(handle))
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise ValueError("%s is empty" % path)
+    missing = [name for name in HEADER if name not in rows[0]]
+    if missing:
+        raise ValueError("%s is missing column(s): %s"
+                         % (path, ", ".join(missing)))
+    return rows
+
+
+def report_divergence(index, row_a, row_b):
+    """Print the first divergent sample and a reading of what it means."""
+    print("DIVERGED at turn %s (sample index %d)" % (row_a["turn"], index))
+    for field in HEADER:
+        mark = "  " if row_a[field] == row_b[field] else "->"
+        print("%s %s: %s vs %s" % (mark, field, row_a[field], row_b[field]))
+
+    if row_a["turn"] != row_b["turn"]:
+        print("\nThe turn numbers themselves differ, so one run advanced the")
+        print("clock differently. Check that both runs started from the same")
+        print("state - a probe log is only comparable with one recorded from")
+        print("an identical starting point.")
+    elif row_a["rng_calls"] != row_b["rng_calls"]:
+        delta = int(row_b["rng_calls"]) - int(row_a["rng_calls"])
+        print("\nRNG call count differs by %d. One run drew a" % delta)
+        print("different number of random values. Look for a conditional")
+        print("RNG call whose")
+        print("condition depends on iteration order or on floating point.")
+    else:
+        print("\nRNG call count is identical, so both runs drew the same")
+        print("values in the same quantity but arranged the world")
+        print("differently. This is the signature of nondeterministic")
+        print("iteration order - the prime suspect is monsters_by_location")
+        print("in src/creature_tracker.h:150.")
 
 
 def main():
@@ -26,35 +64,25 @@ def main():
         print(__doc__)
         return 2
 
-    a = load(sys.argv[1])
-    b = load(sys.argv[2])
+    try:
+        a = load(sys.argv[1])
+        b = load(sys.argv[2])
+    except (OSError, ValueError) as err:
+        print("ERROR: %s" % err)
+        return 2
 
     if len(a) != len(b):
-        print(f"DIVERGED: length {len(a)} vs {len(b)}")
+        print("DIVERGED: length %d vs %d" % (len(a), len(b)))
         return 1
 
-    for i, (ra, rb) in enumerate(zip(a, b)):
-        if ra["combined"] == rb["combined"]:
+    for i, (row_a, row_b) in enumerate(zip(a, b)):
+        if all(row_a[name] == row_b[name] for name in HEADER):
             continue
-
-        print(f"DIVERGED at turn {ra['turn']} (sample index {i})")
-        for field in FIELDS:
-            mark = "  " if ra[field] == rb[field] else "->"
-            print(f"{mark} {field}: {ra[field]} vs {rb[field]}")
-
-        if ra["rng_calls"] != rb["rng_calls"]:
-            delta = int(rb["rng_calls"]) - int(ra["rng_calls"])
-            print(f"\nRNG call count differs by {delta}. One run drew a different")
-            print("number of random values. Look for a conditional RNG call whose")
-            print("condition depends on iteration order or on floating point.")
-        else:
-            print("\nRNG call count is identical, so both runs drew the same values")
-            print("in the same quantity but arranged the world differently. This is")
-            print("the signature of nondeterministic iteration order — the prime")
-            print("suspect is monsters_by_location in src/creature_tracker.h:150.")
+        report_divergence(i, row_a, row_b)
         return 1
 
-    print(f"IDENTICAL across {len(a)} turns")
+    print("IDENTICAL across %d turns (%d field comparisons)"
+          % (len(a), len(a) * len(HEADER)))
     return 0
 
 
