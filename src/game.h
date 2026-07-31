@@ -790,6 +790,14 @@ class game
         bool has_gametype() const;
         special_game_type gametype() const;
 
+        // Test-only: initializes `gamemode` outside of start_game()/the save-load
+        // path. Both of those are the only normal callers that set this member,
+        // and do_turn() dereferences it unconditionally after the first turn, so
+        // test harnesses that drive do_turn() directly (bypassing start_game())
+        // need an explicit way to satisfy this precondition without pulling in
+        // start_game()'s other side effects (RNG reseed, calendar reset, etc).
+        void ensure_gamemode_for_test();
+
         void toggle_fullscreen();
         void toggle_pixel_minimap() const;
         void toggle_language_to_en();

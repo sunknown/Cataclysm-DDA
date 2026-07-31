@@ -4,10 +4,16 @@
 #include <string>
 #include <vector>
 
+#include "avatar.h"
 #include "calendar.h"
 #include "cata_catch.h"
 #include "determinism_probe.h"
+#include "game.h"
+#include "map_helpers_tests.h"
+#include "options_helpers.h"
+#include "player_helpers.h"
 #include "rng.h"
+#include "type_id.h"
 
 TEST_CASE( "rng_call_counter_increments", "[.][determinism_probe]" )
 {
@@ -84,4 +90,92 @@ TEST_CASE( "write_sample_log_round_trips", "[.][determinism_probe]" )
 
     in.close();
     std::remove( path.c_str() );
+}
+
+TEST_CASE( "do_turn_runs_headless_for_sleeping_avatar", "[.][determinism_probe]" )
+{
+    const override_option no_autosave( "AUTOSAVE", "false" );
+
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    // The test harness's global game init (tests/test_main.cpp) never calls
+    // game::start_game() or the save-load path, so game::gamemode is left
+    // null. Real do_turn() unconditionally dereferences it after the first
+    // turn, so satisfy that precondition without pulling in start_game()'s
+    // other side effects (RNG reseed, calendar reset, etc).
+    g->ensure_gamemode_for_test();
+
+    avatar &u = get_avatar();
+    u.add_effect( efftype_id( "sleep" ), 10_hours );
+    REQUIRE( u.has_effect( efftype_id( "sleep" ) ) );
+
+    // The first do_turn() call ever made in a process is a one-time
+    // "new_game" setup pass (src/do_turn.cpp: weather.on_game_start()), not a
+    // turn advance; calendar::turn only starts advancing from the second
+    // call onward. In real gameplay this happens invisibly before the player
+    // gets control. Consume that one-time pass here so the call below is a
+    // genuine turn advance.
+    g->do_turn();
+
+    const int before = to_turn<int>( calendar::turn );
+    g->do_turn();
+    CHECK( to_turn<int>( calendar::turn ) == before + 1 );
+}
+
+TEST_CASE( "determinism_probe_500_turns", "[.][determinism_probe]" )
+{
+    const override_option no_autosave( "AUTOSAVE", "false" );
+
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    // See do_turn_runs_headless_for_sleeping_avatar for why this is needed:
+    // the test harness never calls game::start_game()/the save-load path, so
+    // game::gamemode is left null, and do_turn() dereferences it
+    // unconditionally after the first turn.
+    g->ensure_gamemode_for_test();
+
+    avatar &u = get_avatar();
+    // The avatar must reliably stay asleep for all 500 turns despite the
+    // combat noise from the crowd below (sounds::process_sound_markers()
+    // runs every turn, right before the sleep check in do_turn(), so nothing
+    // short of raising the wake-up threshold survives it). HEAVYSLEEPER2 is
+    // a real, ordinary game trait ("You could probably sleep through a
+    // firefight") that raises the noise-based wake roll from dice(2,15) to
+    // dice(6,15) against heard volume (src/sounds.cpp) - still probabilistic,
+    // not a hard guarantee, and not a code change.
+    u.toggle_trait( trait_HEAVYSLEEPER2 );
+    u.add_effect( efftype_id( "sleep" ), 10_hours );
+
+    // A crowd is required: a single monster has too few decisions to expose
+    // ordering nondeterminism. These positions are fixed, not random.
+    for( int i = 0; i < 12; ++i ) {
+        const tripoint_bub_ms where( 40 + ( i % 4 ) * 3, 40 + ( i / 4 ) * 3, 0 );
+        spawn_test_monster( "mon_zombie", where );
+    }
+    spawn_npc( { 45, 50 }, "thug" );
+    spawn_npc( { 55, 50 }, "thug" );
+
+    // The first do_turn() call ever made in a process is a one-time
+    // "new_game" setup pass (src/do_turn.cpp: weather.on_game_start()), not a
+    // turn advance. Consume it here, before the RNG counter is reset, so all
+    // 500 loop iterations below are genuine turn-advancing calls and the
+    // warm-up call's own RNG usage does not pollute the measured count.
+    g->do_turn();
+
+    rng_reset_call_count();
+
+    std::vector<determinism_sample> samples;
+    samples.reserve( 500 );
+    for( int i = 0; i < 500; ++i ) {
+        g->do_turn();
+        samples.push_back( sample_world_state() );
+    }
+
+    const char *env = std::getenv( "CDDA_DETERMINISM_LOG" );
+    write_sample_log( env ? env : "determinism_probe.csv", samples );
+
+    CHECK( samples.size() == 500 );
+    // The last sample must show RNG activity, otherwise the scenario is inert
+    // and the probe would report a meaningless clean result.
+    CHECK( samples.back().rng_calls > 0 );
 }

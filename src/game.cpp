@@ -1070,6 +1070,13 @@ bool game::start_game()
     return true;
 }
 
+void game::ensure_gamemode_for_test()
+{
+    if( !gamemode ) {
+        gamemode = std::make_unique<special_game>();
+    }
+}
+
 vehicle *game::place_vehicle_nearby(
     const vproto_id &id, const point_abs_omt &origin, int min_distance,
     int max_distance, const std::vector<std::string> &omt_search_types )
