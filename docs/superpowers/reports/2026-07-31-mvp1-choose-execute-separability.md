@@ -101,6 +101,131 @@ struct intent_abort_aim {
 
 Остаточный риск (причина «с оговоркой», а не «режется»): recoil/`final_recoil` и `moves_spent_aiming` вычисляются клиентом асинхронно, в течение нескольких ходов, пока другие пиры могут одновременно применять свои намерения к тем же существам на линии огня. Если цель успеет умереть или сдвинуться между началом прицеливания и применением `intent_fire`, `apply_intent` должен либо детерминированно переигрывать промах (используя сохранённую точку `target`, а не идентификатор существа), либо намерение должно быть отклонено валидацией — это решение уже не про вызовы UI, а про правило валидации устаревших намерений, которое должно быть явно специфицировано отдельно.
 
+## 2. Крафт
+
+**Точка входа:** `src/handle_action.cpp:2915` (`case ACTION_CRAFT:` → `player_character.craft();`), далее `Character::craft` (`src/crafting.cpp:418`).
+
+**Путь исполнения:**
+
+1. `crafting.cpp:418` `Character::craft()` — вызывает `select_crafter_and_crafting_recipe()` (`crafting_gui.cpp:2861`), интерактивный цикл выбора рецепта (см. ниже), затем при выбранном рецепте — `crafter->make_craft(rec->ident(), batch_size, loc)` (`crafting.cpp:431`).
+2. `crafting.cpp:756` `Character::make_craft` → `make_craft_with_command(id, batch, /*is_long=*/false, loc)` (`crafting.cpp:768`) — создаёт `*last_craft = craft_command(...)` **заново** (`crafting.cpp:776`) и вызывает `last_craft->execute()` (`crafting.cpp:777`). Это первый, «холодный» вызов `craft_command::execute()`: `has_cached_selections()` гарантированно `false`, потому что объект только что создан.
+3. `craft_command::execute(bool)` (`craft_command.cpp:141`) — файл **не входит** в список брифа (`grep` в Step 2 брифа собирает только `crafting.cpp`/`crafting_gui.cpp`), поэтому все обращения здесь найдены трассировкой, а не буквальным grep. Последовательно: проверка достаточности зарядов (`craft_command.cpp:165`), проверка проф. навыков (`:170`), догнивших компонентов (`:182`), избранных предметов (`:191`), затем цикл `crafter->select_item_component(...)` (`crafting.cpp:2923`, `craft_command.cpp:209`) и — для рецептов без шагов — `crafter->select_tool_component(...)` (`crafting.cpp:3358`, `craft_command.cpp:222`); для пошаговых рецептов — `select_step_tool_allocs()` (`craft_command.cpp:243`, использует тот же `select_tool_component` внутри `select_group`). Если у рецепта есть «невнимательные» шаги и крафтер — аватар, вызывается `show_craft_planning_modal(...)` (`craft_command.cpp:252`, определение `crafting.cpp:1050`). В конце — `crafter->start_craft(*this, loc, plans)` (`craft_command.cpp:258`).
+4. `crafting.cpp:1907` `Character::start_craft` — сперва `command.create_in_progress_craft()` (`craft_command.cpp:598`), которая **реально списывает** выбранные компоненты (`sane_consume_items`/`consume_items`, `craft_command.cpp:658-669`) и списывает первую порцию зарядов инструмента (`craft_consume_step_tools` на «пробном» предмете, `craft_command.cpp:648-656`) — **это точка начала мутации мира** на данном пути. После возврата `craft` уже реальный предмет с реально изъятыми компонентами. Далее `start_craft` вызывает `place_craft_or_disassembly(*this, craft, loc, ...)` (`crafting.cpp:1936`, определение `crafting.cpp:902`) — **после** списания компонентов — и только затем `assign_activity(craft_activity_actor(...))` (`crafting.cpp:1939`).
+5. `craft_activity_actor::do_turn` (`activity_actor.cpp:6250`) — вызывается движком активности каждый ход, пока `item_counter` не достигнет 100%. Внутри: списание инструментальных зарядов по 5%-вым шагам (`craft.craft_consume_step_tools`, не UI), обработка «невнимательных» шагов через `craft_actualize_scheduled` (`crafting.cpp:1883`, диспетчер по `item_wakeup_kind`), проверка провала (`craft.handle_craft_failure`, `crafting.cpp:2358`) и, по достижении 100% для рецепта с `is_long`/практикой, **повторный вызов `crafter.last_craft->execute(location)`** (`activity_actor.cpp:6528`) — то есть **весь путь шагов 3-4 выше выполняется заново изнутри `do_turn`** для следующего батча/повторной практики, уже не как «холодный», а как «горячий» вызов с закэшированными (или протухшими) выборами.
+6. Файл `activity_actor.cpp` также не входит в список брифа — обращения на строках 6515/6534 (внутри `do_turn`) найдены трассировкой.
+
+Как решалось, что вызов «на пути»: включены все вызовы, достижимые из `Character::craft()` через `make_craft` → `craft_command::execute()` → `start_craft()` → `craft_activity_actor::{start,do_turn,finish,canceled}`, включая рекурсивный вход `do_turn` → `craft_command::execute()` (шаг 5) и через него — назад в `create_in_progress_craft()`/`place_craft_or_disassembly()`/`select_item_component`/`select_tool_component`/`select_requirements`. Исключены: `Character::recraft()` и `Character::long_craft()` как точки входа других экшенов (`ACTION_RECRAFT`, `ACTION_LONGCRAFT`) — они используют тот же `craft_command`, но не достижимы из `ACTION_CRAFT`; `Character::disassemble()`/`ACTION_DISASSEMBLE` — отдельный экшен, хотя в файле `crafting.cpp` физически рядом.
+
+**Шаг 3 брифа (выбор компонентов):** выбор компонентов (`select_item_component`/`select_tool_component`) **не полностью предрешён и не сериализуем как есть** — это класс P на первом («холодном») проходе, но `craft_activity_actor::do_turn` **доспрашивает** тем же самым кодом при продолжении длинного/практического крафта (шаг 5 выше) и при провале на середине крафта через `Character::can_continue_craft` (`crafting.cpp:2649/2659`, вызывается из `item::handle_craft_failure`, которую `do_turn` вызывает на `activity_actor.cpp` при достижении `next_failure_point`). Способ предрешения для «холодного» пути есть (см. набросок намерения); для «доспрашивания» способа не нашлось — см. «Что мешает».
+
+**Шаг 4 брифа (`craft_command` как готовое намерение):** класс `craft_command` (`src/craft_command.h:92`) **не имеет** `serialize`/`deserialize` — ни объявления, ни определения (проверено чтением `craft_command.h` и `craft_command.cpp` целиком). Крафт **не получает намерение бесплатно**. Однако два из трёх приватных полей-накопителей результата выбора **уже сериализуемы** сами по себе: `comp_selection<CompType>::serialize/deserialize` (`craft_command.cpp:91-110`) и `step_tool_alloc::serialize/deserialize` (`craft_command.cpp:117-133`). Это значит, что `item_selections`/`tool_selections`/`step_tool_allocs` можно вынести в намерение почти без переделки типов — сериализуема «начинка», а не обёртка.
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `popup`/`query_yn`/`string_input_popup`/`uilist`/`ui_manager::redraw` — весь браузер рецептов | `crafting_gui.cpp:322,324,368-373,2270-2285,2601-2618,2771,2987,3085,3094,3132-3181` (внутри `select_crafter_and_crafting_recipe`, `crafting_gui.cpp:2861`) | грep | P | Модальный цикл выбора рецепта (поиск/фильтр/сравнение/пометка прочитанным) выполняется целиком **до** вызова `make_craft`, никакой мутации мира ещё не было. |
+| `query_yn` («…нет тары для жидкости, всё равно продолжить?») | `crafting.cpp:544` (`check_eligible_containers_for_crafting`) | грep | P и A (два пути) | Вызывается из `Character::making_would_work` (`crafting.cpp:471-…`) двумя разными путями: (а) из обработчика `CONFIRM` в браузере рецептов (`crafting_gui.cpp:2620`) — P, до мутации; (б) из `craft_activity_actor::do_turn` при продолжении длинного/практического крафта (`activity_actor.cpp:6527`, `making_would_work(...)`) — A, внутри активности. Учитывается класс A, так как этот путь достижим из активности. |
+| `uilist` («Что делать с %s?» — надеть/бросить/убрать/уронить) | `crafting.cpp:961` (`place_craft_or_disassembly`, вызывается из `start_craft`, `crafting.cpp:1936`) | грep | **M** (основной путь) / A (повторный путь) | Основной путь: вызывается из `start_craft()` **после** того, как `create_in_progress_craft()` (`craft_command.cpp:598`, вызов `crafting.cpp:1915`) уже реально списал компоненты крафта (`craft_command.cpp:658-669`) — мутация мира началась, а ответ определяет, что происходит с уже надетым/удерживаемым предметом и куда денется предмет крафта. Это прямое нарушение инварианта, вне какой-либо активности (до `assign_activity`, `crafting.cpp:1939`). Тот же вызов повторно достижим из `do_turn` на шаге продолжения батча (`activity_actor.cpp:6528` → тот же `start_craft`) — там он уже класс A. |
+| `cancel_activity_or_ignore_query` (отвлечение «шаг завершён», `distraction_type::craft_step_complete`) | `crafting.cpp:1027` (`fire_step_complete_distraction`) | грep | A | Достижимо из `do_turn` через `craft_actualize_scheduled` (`crafting.cpp:1883`, диспетчер-шим по `item_wakeup_kind`) → `craft_actualize_ready` (`crafting.cpp:1664/1670/1690`) → `fire_step_complete_distraction`. Срабатывает только когда `!was_on_craft` — то есть когда do_turn обрабатывает предмет крафта **другого** персонажа (напр. NPC-помощника), а функция при этом опрашивает `get_avatar()` — существующее для одиночной игры допущение «есть один локальный игрок», прямо релевантное MP-разбору. |
+| `uilist` («Шаг: …\nЧто делать?» — ждать/заняться другим/таймер) | `crafting.cpp:1105` (`show_craft_planning_modal`) | грep | P (первый проход) / A (продолжение) | Вызывается один раз из `craft_command::execute()` при первом старте рецепта с «невнимательными» шагами (`craft_command.cpp:252`, `from_step=0`, до `assign_activity`) — P. Но `do_turn` при продолжении батча вызывает `last_craft->execute(location)` заново (`activity_actor.cpp:6528`) **без** ограничения по `from_step`, то есть модал показывается заново на **каждый** батч длинного/практического крафта — внутри активности. |
+| `uilist` («Установить будильник на когда?») | `crafting.cpp:1128` (та же `show_craft_planning_modal`) | грep | P / A | Тот же вызов и тот же путь дублирования, что и предыдущая строка — вложенный под-диалог того же модала. |
+| `cancel_activity_or_ignore_query` («Ваш таймер сработал: …», `distraction_type::noise`) | `crafting.cpp:1346` (`craft_actualize_alarm`) | грep | A | Прямо достижимо из `do_turn`: ветка «отложенная запись» (`activity_actor.cpp`, между установкой `passive_started_at` и проверкой `ready_at`) вызывает `craft_actualize_scheduled(craft, item_wakeup_kind::alarm, …)` → `craft_actualize_alarm`, если будильник уже просрочен на момент входа в пассивный шаг. В отличие от строки выше, здесь нет проверки «чужой ли это крафт» — сработает и для собственного крафта аватара, если у него `activity.id()` не null. |
+| `popup` («Не хватает компонентов, чтобы продолжить крафт!») | `crafting.cpp:2687` (`can_continue_craft`) | грep | A | `can_continue_craft` вызывается из `item::handle_craft_failure` (`crafting.cpp:2407`), которую `do_turn` вызывает при достижении `craft.get_next_failure_point()` (обычный, не крайний случай многоходового крафта). |
+| `query_yn` («Списать недостающие компоненты и продолжить крафт?») | `crafting.cpp:2697` (`can_continue_craft`) | грep | A | Тот же путь, что и строка выше — тот же вызов `can_continue_craft`. |
+| `query_yn` («Часть компонентов сгнила, всё равно продолжить?») | `crafting.cpp:2702` (`can_continue_craft`) | грep | A | Тот же путь. |
+| `query_yn` («Часть компонентов избранная, всё равно продолжить?») | `crafting.cpp:2711` (`can_continue_craft`) | грep | A | Тот же путь. |
+| `popup` («Не хватает нужных инструментов, чтобы продолжить крафт!») | `crafting.cpp:2791` (`can_continue_craft`) | грep | A | Тот же путь; ветка нехватки инструментов, а не предметов. |
+| `uilist` («Какой набор компонентов использовать?») | `crafting.cpp:2899` (`Character::select_requirements`) | грep | P (через `requirement_data::select_alternative`, `craft_command.cpp:201-202`) / A (через `can_continue_craft` при повторном выборе инструментов, `crafting.cpp:2856`, и через повторный `execute()` из `do_turn`) | Функция вызывается и из «холодного» пути (P), и из «доспрашивания» после провала/продолжения (A). |
+| `uilist` («Использовать какой предмет?», выбор компонента) | `crafting.cpp:3052` (`Character::select_item_component`) | грep | P / A | P на первом проходе (`craft_command.cpp:209`); A — при повторном выборе внутри `can_continue_craft` (`crafting.cpp:2735`, для компонентов, уничтоженных провалом или ставших недоступны) и при повторном `execute()` из `do_turn`. |
+| `uilist` («Использовать какой инструмент?») | `crafting.cpp:3417` (`Character::select_tool_component`) | грep | P / A | P на первом проходе (`craft_command.cpp:222`, `craft_command.cpp:521` внутри `select_step_tool_allocs`); A — при повторном выборе внутри `can_continue_craft` (`crafting.cpp:2856`) и при повторном `execute()` из `do_turn`. |
+| `query_yn` («Не хватает зарядов, чтобы завершить %s. Всё равно начать крафт?») | `craft_command.cpp:165` | косв. | P / A | P на «холодном» вызове из `make_craft_with_command` (шаг 2 пути). A — если при повторном `execute()` из `do_turn` (шаг 5) кэшированный выбор компонентов протух и код вновь входит в ветку `need_selections` (см. `craft_command.cpp:151-161`). |
+| `popup` («Нет нужных умений/квалификаций, чтобы это скрафтить!») | `craft_command.cpp:170` | косв. | P / A | Тот же механизм дублирования, что и строка выше. |
+| `query_yn` («Крафт использует гнилые компоненты. Всё равно начать?») | `craft_command.cpp:182` | косв. | P / A | Тот же механизм. |
+| `query_yn` («Крафт использует избранные компоненты. Всё равно начать?») | `craft_command.cpp:191` | косв. | P / A | Тот же механизм. |
+| `query_yn` (`query_continue`, «Часть ранее использованных компонентов пропала. Продолжить?») | `craft_command.cpp:302` | косв. | **чистый A** | В отличие от строк выше, эта ветка *недостижима* на «холодном» первом вызове (`has_cached_selections()` гарантированно `false` для только что созданного `craft_command`, шаг 2 пути) — она существует исключительно для случая, когда `execute()` вызывается повторно с уже заполненным `item_selections`/`tool_selections`, то есть исключительно из `do_turn` (шаг 5). |
+| `query_yn` («%s не пустой. Всё равно продолжить?», разлив жидкого компонента) | `craft_command.cpp:364` и `:387` (`continue_prompt_liquids`, вызывается из `create_in_progress_craft`, `craft_command.cpp:622-626`, только для `is_avatar()`) | косв. | P / A | P на первом проходе (до фактического необратимого списания компонентов в этом же вызове `create_in_progress_craft`); A — тот же вызов внутри `create_in_progress_craft`, вызванной повторно из `do_turn` (шаг 5). |
+| `query_yn` («Продолжать практиковаться до роста мастерства?») | `activity_actor.cpp:6515` (`craft_activity_actor::do_turn`) | косв. | A | Прямо внутри `do_turn`, без единого уровня косвенности — классический случай A по определению из `conventions.md`. |
+| `query_yn` («Мастерство выросло. Прекратить практику?») | `activity_actor.cpp:6534` (`craft_activity_actor::do_turn`) | косв. | A | Тоже прямо внутри `do_turn`. |
+
+Итог по проходам: базовый grep по `crafting.cpp`/`crafting_gui.cpp` дал 15 различающихся мест вызова (включая сгруппированный браузер рецептов), из которых 1 — чистый P, 1 — M (с дополнительной A-веткой того же кода), 13 — A (часть из них также имеют P-ветку на первом проходе, но для вердикта учитывается достижимость как A). Проход трассировки на один уровень косвенности (файлы `craft_command.cpp` и `activity_actor.cpp`, не входящие в список брифа) добавил 8 мест, все — класса A, из них одно (`craft_command.cpp:302`) достижимо **исключительно** как A. Итого: **1 M**, **21 A**-достижимых обращений (считая по числу строк таблицы с классом A/M, без двойного счёта дублирующихся P/A строк).
+
+**Вердикт:** не режется
+
+**Набросок намерения:**
+
+```cpp
+// Намерение "начать крафт" — соответствует ОДНОМУ, "холодному" проходу
+// craft_command::execute() → start_craft(), от Character::craft() до
+// assign_activity(craft_activity_actor). НЕ покрывает продолжение батча —
+// см. "Что мешает" ниже, отдельного чистого намерения для него нет.
+struct intent_start_craft {
+    recipe_id rec;
+    int batch_size;
+    bool is_long;                                    // craft_command::longcraft
+    std::optional<tripoint_bub_ms> workbench_loc;     // nullopt = крафт из инвентаря/с рук
+
+    // Результат select_item_component()/select_tool_component()/
+    // select_step_tool_allocs(), предрешённый в фазе выбора. Оба вложенных
+    // типа УЖЕ сериализуемы (comp_selection<T>::serialize/deserialize,
+    // craft_command.cpp:91-133; step_tool_alloc::serialize/deserialize,
+    // craft_command.cpp:117-133) — сам craft_command serialize/deserialize
+    // не имеет НИГДЕ (проверено), но эта "начинка" уже готова.
+    std::vector<comp_selection<item_comp>> item_selections;
+    std::vector<comp_selection<tool_comp>> tool_selections;
+    std::vector<std::vector<step_tool_alloc>> step_tool_allocs;
+    const requirement_data *chosen_requirement_alternative; // select_requirements, crafting.cpp:2899;
+                                                              // ЛОМКО как указатель — на деле нужен
+                                                              // стабильный ключ альтернативы (индекс
+                                                              // в deduped_requirements либо хэш набора),
+                                                              // не сырой указатель через сеть
+
+    // Ответы на диалоги craft_command::execute()/create_in_progress_craft(),
+    // предрешённые один раз при отправке намерения:
+    bool confirm_insufficient_charges;       // craft_command.cpp:165
+    bool confirm_use_rotten;                 // craft_command.cpp:182
+    bool confirm_use_favorite;                // craft_command.cpp:191
+    bool confirm_nonempty_liquid_containers;  // craft_command.cpp:364/387
+
+    // Разрешение конфликта "чем занять руки" — ИСПРАВЛЯЕТ найденную M:
+    // сейчас uilist (crafting.cpp:961) показывается ПОСЛЕ списания
+    // компонентов; все условия, от которых зависит выбор
+    // (has_two_arms_lifting, наличие верстака рядом, has_wield_conflicts),
+    // известны ДО списания — перенос решения в фазу выбора ничего не теряет.
+    enum class wield_conflict_choice { not_applicable, wield_craft, drop_craft, stash, drop };
+    wield_conflict_choice on_wield_conflict;
+
+    // Планы для "невнимательных" шагов, предрешённые для ПЕРВОГО прохода
+    // по рецепту (show_craft_planning_modal, crafting.cpp:1105/1128).
+    // attention_plan сам по себе не (де)сериализуется - нужно добавить
+    // тривиальный serialize/deserialize (два POD-поля).
+    std::vector<attention_plan> step_plans;
+};
+```
+
+**Что мешает и как обойти:** Крафт не режется по двум независимым причинам, каждой из которых достаточно самостоятельно.
+
+Первая — найденное нарушение M: `place_craft_or_disassembly` открывает `uilist` «Что делать с %s?» (`crafting.cpp:961`) **после** того, как `create_in_progress_craft()` уже физически списал компоненты (`craft_command.cpp:658-669`) и часть зарядов инструмента, но **до** того, как активность вообще создана (`assign_activity`, `crafting.cpp:1939`) — то есть это не активность, а прямое нарушение инварианта в синхронном вызове. Обходной путь для этой конкретной строки прост и назван (`on_wield_conflict` в намеронии выше, поле `wield_conflict_choice`): все условия, определяющие, нужно ли вообще показывать это меню, известны **до** списания компонентов (положение относительно верстака, обе ли руки заняты, конфликтует ли текущий предмет в руках) — можно и нужно спросить это раньше и просто исполнить готовое решение в `execute`-фазе. Но по правилу вердикта (`controller-addenda.md`, A3) наличие **любого** M-обращения — даже с найденным обходом — исключает вердикт «режется с оговоркой»: этот вердикт зарезервирован для случая, когда обращений уровня M нет вовсе, а есть только A. Значит, сама по себе эта находка уже не оставляет варианта, кроме «не режется», пока код не переставлен местами.
+
+Вторая, более глубокая причина: `craft_activity_actor::do_turn` при продолжении длинного/практического крафта **не просто просит подтверждение** — он **заново вызывает всю фазу выбора** (`crafter.last_craft->execute(location)`, `activity_actor.cpp:6528`), тем самым делая доступным изнутри активности буквально весь UI-поверхность `craft_command::execute()`/`create_in_progress_craft()`, включая выбор компонентов/инструментов (`uilist`, `crafting.cpp:3052`/`3417`) и подтверждения гнили/избранности/недостатка зарядов (`craft_command.cpp:165-191`). Часть из этого предрешается по тому же шаблону, что и M-находка выше (простые булевы политики: «крафтить дальше практику автоматически», «останавливаться молча при нехватке» и т.п. — см. `intent_craft_continuation_policy` ниже), и для этой части способ есть. Но остаётся необрешаемый остаток: `Character::can_continue_craft` (`crafting.cpp:2649/2659`, вызывается из `item::handle_craft_failure` при провале крафта на середине, `crafting.cpp:2407`) решает, **какие именно** компоненты нужно доизбрать и предложить взамен, основываясь на (а) результате RNG-броска провала, случившегося во время `do_turn` этого самого хода, и (б) реальном, актуальном на этот ход состоянии карты/инвентаря (`check_item_components_missing`/`check_tool_components_missing`, `craft_command.cpp:152-153`) — которое в многопользовательской игре могло измениться из-за действий других игроков между началом крафта и этим ходом. Ни то, ни другое не известно и не может быть детерминированно вычислено в момент отправки исходного намерения на старте крафта: это не вопрос «какой ответ дал бы игрок», а вопрос «что вообще произошло в мире с тех пор», который в принципе нельзя закодировать в `mp_intent`, отправленный раньше. Единственные пути, которые превращают это в детерминированное правило (жёстко резервировать все N батчей компонентов заранее — меняет игровой баланс/ощущение и не решает вопрос RNG-провала; или автоматически прерывать крафт без вопроса при любой нехватке, без права продолжить с заменой) — это не перенос выбора игрока, а изменение самого игрового поведения, то есть продуктовое решение, а не механическая переклассификация. Согласно `controller-addenda.md`: «If even one A row has no remedy, … the verdict is не режется» — про эти конкретные строки (`crafting.cpp:2687/2697/2702/2711/2791`, `crafting.cpp:3052`/`3417` в контексте `can_continue_craft`) обход не найден, что само по себе тоже приводит к «не режется», независимо от M-находки выше.
+
+Отдельно, но с тем же диагнозом «единого локального игрока»: `fire_step_complete_distraction` (`crafting.cpp:1027`) и `craft_actualize_alarm` (`crafting.cpp:1346`) опрашивают `get_avatar()` — единственного локального игрока — из логики, привязанной к предмету крафта, а не к конкретному подключённому клиенту. Это не решается добавлением поля в намерение: нужно сначала определить, *к какому клиенту* вообще адресован этот вопрос в многопользовательской партии, что выходит за рамки классификации P/M/A/D и относится к более общей задаче адресации UI-событий по пирам.
+
+```cpp
+// Политика продолжения батша/практики — покрывает ту часть шага 5 do_turn,
+// для которой обход найден (см. текст выше). НЕ покрывает can_continue_craft
+// (жёлтый список выше) — там обхода нет.
+struct intent_craft_continuation_policy {
+    bool auto_continue_long_craft;      // сейчас подразумевается is_long == true
+    bool auto_continue_practice;        // activity_actor.cpp:6515 "Keep practicing…"
+    bool stop_silently_on_shortfall;    // НЕ полная замена can_continue_craft: покрывает
+                                         // только случай "заранее решили не продолжать",
+                                         // а не "какие компоненты предложить взамен"
+    std::vector<attention_plan> step_plans_per_batch; // повторяется на каждый батш,
+                                                        // а не только на первый проход
+};
+```
+
+Не включено ни в одно намерение (сознательно): точный набор компонентов/инструментов, которые `can_continue_craft` предложит взамен после провала — по причине, изложенной выше, это в принципе не вычислимо на момент отправки исходного намерения.
+
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
