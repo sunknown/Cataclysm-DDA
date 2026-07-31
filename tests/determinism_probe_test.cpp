@@ -15,6 +15,8 @@
 #include "rng.h"
 #include "type_id.h"
 
+static const trait_id trait_HEAVYSLEEPER2( "HEAVYSLEEPER2" );
+
 TEST_CASE( "rng_call_counter_increments", "[.][determinism_probe]" )
 {
     rng_reset_call_count();
@@ -167,6 +169,13 @@ TEST_CASE( "determinism_probe_500_turns", "[.][determinism_probe]" )
     std::vector<determinism_sample> samples;
     samples.reserve( 500 );
     for( int i = 0; i < 500; ++i ) {
+        // Re-apply sleep before each turn: the avatar can wake from combat noise
+        // or ambient light (this test runs outdoors on t_pavement), and without
+        // re-application do_turn() would take the real input-handling branch.
+        // This is purely a test-setup measure — it does not change game behavior,
+        // only ensures the probe's headless invariant (avatar stays asleep) holds
+        // for the full 500 turns.
+        u.add_effect( efftype_id( "sleep" ), 10_hours );
         g->do_turn();
         samples.push_back( sample_world_state() );
     }
