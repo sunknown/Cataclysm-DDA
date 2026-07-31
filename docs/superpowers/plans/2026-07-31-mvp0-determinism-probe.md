@@ -79,6 +79,12 @@ TEST_CASE( "rng_call_counter_increments", "[.][determinism_probe]" )
 
     rng_reset_call_count();
     CHECK( rng_call_count() == 0 );
+
+    // Diagnostics must be able to inspect the engine without disturbing the
+    // counter they report, otherwise the probe measures itself.
+    rng_peek_engine();
+    rng_peek_engine();
+    CHECK( rng_call_count() == 0 );
 }
 ```
 
@@ -101,6 +107,12 @@ make -j$(nproc) TILES=0 TESTS=1
 // which two runs consumed a different number of random values.
 uint64_t rng_call_count();
 void rng_reset_call_count();
+
+// The engine without counting the access. Diagnostics that inspect engine
+// state must use this: reading through rng_get_engine() would advance the
+// very counter the diagnostic reports, so the instrument would perturb its
+// own measurement. Never use this to draw random values.
+const cata_default_random_engine &rng_peek_engine();
 ```
 
 В список включений `src/rng.h` (строки 5-14) добавить `#include <cstdint>`, сохранив алфавитный порядок — он идёт после `#include <array>`.
@@ -112,6 +124,13 @@ void rng_reset_call_count();
 ```cpp
 static uint64_t rng_calls = 0;
 
+static cata_default_random_engine &rng_engine_uncounted()
+{
+    // NOLINTNEXTLINE(cata-determinism)
+    static cata_default_random_engine eng( rng_get_first_seed() );
+    return eng;
+}
+
 uint64_t rng_call_count()
 {
     return rng_calls;
@@ -122,12 +141,15 @@ void rng_reset_call_count()
     rng_calls = 0;
 }
 
+const cata_default_random_engine &rng_peek_engine()
+{
+    return rng_engine_uncounted();
+}
+
 cata_default_random_engine &rng_get_engine()
 {
     ++rng_calls;
-    // NOLINTNEXTLINE(cata-determinism)
-    static cata_default_random_engine eng( rng_get_first_seed() );
-    return eng;
+    return rng_engine_uncounted();
 }
 ```
 
@@ -198,7 +220,16 @@ TEST_CASE( "sample_world_state_reports_rng_counter", "[.][determinism_probe]" )
     const determinism_sample s = sample_world_state();
     CHECK( s.rng_calls == 2 );
     CHECK( s.turn == to_turn<int>( calendar::turn ) );
-    CHECK( s.combined != 0 );
+
+    // Sampling must not perturb what it measures, and an unchanged world must
+    // hash identically. This is the whole premise of the probe: if two samples
+    // of a world nobody touched disagree, every later comparison is noise.
+    const determinism_sample again = sample_world_state();
+    CHECK( again.rng_calls == s.rng_calls );
+    CHECK( again.rng_state == s.rng_state );
+    CHECK( again.creature_hash == s.creature_hash );
+    CHECK( again.player_hash == s.player_hash );
+    CHECK( again.combined == s.combined );
 }
 ```
 
@@ -305,10 +336,12 @@ static uint64_t hash_creature( uint64_t h, const Creature &c )
 }
 
 // std::minstd_rand0 streams its entire state as a single decimal integer.
+// Uses rng_peek_engine() rather than rng_get_engine(): the latter counts the
+// access, so sampling would advance the counter this very sample reports.
 static uint64_t current_rng_state()
 {
     std::ostringstream ss;
-    ss << rng_get_engine();
+    ss << rng_peek_engine();
     return std::stoull( ss.str() );
 }
 
@@ -435,7 +468,9 @@ make -j$(nproc) TILES=0 TESTS=1
 tests/cata_test "[determinism_probe]" --user-dir test_user_dir_probe
 ```
 
-Ожидается: PASS. Формат уже реализован в Task 2, поэтому тест проходит сразу — он фиксирует контракт с Python-скриптом из Task 5, чтобы изменение формата ломало тест, а не молча ломало сравнение.
+Ожидается: PASS сразу, красной фазы у этого теста нет и не должно быть.
+
+Это **характеризационный тест**, а не TDD-цикл: формат реализован в Task 2, и задача теста — прибить контракт с Python-скриптом из Task 5, чтобы изменение формата ломало сборку, а не молча ломало сравнение логов. Отсутствие красной фазы здесь ожидаемо и не является нарушением дисциплины тестирования.
 
 - [ ] **Step 3: Коммит**
 
