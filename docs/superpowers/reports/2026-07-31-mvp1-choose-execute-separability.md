@@ -334,6 +334,96 @@ struct intent_butcher_batch {
 
 Не входит в намерение и не разбирается здесь (обосновано в п.4 «Путь исполнения» выше): `MULTISALVAGE`, `BUTCHER_DISASSEMBLE`, `BUTCHER_SALVAGE`, `MULTIDISASSEMBLE_ONE/ALL` — четыре соседних действия из того же начального `kmenu`, не являющиеся разделкой и не входящие в 10 действий MVP-1 (кроме разборки, которая частично пересекается по механизму с Task 2, но не тождественна её точке входа `ACTION_CRAFT`).
 
+## 4. Вождение
+
+**Точка входа:** `src/handle_action.cpp:2947` (`case ACTION_CONTROL_VEHICLE:`) → при отсутствии верховой посадки/черты `WAYFARER` вызывает `control_vehicle( mouse_target )` (`handle_action.cpp:2953`) → `game::control_vehicle` (`src/game.cpp:5123`).
+
+**Путь исполнения:**
+
+1. `game.cpp:5123` `game::control_vehicle()` — если у цели нет машины и нет `p`, пробует `remoteveh()` (дистанционное управление) и открывает `remote_veh->interact_with(...)` (`game.cpp:5130`, определение `vehicle_use.cpp:2992`) — до какой-либо мутации.
+2. Иначе ищет `optional_vpart_position` в целевой точке (`game.cpp:5142`), считает `controls_ok`/`reins_ok`. Ветка «уже за рулём» (`veh->player_in_control(here, u)`, `vehicle.cpp:282`, чистая проверка без UI): если `controls_ok` — `veh->interact_with(&here, u.pos_bub())` (`game.cpp:5155`); если только вожжи — снимает `controlling_vehicle` напрямую (`game.cpp:5157-5159`), без UI.
+3. Если управление доступно, но машина заперта — `veh->interact_with(&here, target_pos)` (`game.cpp:5166`) и `return` («предлагает хотвайринг», комментарий на `game.cpp:5167`).
+4. Иначе — `veh->handle_potential_theft(u)` (`game.cpp:5169`, определение `vehicle.cpp:5104`, сигнатура `vehicle.h:1100`). Внутри — при наличии владельца, отсутствии владения игроком и наличии свидетелей — `you.query_yn(...)` (`vehicle.cpp:5143`). Всё ещё до какой-либо мутации мира со стороны `control_vehicle()`.
+5. Если в руках оружие, конфликтующее с вождением — `query_yn` («…wield … Put it away?», `game.cpp:5179`) либо `query_yn` («…with both hands…», `game.cpp:5189`), в зависимости от ветки; при отказе — `return` без мутации.
+6. Мутация начинается только здесь: если `veh->engine_on` — `u.controlling_vehicle = true` (`game.cpp:5201`); иначе `veh->start_engines(here, &u, true)` (`game.cpp:5204`, определение `vehicle_use.cpp:816`), которая **ставит активность** `start_engines_activity_actor` (`vehicle_use.cpp:860-861`) — фаза выбора для этого хода на этом заканчивается.
+7. Ветка «несколько точек управления рядом, `p` не задан» (`game.cpp:5221-5263`): `choose_adjacent(_("Control vehicle where?"))` (`game.cpp:5240`) — до мутации; затем тот же `handle_potential_theft(u)` (`game.cpp:5259`) и `veh->interact_with(&here, *vehicle_position)` (`game.cpp:5262`).
+8. `vehicle::interact_with()` (`vehicle_use.cpp:2992`) строит и показывает `veh_menu` в цикле `do { build_interact_menu(...); } while(menu.query());` (`vehicle_use.cpp:3001-3004`). `veh_menu::query()` (`src/veh_utils.cpp:427`) реально создаёт `uilist menu;` (`veh_utils.cpp:436`) и вызывает `menu.query()` (`veh_utils.cpp:478`) **до** выполнения выбранного пункта (`chosen._on_submit()`, `veh_utils.cpp:496`); проверка кражи для выбранного пункта — `veh.handle_potential_theft(get_player_character())` (`veh_utils.cpp:487`) — тоже до `_on_submit()`.
+9. Из всех пунктов `build_interact_menu` (`vehicle_use.cpp:2303`) к состоянию, которое меняет именно `ACTION_CONTROL_VEHICLE` (т.е. `controlling_vehicle`/`engine_on`/`is_locked`), относятся: «Hotwire» (`vehicle_use.cpp:2385`, on_submit ставит активность `hotwire_car_activity_actor`, `:2393-2394`), «Stop controlling» / «Stop driving» / «Turn off/on the engine» / «Let go of controls» (`vehicle_use.cpp:2427-2479`). Внутри двух engine-off веток on_submit вызывает `disable_smart_controller_if_needed()` (`vehicle_use.cpp:2449` и `:2461`, определение `vehicle.cpp:6357`) **до** `stop_engines(*here)`/`controlling_vehicle = false` в том же on_submit; если опция `FORCE_SMART_CONTROLLER_OFF_ON_ENGINE_STOP == "ask"` — вызывает `query_yn(...)` (`vehicle.cpp:6374`). Остальные пункты того же меню (пересадка/дозаправка/переработка сидений и т.п.) реализуют другие, не относящиеся к вождению действия — см. примечание после таблицы.
+10. `start_engines_activity_actor::do_turn` отсутствует (не переопределён); `::finish()` (`activity_actor.cpp:11993`) детерминированно запускает моторы, без UI. `hotwire_car_activity_actor::do_turn` (`activity_actor.cpp:1213`) и `::finish()` (`activity_actor.cpp:1228`) — тоже без UI. Обе активности, реально достижимые с этого пути, прочитаны целиком.
+11. **Отдельная точка, вне `control_vehicle()`:** `game::do_turn()` (`src/do_turn.cpp:560-564`) на каждом ходу, пока `u.in_vehicle && u.controlling_vehicle`, вызывает `veh->handle_potential_theft(u, true)` (`do_turn.cpp:562`, `check_only=true`) и, если он вернул `false`, — `veh->handle_potential_theft(u, false, false)` (`do_turn.cpp:563`, `check_only=false, prompt=false`). Разобрано отдельно ниже (см. «Особый фокус»), в таблицу не попадает — обоснование там же.
+
+Также вне пути (не относится к «взять управление», хотя тоже вызывает `handle_potential_theft`): вход в машину через дверь при движении — `avatar_action.cpp:577` (внутри `avatar_action::move`, срабатывает при попытке пройти в закрытую дверь чужой машины) и `avatar_action.cpp:690` (внутри `avatar_action::swim`, посадка на чужую лодку); толчок машины мехом — `game.cpp:7705`; движение в клетку с чужой машиной — `game.cpp:7729`. Все четыре достигаются из `ACTION_MOVE_*`/`ACTION_SWIM`, а не из `ACTION_CONTROL_VEHICLE`; аналогично тому, как Task 3 исключил `MULTISALVAGE`/`BUTCHER_DISASSEMBLE` как соседние действия в общем меню, эти вызовы принадлежат другому действию (перемещению), физически проходящему через ту же функцию `vehicle::handle_potential_theft`.
+
+**Базовый (грep) проход:** дословный `grep -nE "query_yn|query_int|uilist|popup|popup_getkey|string_input_popup|choose_adjacent|choose_adjacent_highlight|look_around|game_menus::inv|target_handler::mode_|ui_manager::redraw|cancel_activity_query|cancel_activity_or_ignore_query" src/vehicle_use.cpp` даёт 6 попаданий: `:928` (`query_int`, внутри `vehicle::reload_seeds`, — заправка сеялки семенами), `:1491` (`uilist detergent_selector`, внутри `vehicle::use_washing_machine`), `:1685`/`:1704` (`choose_adjacent_highlight`, внутри `vehicle::use_monster_capture`), `:1804` (`choose_adjacent_highlight`, внутри `vehicle::use_harness`), `:2906` (`game_menus::inv::veh_tool_attach`, внутри `build_interact_menu`, пункт «Attach a tool»). **Ни один из шести не лежит на пути `ACTION_CONTROL_VEHICLE`**: все пять функций — независимые пункты того же общего меню `veh_menu` (доступного и через `ACTION_EXAMINE`/`iuse.cpp`, не только через `control_vehicle()`), реализующие вождению не относящиеся действия (посадка семян, стирка, поимка тварей, упряжь, навесной инструмент) — тот же тип исключения, что Task 3 применил к соседним пунктам `kmenu` разделки. Итог базового прохода: **0 P/M/A-строк на пути**, 6 исключённых как побочные действия того же меню.
+
+Все обращения к UI, реально лежащие на пути `ACTION_CONTROL_VEHICLE`, найдены проходом трассировки (не буквальным grep по `vehicle_use.cpp`) — по функции `game::control_vehicle()` (файл не входил в Step 2 брифа), `vehicle::handle_potential_theft()` (`vehicle.cpp`), `veh_menu::query()` (`veh_utils.cpp`) и (на 2 уровня глубже обычной рекомендации A1 — оправдано тем, что это прямое состояние именно этого действия, «завести/заглушить мотор», а не побочный пункт меню) `disable_smart_controller_if_needed()` (`vehicle.cpp:6357`, вызывается из `on_submit` пунктов «Stop driving»/«Turn off the engine», `vehicle_use.cpp:2449`/`:2461`).
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `choose_adjacent` («Control vehicle where?») | `src/game.cpp:5240` | косв. | P | Уточнение точки при нескольких точках управления рядом (ветка без явного `p`), до определения `veh` и до какой-либо мутации. |
+| `query_yn` («This vehicle belongs to: %s… continue?») | `src/vehicle.cpp:5143` (внутри `handle_potential_theft`; вызовы — `game.cpp:5169` и `game.cpp:5259`) | косв. | P | Оба вызывающих места в `control_vehicle()` предшествуют любой мутации (снятию оружия, `controlling_vehicle=true`, `start_engines`); при отказе — немедленный `return`. |
+| `query_yn` («…have to wield a %s.\n\nPut it away?») | `src/game.cpp:5179` | косв. | P | После успешной проверки кражи, но до `controlling_vehicle=true`/`start_engines` — мутации ещё не было; при отказе — `return`. |
+| `query_yn` («…wield a %s with both hands…Put it away?») | `src/game.cpp:5189` | косв. | P | Та же функция, соседняя ветка (двуручное оружие) того же условия. |
+| `uilist` (общее меню `veh_menu`) | `src/veh_utils.cpp:436` (объявление), `.query()` — `:478` | косв. | P | `interact_with()` (`vehicle_use.cpp:2992-3005`) вызывается из `control_vehicle()` в трёх ветках (`game.cpp:5130,5155,5166,5262`); меню и повторная проверка кражи (`veh_utils.cpp:487`) выполняются **до** `chosen._on_submit()` — до мутации, соответствующей выбранному пункту. |
+| `query_yn` («Smart controller engine may turn on engine back. Disable it?») | `src/vehicle.cpp:6374` (внутри `disable_smart_controller_if_needed`, вызовы — `vehicle_use.cpp:2449` и `:2461`, обе — из `on_submit` пунктов «Stop driving»/«Turn off the engine» в том же `veh_menu`) | косв. (2 уровня) | P | Вызывается из `on_submit` **до** `stop_engines(*here)`/`controlling_vehicle=false` в том же лямбда-теле (`vehicle_use.cpp:2450-2451`, `:2463`) — раньше единственной мутации этого конкретного пункта меню; срабатывает только если опция `FORCE_SMART_CONTROLLER_OFF_ON_ENGINE_STOP == "ask"` (по умолчанию не «ask»). |
+
+Итог по проходам: базовый grep по `vehicle_use.cpp` дал 6 попаданий, 0 из которых на пути (все — соседние пункты общего меню, см. выше). Трассировка (`game.cpp`, `vehicle.cpp`, `veh_utils.cpp`, включая 2 уровня вглубь до `disable_smart_controller_if_needed`) добавила **5** обращений, лежащих на пути, — все класса **P**. Активности, реально достижимые отсюда (`start_engines_activity_actor`, `hotwire_car_activity_actor`), прочитаны целиком и не содержат ни одного обращения из списка. **Итого: 0 M, 0 A, 5 P.**
+
+**Особый фокус — `handle_potential_theft` из `game::do_turn`:** вызов на `do_turn.cpp:562` (`check_only=true`) — чистая проверка без побочных эффектов (при `check_only` функция возвращает `false` до строки с `query_yn`, `vehicle.cpp:5138-5140`; сам просмотр `witnesses`/`is_owned_by` не мутирует состояние). Если она вернула `false` (есть непроверенная кража), `do_turn.cpp:563` вызывает `handle_potential_theft(u, false, false)` — с **явным `prompt=false`**. Это означает, что ветка `if( prompt )` (`vehicle.cpp:5142-5148`), единственная, содержащая `query_yn`, **физически не выполняется** из `do_turn`: вызов из `do_turn` не является обращением к UI из проверяемого списка, несмотря на то что вызывает функцию, которая в других контекстах открывает диалог. При этом сам вызов **мутирует мир**: при отсутствии свидетелей молча передаёт владение (`set_owner`/`remove_old_owner`, `vehicle.cpp:5122-5129`) либо, при наличии свидетелей, выставляет `set_old_owner`, злит враждующих NPC-свидетелей и убирает временную метку кражи (`vehicle.cpp:5149-5162`) — без единого вопроса игроку, каждый ход, пока `controlling_vehicle` остаётся `true`. Так что для инварианта «`apply_intent` не открывает UI» этот конкретный вызов уже безопасен сегодня (детерминирован, без диалога) — но не потому, что кто-то спроектировал его для MP, а потому что первый (интерактивный) вопрос уже был задан один раз, в момент захвата управления (шаг 4 пути, `game.cpp:5169`, класс P выше), и `do_turn` лишь доигрывает те же правила молча на каждом последующем ходу.
+
+Что произойдёт при двух игроках в чужой машине (вопрос брифа): весь механизм жёстко завязан на единственный `avatar &u = get_avatar()` — и в `do_turn.cpp:560` («если управляет машиной ЛОКАЛЬНЫЙ игрок»), и внутри самой `handle_potential_theft` (`you.is_npc()`, `get_avatar()` на `vehicle.cpp:5109`, сравнение фракций через `get_faction()`). Если бы второй человек-игрок ехал пассажиром в той же чужой машине, для него в `do_turn` вообще нет отдельной ветки — код проверяет только того персонажа, который физически «за рулём» (`controlling_vehicle`), а не всех людей в салоне; проверка `witnesses` (`vehicle.cpp:5115-5121`) видит второго игрока лишь как стороннего наблюдателя (`Creature *`), и если он не NPC, цикл по `witnesses` (`vehicle.cpp:5152-5162`) для него не делает вообще ничего (ветка реагирования — `if( elem->is_npc() )`, `:5153` — человека-свидетеля она просто пропускает, не уведомляя и не спрашивая его клиент). Если бы оба игрока могли одновременно управлять (гипотетически, при второй точке `CONTROLS` на той же машине) — `do_turn()` как функция-синглтон `game`, вызываемая один раз за тик от лица одного `u`, не имеет механизма опросить обоих: чтобы это заработало для двух одновременно управляющих людей, `do_turn` должен перебирать всех подключённых управляющих персонажей, а не читать состояние одного глобального `u` — структурный пробел уровня движка, не решаемый переносом отдельного вопроса в намерение, и по объёму выходящий за рамки классификации P/M/A/D конкретно этого вызова.
+
+**Вердикт:** режется
+
+**Набросок намерения:**
+
+```cpp
+// Основной случай ACTION_CONTROL_VEHICLE: захват управления обычной (незапертой,
+// не удалённой) машиной. Все 3 диалога (шаги 4-5 пути) — P, поэтому решения
+// просто записываются, а apply_intent их читает вместо повторного вопроса.
+struct intent_control_vehicle {
+    tripoint_bub_ms target_pos;         // точка с органами управления; для однозначного
+                                         // случая совпадает с p/позицией игрока, для
+                                         // неоднозначного — результат choose_adjacent
+                                         // (game.cpp:5240), уже разрешённый в фазе выбора
+    bool theft_prompted;                // был ли вообще задан вопрос о краже (зависит от
+                                         // владельца/свидетелей на момент выбора —
+                                         // vehicle.cpp:5122, has_owner()/witnesses.empty())
+    bool theft_accepted;                // ответ на query_yn (vehicle.cpp:5143), значим
+                                         // только если theft_prompted
+    bool weapon_stow_prompted;          // нужно ли было спрашивать про оружие (has_two_arms_lifting()/
+                                         // is_two_handed() на момент выбора, game.cpp:5178/5188)
+    bool weapon_stow_accepted;          // ответ на один из двух query_yn (game.cpp:5179/5189);
+                                         // поля объединены, т.к. ветки взаимоисключающие
+                                         // (одна и та же реакция "убрать оружие или отменить")
+};
+
+// Пункты общего veh_menu, относящиеся именно к состоянию "за рулём" (см. п.9 пути) —
+// НЕ то же самое действие, что intent_control_vehicle: это то, что выбирает игрок,
+// когда control_vehicle() открывает interact_with() в ветках "уже за рулём"/"заперта".
+// Заведены отдельно, а не как варианты одного намерения, потому что veh_menu — общий
+// диспетчер множества несвязанных действий (см. baseline-исключения выше); эти три —
+// единственные его пункты, меняющие controlling_vehicle/engine_on/is_locked.
+struct intent_release_vehicle_controls {
+    bool smart_controller_disable_prompted; // FORCE_SMART_CONTROLLER_OFF_ON_ENGINE_STOP == "ask"
+                                             // и есть enabled smart controller без доступного
+                                             // электромотора (vehicle.cpp:6357-6378) на момент выбора
+    bool smart_controller_disable_accepted; // ответ на query_yn (vehicle.cpp:6374), значим
+                                             // только если prompted
+};
+
+struct intent_hotwire_vehicle {
+    tripoint_abs_ms target;             // pos_abs() + coord_translate(parts[0].mount), см.
+                                         // vehicle_use.cpp:2392 — уже вычислимо в фазе выбора
+};
+```
+
+Поля с суффиксом `_prompted` добавлены сверх примера из брифа: без них `apply_intent` не может отличить «диалога не было (не нужно ничего мутировать по этому полю)» от «диалог был и получил отрицательный ответ (нужно прервать выполнение намерения)» — оба случая давали бы одинаковый `false` для одного лишь `_accepted`, что стирает разницу между «не спрашивали» и «спросили и отказали», которая сегодня определяет, продолжится исполнение или нет. `target_pos` — `tripoint_bub_ms`, как и реальный тип `target_pos`/`vehicle_position` в `control_vehicle()` (`game.cpp:5140,5231`), а не индекс/id машины: сама машина находится заново через `here.veh_at(target_pos)` в `apply_intent`, как и сегодня в `control_vehicle()`.
+
+**Что мешает и как обойти:** ничего не мешает — все 5 найденных обращений класса P, обращений класса M или A на пути не найдено (обе достижимые активности, `start_engines_activity_actor` и `hotwire_car_activity_actor`, прочитаны целиком и не содержат UI). Отдельно от классификации, но по прямому запросу брифа, зафиксированы два наблюдения, не блокирующие вердикт «режется», но релевантные для дизайна `apply_intent`/движка:
+- Вызов `handle_potential_theft` из `do_turn` (`do_turn.cpp:562-564`) не открывает UI (см. «Особый фокус» выше) и потому не мешает разрезанию — но выполняет мутацию мира (тихую передачу владения/реакцию свидетелей) каждый ход от имени ровно одного `get_avatar()`. Это не диалог, который нужно перенести в намерение, а фоновая, не привязанная ни к какому конкретному намерению логика тика; при переносе на несколько одновременно управляющих персонажей её придётся переписать как цикл по всем управляющим персонажам, а не как проверку одного глобального `u`.
+- Общее меню `veh_menu`/`interact_with()` — не эксклюзивная часть `ACTION_CONTROL_VEHICLE`: он же вызывается из `ACTION_EXAMINE` (`game.cpp:5587`) и из предмета дистанционного управления (`iuse.cpp:7499,7501`). Полный аудит всех его пунктов (сеялка, стирка, поимка тварей, упряжь, навесной инструмент и т.д.) относится к отдельному, не входящему в 10 действий MVP-1 разбору «взаимодействие с машиной»; в этот раздел включены только 3 пункта, действительно меняющие состояние «за рулём».
+
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
