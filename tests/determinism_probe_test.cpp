@@ -1,4 +1,8 @@
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <string>
+#include <vector>
 
 #include "calendar.h"
 #include "cata_catch.h"
@@ -53,4 +57,31 @@ TEST_CASE( "sample_world_state_reports_rng_counter", "[.][determinism_probe]" )
     CHECK( again.creature_hash == s.creature_hash );
     CHECK( again.player_hash == s.player_hash );
     CHECK( again.combined == s.combined );
+}
+
+TEST_CASE( "write_sample_log_round_trips", "[.][determinism_probe]" )
+{
+    const std::string path = "determinism_probe_roundtrip.csv";
+    std::vector<determinism_sample> samples;
+    samples.push_back( determinism_sample{ 1, 2, 3, 4, 5, 6 } );
+    samples.push_back( determinism_sample{ 7, 8, 9, 10, 11, 12 } );
+
+    write_sample_log( path, samples );
+
+    std::ifstream in( path );
+    REQUIRE( in.good() );
+    std::string header;
+    std::getline( in, header );
+    CHECK( header == "turn,rng_calls,rng_state,creature_hash,player_hash,combined" );
+
+    std::string first;
+    std::getline( in, first );
+    CHECK( first == "1,2,3,4,5,6" );
+
+    std::string second;
+    std::getline( in, second );
+    CHECK( second == "7,8,9,10,11,12" );
+
+    in.close();
+    std::remove( path.c_str() );
 }
