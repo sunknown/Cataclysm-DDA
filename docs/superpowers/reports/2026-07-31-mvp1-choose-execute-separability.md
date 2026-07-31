@@ -124,7 +124,7 @@ struct intent_abort_aim {
 |---|---|---|---|---|
 | `popup`/`query_yn`/`string_input_popup`/`uilist`/`ui_manager::redraw`/`ui_manager::redraw_invalidated` — весь браузер рецептов | `crafting_gui.cpp:322,324,368-373,2270-2285,2601-2618,2771,2877,2987,3085,3094,3132-3181` (внутри `select_crafter_and_crafting_recipe`, `crafting_gui.cpp:2861`; `2877` — `ui_manager::redraw_invalidated()` в самом теле цикла `while(!impl.is_done())`) | грep | P | Модальный цикл выбора рецепта (поиск/фильтр/сравнение/пометка прочитанным, перерисовка цикла на `:2877`) выполняется целиком **до** вызова `make_craft`, никакой мутации мира ещё не было. |
 | `popup` («Вы больше не можете это скрафтить!») | `crafting.cpp:469` (`Character::making_would_work`, определение `crafting.cpp:457`) | грep | A (чисто) | `making_would_work` на пути `ACTION_CRAFT` вызывается только из `craft_activity_actor::do_turn` при продолжении длинного/практического крафта (`activity_actor.cpp:6527`) — внутри активности. (Второй вызывающий, `Character::recraft()`, относится к другому экшену `ACTION_RECRAFT` и в путь не входит.) |
-| `query_yn` («…нет тары для жидкости, всё равно продолжить?») | `crafting.cpp:544` (`check_eligible_containers_for_crafting`) | грep | P и A (два пути) | Вызывается двумя разными путями: (а) из обработчика `CONFIRM` в браузере рецептов (`crafting_gui.cpp:2620`) — P, до мутации; (б) из `Character::making_would_work` (`crafting.cpp:457`, см. строку выше), вызываемой из `craft_activity_actor::do_turn` при продолжении длинного/практического крафта (`activity_actor.cpp:6527`) — A, внутри активности. Учитывается класс A, так как этот путь достижим из активности. |
+| `query_yn` («…нет тары для жидкости, всё равно продолжить?») | `crafting.cpp:544` (`check_eligible_containers_for_crafting`) | грep | P и A (два пути) | Вызывается двумя разными путями: (а) из обработчика `CONFIRM` в браузере рецептов (`crafting_gui.cpp:2622`) — P, до мутации; (б) из `Character::making_would_work` (`crafting.cpp:457`, см. строку выше), вызываемой из `craft_activity_actor::do_turn` при продолжении длинного/практического крафта (`activity_actor.cpp:6527`) — A, внутри активности. Учитывается класс A, так как этот путь достижим из активности. |
 | `uilist` («Что делать с %s?» — надеть/бросить/убрать/уронить) | `crafting.cpp:961` (`place_craft_or_disassembly`, вызывается из `start_craft`, `crafting.cpp:1936`) | грep | **M** (основной путь) / A (повторный путь) | Основной путь: вызывается из `start_craft()` **после** того, как `create_in_progress_craft()` (`craft_command.cpp:598`, вызов `crafting.cpp:1915`) уже реально списал компоненты крафта (`craft_command.cpp:658-669`) — мутация мира началась, а ответ определяет, что происходит с уже надетым/удерживаемым предметом и куда денется предмет крафта. Это прямое нарушение инварианта, вне какой-либо активности (до `assign_activity`, `crafting.cpp:1944`). Тот же вызов повторно достижим из `do_turn` на шаге продолжения батча (`activity_actor.cpp:6528` → тот же `start_craft`) — там он уже класс A. |
 | `cancel_activity_or_ignore_query` (отвлечение «шаг завершён», `distraction_type::craft_step_complete`) | `crafting.cpp:1027` (`fire_step_complete_distraction`) | грep | A | Достижимо из `do_turn` через `craft_actualize_scheduled` (`crafting.cpp:1883`, диспетчер-шим по `item_wakeup_kind`) → `craft_actualize_ready` (`crafting.cpp:1664/1670/1690`) → `fire_step_complete_distraction`. Срабатывает только когда `!was_on_craft` — то есть когда do_turn обрабатывает предмет крафта **другого** персонажа (напр. NPC-помощника), а функция при этом опрашивает `get_avatar()` — существующее для одиночной игры допущение «есть один локальный игрок», прямо релевантное MP-разбору. |
 | `uilist` («Шаг: …\nЧто делать?» — ждать/заняться другим/таймер) | `crafting.cpp:1105` (`show_craft_planning_modal`) | грep | P (первый проход) / A (продолжение) | Вызывается один раз из `craft_command::execute()` при первом старте рецепта с «невнимательными» шагами (`craft_command.cpp:252`, `from_step=0`, до `assign_activity`) — P. Но `do_turn` при продолжении батча вызывает `last_craft->execute(location)` заново (`activity_actor.cpp:6528`) **без** ограничения по `from_step`, то есть модал показывается заново на **каждый** батч длинного/практического крафта — внутри активности. |
@@ -175,10 +175,19 @@ struct intent_start_craft {
     std::vector<std::vector<step_tool_alloc>> step_tool_allocs;
     // select_requirements (crafting.cpp:2899) возвращает `const requirement_data *`
     // в `alternatives[menu.ret]` — сырой указатель НЕЛЬЗЯ класть в намерение,
-    // он не переживёт сериализацию/сеть. Нужен стабильный индекс в списке
-    // альтернатив, который отдаёт deduped_requirements() для этого рецепта,
-    // а не адрес объекта:
-    size_t chosen_requirement_alternative_index;
+    // он не переживёт сериализацию/сеть. Но и `menu.ret` сам по себе не годится
+    // как индекс "в общем списке альтернатив рецепта": `alternatives` в этой
+    // сигнатуре — не deduped_requirements().alternatives() целиком, а результат
+    // feasible_alternatives() (requirements.cpp:1794), то есть уже ОТФИЛЬТРОВАННОЕ
+    // по текущему инвентарю подмножество, переданное в select_requirements
+    // (requirements.cpp:1795). Индекс в этом подмножестве нестабилен — он
+    // зависит от того, что было в инвентаре в момент вызова, а не от рецепта.
+    // Нужен индекс в ПОЛНОМ, стабильном deduped_requirements().alternatives()
+    // (requirements.h:476) — то есть на месте вызова нужно сопоставить указатель,
+    // выбранный в feasible_alternatives(), с его позицией в исходном alternatives(),
+    // и сохранить именно её:
+    size_t chosen_requirement_alternative_index; // индекс в alternatives(), НЕ в
+                                                  // отфильтрованном feasible_alternatives()
 
     // Ответы на диалоги craft_command::execute()/create_in_progress_craft(),
     // предрешённые один раз при отправке намерения:
