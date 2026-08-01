@@ -664,6 +664,132 @@ struct intent_construct_activity_hooks {
 5. **`construction.cpp:1837`/`:1882`/`iuse.cpp:4991` (имя машины / раскрыть проводку / надпись на могиле).** Все три — независимые от исхода мутации ввод/предпочтение игрока, знание о которых доступно уже на момент выбора точки строительства (в первых двух случаях — сразу; для надписи — только если у персонажа `qual_CUT`, тоже известно заранее). Обход — простое перемещение в фазу выбора, без изменения семантики.
 6. **`game.cpp:5706` (территория фракции, класс P с побочным эффектом).** Не требует обхода для вердикта (уже P), но обход всё равно назван в наброске намерения (`faction_territory_prompted`/`_accepted`) для полноты — тот же самый паттерн, что применён к аналогичным находкам в Task 4 (`theft_prompted`/`_accepted`).
 
+## 6. Чтение
+
+**Точка входа:** `src/handle_action.cpp:2773` (`case ACTION_READ`) → `read()` (локальная статическая функция, определена в `src/handle_action.cpp:1747`).
+
+**Путь исполнения:**
+
+1. `handle_action.cpp:1747` `static void read()` — вызывает `game_menus::inv::read(player_character)` (`handle_action.cpp:1751`) для выбора книги из инвентаря/окружения. Единое правило исключения для этого шага: если книга не выбрана (пользователь нажал ESC или инвентарь пуст), функция выводит "Never mind." (`handle_action.cpp:1778`) и возвращается — это предварительное действие, а не часть решения о чтении, в таблицу ниже не включено.
+
+2. `game_inventory.cpp:1633` `game_menus::inv::read(Character &you)` — обёртка над `inv_internal()` (`game_inventory.cpp:1638`), которая создаёт `inventory_pick_selector` и вызывает его `execute()`. Внутри `inv_internal()` при пустом инвентаре вызывается `popup( msg, PF_GET_KEY )` (`game_inventory.cpp:204`) — до мутации, класс P.
+
+3. `inventory_ui.cpp:3877` `inventory_pick_selector::execute()` — интерактивный цикл выбора предмета (показывает инвентарь, обрабатывает ввод мыши/клавиатуры, возвращает выбранный `item_location`). Содержит вызовы `ui_manager::redraw()` (`inventory_ui.cpp:3884`, `:3895`, `:3917`) внутри цикла `while(true)` — до мутации, класс P.
+
+4. Возврат к `handle_action.cpp:1753` — если книга выбрана, код определяет тип книги (spellbook с `learn_spell`, efile, обычная книга, martial arts manual) и вызывает соответствующий путь. Для spellbook вызывается `the_book.get_use("learn_spell")->call(...)` (`handle_action.cpp:1758`) — отдельное действие, не входит в 10 действий MVP-1 (разбирается отдельно). Для efile — `player_character.read(loc, parent_loc)` (`handle_action.cpp:1768`) с получением физического носителя через `parent_loc.obtain(player_character)` (`handle_action.cpp:1762`), затем `player_character.read(loc)` (`handle_action.cpp:1774`). Для обычной книги — `loc.obtain(player_character)` (`handle_action.cpp:1773`) и `player_character.read(loc)` (`handle_action.cpp:1774`). Все эти ветки сходятся на одном вызове `avatar::read()`.
+
+5. `avatar.cpp:486` `bool avatar::read(item_location &book, item_location ereader)` — основная логика чтения:
+   - Проверка `get_book_reader(*book, fail_messages)` (`avatar.cpp:494`) — определяет, кто может читать (аватар или NPC-чтец). Если `reader == nullptr`, выводятся причины отказа (`avatar.cpp:497-500`) и функция возвращается — это детерминированная проверка, без UI.
+   - Для непрочитанных книг (первый раз): краткая "просмотрка" через `assign_activity(read_activity_actor(time_taken, book, ereader, false))` (`avatar.cpp:522`) — **фаза выбора заканчивается здесь**, мутации мира ещё не было.
+   - Для guidebook (`itype_guidebook`): мгновенный эффект без активности (`avatar.cpp:526-537`) — `get_hint()` выводит подсказку, `mod_moves(-100)` тратит ходы, `assign_activity` не вызывается. Это одноходовое действие, не многоходовая активность.
+   - Для обычных книг и martial arts manuals: **показ uilist** (`avatar.cpp:586`) с выбором:
+     - "Read once" (один раз)
+     - "Read until you gain a level" (до повышения уровня)
+     - Список NPC-слушателей (`learners`), которые могут учиться
+     - Список "reading for fun" (`fun_learners`)
+     - Список "not participating" (`nonlearners`) с причинами
+     - Для martial arts manuals: отдельный `uilist` (`avatar.cpp:673`) с выбором "Train once" / "Train until tired or success"
+   - После выбора: `assign_activity(read_activity_actor(time_taken, book, ereader, continuous, learner_id))` (`avatar.cpp:748`) — **фаза выбора заканчивается здесь**, мутации мира ещё не было.
+
+6. `activity_actor.cpp:2117` `read_activity_actor::start(player_activity &act, Character &who)` — инициализация активности: проверка `cancel_if_book_invalid()` (`:2119`), определение типа книги (`bktype`, `:2125-2126`), добавление книги в `act.targets` (`:2130`), списание заряда ereader (`:2137`, если используется). **Ни одного вызова UI-функций.**
+
+7. `activity_actor.cpp:2144` `read_activity_actor::do_turn(player_activity &act, Character &who)` — вызывается движком активности каждый ход:
+   - Проверка читаемости книги (`cancel_if_book_invalid`, `:2146`)
+   - Определение типа книги (`:2150-2153`)
+   - Проверка освещённости (`:2155-2161`) — если темно и нет флага `READ_IN_DARKNESS`/`CAN_USE_IN_DARK`, активность отменяется (`act.set_to_null()`)
+   - Расход энергии для martial arts (`:2163-2165`) — `burn_energy_all(-1)` с вероятностью 1/3
+   - Периодический debug-лог (`:2168-2171`)
+   - Проверка наличия ereader (`:2173-2179`) — если e-book больше не найден, активность отменяется
+   - Проверка зарядов ereader (`:2181-2189`) — если зарядов недостаточно, активность отменяется
+   - Периодический расход зарядов (`:2191-2200`) — `ereader->consume_tool_uses(1, ...)` раз в 5 минут
+   - **Ни одного вызова UI-функций** — вся логика детерминированная.
+
+8. `activity_actor.cpp:2234` `read_activity_actor::player_read(avatar &you)` — обработка чтения для аватара (вызывается из `finish()` на `:2516`):
+   - Идентификация книги (`:2236-2239`) — если не прочитана, вызывает `you.identify(*book)` и возвращается
+   - Проверка `get_book_reader()` (`:2242-2249`) — если reader == nullptr, выводятся причины отказа
+   - Сбор списка слушателей (`get_crafting_helpers()`, `:2258`) — детерминированно, на основе `get_book_mastery()`, `fun_to_read()`, `has_morale_to_read()`
+   - Для каждого слушателя: вызов `read_book(*learner, islotbook, skill_level, penalty)` (`:2317`), который обновляет `SkillLevel` через `skill_level.readBook(min_ex, max_ex, level)` (`:2231`)
+   - Проверка `continuous` и `learner_id` для определения, продолжать ли чтение (`:2333/2356`) — если уровень слушателя достиг целевого, `continuous = false`
+   - Вывод сообщений о прогрессе (`:2326-2353`)
+   - **Ни одного вызова UI-функций.**
+
+9. `activity_actor.cpp:2383` `read_activity_actor::player_readma(avatar &you)` — martial arts manual (вызывается из `finish()` на `:2516`):
+   - Идентификация книги (`:2387-2389`)
+   - Проверка `one_in(difficulty)` для обучения (`:2406`) — если повезло, вызывает `mart_iter->second.call(&you, *book, you.pos_bub())` (`:2408`) и возвращается
+   - Иначе: случайные сообщения о прогрессе (`:2411-2431`)
+   - **Ни одного вызова UI-функций.**
+
+10. `activity_actor.cpp:2435` `read_activity_actor::npc_read(npc &learner)` — чтение NPC (вызывается из `finish()` на `:2530`):
+    - Аналогично `player_read`, но без идентификации и с проверкой `display_messages` (`:2444`) — сообщения выводятся только если NPC принадлежит фракции игрока и игрок видит NPC
+    - Вызов `read_book(learner, islotbook, skill_level, 1.0)` (`:2466`)
+    - Проверка `continuous` и обновление `continuous = false` при достижении целевого уровня (`:2480`)
+    - **Ни одного вызова UI-функций.**
+
+11. `activity_actor.cpp:2505` `read_activity_actor::finish(player_activity &act, Character &who)` — завершение активности:
+    - Проверка `cancel_if_book_invalid()` (`:2507`)
+    - Для аватара: вызов `player_readma()` или `player_read()` (`:2516`), если требуется завершить активность (`should_null == true`)
+    - Для NPC: вызов `npc_read()` (`:2530`), если требуется завершить активность
+    - Если `continuous == true`: пересчёт времени чтения (`time_taken = who.as_avatar()->time_to_read(*book, *reader)`, `:2559`), проверка `handle_study_zone_resume()` (`:2566`), перезапуск активности с новыми `moves_total`/`moves_left` (`:2571-2573`)
+    - Иначе: сообщение "You finish reading." (`:2576`), проверка `handle_study_zone_resume()` (`:2579`), `act.set_to_null()` (`:2584`)
+    - **Ни одного вызова UI-функций.**
+
+12. `read_activity_actor::canceled()` — **не определён** (отсутствует в `activity_actor_definitions.h:970-1024`). Используется базовый `activity_actor::canceled()`, который просто сбрасывает активность в null через `act.set_to_null()`.
+
+Как решалось, что вызов «на пути»: путь исполнения ACTION_READ прослежен по цепочке вызовов из п. «Путь исполнения» выше, включая файлы, не входившие в исходную команду сбора брифа (`game_inventory.cpp`, `inventory_ui.cpp`, `avatar.cpp`) — они добавлены трассировкой, а не грепом, и это явно указано в соответствующих строках таблицы. Включены все вызовы, достижимые из `handle_action.cpp:1747` `read()` через `game_menus::inv::read()` → `inv_internal()` → `inventory_pick_selector::execute()` → `avatar::read()` → `read_activity_actor::{start,do_turn,finish}`, включая все ветки (spellbook, efile, обычная книга, martial arts manual, непрочитанная книга, guidebook). Исключены: `ACTION_LEARN_SPELL`/`learn_spell_actor::use` — отдельный экшен для spellbooks, не входит в 10 действий MVP-1; `multi_read_activity_actor` (изучение нескольких книг подряд) — отдельная точка входа, недостижимая из `ACTION_READ`.
+
+**Шаг 3 брифа (вопрос о слушателях):** игра спрашивает "кого учить" **в фазе выбора**, а не внутри активности. Конкретно в `avatar::read()`: (а) `avatar.cpp:544-579` — построение списков `learners`, `fun_learners`, `nonlearners` (детерминированно, на основе `get_book_mastery()`, `fun_to_read()`, `has_morale_to_read()`); (б) `avatar.cpp:585-664` — показ `uilist menu` с вариантами выбора; (в) `avatar.cpp:656` — `menu.query(true)` — запрос к игроку; (г) `avatar.cpp:748` — `assign_activity(read_activity_actor(..., continuous, learner_id))` — передача `learner_id` в активность. Классификация: Class P (до мутации мира, до создания активности). Следствие для мультиплеера: в MP-сессии вопрос "кого учить" должен задаваться каждому игроку отдельно в фазе выбора. Ответ (выбранный `learner_id`) передаётся в намерении как поле `learner_id`. Внутри активности (`do_turn`/`finish`) код опирается только на переданный `learner_id`, не спрашивая ничего у игрока.
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `game_menus::inv::read(player_character)` | `src/handle_action.cpp:1751` | грep | P | Выбор книги из инвентаря/окружения — часть фазы выбора, до `assign_activity`. Мутации мира не было. |
+| `popup("...nothing to read...")` | `src/game_inventory.cpp:204` (внутри `inv_internal`) | косв. | P | Показывается, если у персонажа нет книг. До мутации, до `assign_activity`. |
+| `ui_manager::redraw()` (цикл выбора предмета) | `src/inventory_ui.cpp:3884,3895,3917` (внутри `inventory_pick_selector::execute()`) | косв. | P | Перерисовка инвентаря в цикле выбора. До мутации, до `assign_activity`. |
+| `uilist menu` (выбор режима чтения и слушателя) | `src/avatar.cpp:586` | грep | P | Главное меню чтения: "Read once", "Read until level up", список NPC-слушателей. До `assign_activity`. |
+| `menu.query(true)` | `src/avatar.cpp:656` | грep | P | Запрос к игроку о выборе режима/слушателя. Классический пример P: вопрос задаётся до активности. |
+| `uilist menu` (martial arts manual) | `src/avatar.cpp:673` | грep | P | Отдельное меню для martial arts manuals: "Train once" / "Train until tired or success". До `assign_activity`. |
+
+Итог по проходам: базовый grep по `character.cpp`/`activity_actor.cpp` (файлы из брифа) не дал ни одного совпадения на пути чтения — все найденные вызовы относятся к другим действиям (`mend_item`, `select_item_components`, `crush_item`, `pick_style` в `character.cpp`; `mode_fire`, `choose_adjacent_highlight`, `popup` для других активностей в `activity_actor.cpp`). Трассировка на один уровень косвенности (файлы `handle_action.cpp`, `game_inventory.cpp`, `inventory_ui.cpp`, `avatar.cpp`, не входящие в список брифа) добавила 6 вызовов, все — Class P. **0 M, 0 A, 6 P.**
+
+**Вердикт:** режется
+
+**Набросок намерения:**
+
+```cpp
+struct intent_read {
+    item_location book;                 // выбранная книга (из game_menus::inv::read)
+    std::optional<item_location> ereader; // ereader для e-books (nullopt для обычных книг)
+
+    bool continuous;                    // "Read until level up" / "Train until success"
+    int learner_id;                     // ID выбранного слушателя (-1 = только аватар)
+
+    // Для martial arts manuals:
+    bool train_once;                    // false = continuous (если is_martialarts)
+
+    // Детерминированные вычисления, известные в момент выбора:
+    time_duration time_taken;           // время чтения, вычисленное time_to_read() (avatar.cpp:511)
+    book_type bktype;                   // normal / martial_art (определяется по book->type->use_methods.count("MA_MANUAL"))
+
+    // Для continuous-режима:
+    skill_id target_skill;              // навык, который будет качаться (islotbook->skill)
+    int target_level;                   // уровень, до которого будем читать (islotbook->level)
+};
+```
+
+Поля `intent_read` покрывают: выбор книги (`book`, `ereader`) — из `game_menus::inv::read()`; режим чтения (`continuous`, `learner_id`, `train_once`) — из `uilist menu` в `avatar::read()`; время и тип (`time_taken`, `bktype`) — детерминированные вычисления на момент выбора; цель обучения (`target_skill`, `target_level`) — для continuous-режима, чтобы `apply_intent` мог проверить, когда остановиться.
+
+Не включено (и не требуется): список слушателей (`learners`, `fun_learners`, `nonlearners`) — вычисляется заново в `do_turn`/`player_read()` на актуальном состоянии карты (NPC могли двигаться). Это не часть намерения, а состояние мира. Результат `get_book_reader()` — определяется из `book` и текущего состояния персонажа, пересчитывается в `apply_intent`.
+
+**Что мешает и как обойти:** Проблем нет. Чтение — один из самых чистых случаев для разделения choose/execute:
+
+1. **Фаза выбора (P):** Весь UI-взаимодействие происходит до `assign_activity()`: выбор книги (`game_menus::inv::read()`), выбор режима и слушателя (`uilist menu` в `avatar::read()`). Все ответы фиксируются и передаются в намерении.
+
+2. **Фаза исполнения (без UI):** `read_activity_actor::{start,do_turn,finish}` не содержат ни одного вызова из списка UI-функций: `do_turn` только расходует moves и ereader charges; `finish` применяет результаты (`player_read()`/`npc_read()`) без вопросов; `canceled()` отсутствует (используется базовый, который не спрашивает ничего).
+
+3. **Мультиплеер:** Вопрос "кого учить" задаётся каждому игроку отдельно в фазе выбора. Ответ (`learner_id`) передаётся в намерении. Внутри активности код опирается только на переданный `learner_id`, не требуя дополнительных решений от других игроков.
+
+Риски (не влияющие на вердикт): `continuous`-режим с `learner_id` — если слушатель (NPC) покидает группу или меняет состояние между отправкой намерения и выполнением, активность может завершиться досрочно (`player_read()` проверяет `learner_id` на `:2333/2356`). Это не UI-проблема, а логика отмены активности. Ereader charges — если ereader разрядился или был потерян между отправкой и выполнением, `do_turn` отменит активность (`activity_actor.cpp:2173-2189`). Это детерминированная проверка, не требующая UI.
+
+
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
