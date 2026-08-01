@@ -67,6 +67,30 @@ TEST_CASE( "anchor_is_integer_midpoint", "[hotseat]" )
     } );
 }
 
+TEST_CASE( "tether_thresholds_match_the_spec", "[hotseat]" )
+{
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+
+    // Park every slot on the same tile so the anchor is exactly that tile no
+    // matter how many slots earlier tests leaked.
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        g->player_at( i ).setpos( get_map(), tripoint_bub_ms( 60, 60, 0 ) );
+    }
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    b.setpos( get_map(), tripoint_bub_ms( 60, 60, 0 ) );
+
+    // Fresh slots warn about invincibility in is_dead_state().
+    capture_debugmsg_during( [&]() {
+        const tripoint_abs_ms anchor = mp_bubble_anchor();
+        CHECK( mp_tether_check( anchor ) == tether_state::ok );
+        CHECK( mp_tether_check( anchor + tripoint_rel_ms( 31, 0, 0 ) ) == tether_state::ok );
+        CHECK( mp_tether_check( anchor + tripoint_rel_ms( 33, 0, 0 ) ) == tether_state::warning );
+        CHECK( mp_tether_check( anchor + tripoint_rel_ms( 43, 0, 0 ) ) == tether_state::blocked );
+    } );
+}
+
 TEST_CASE( "hotseat_turn_advances_calendar_once", "[hotseat]" )
 {
     clear_avatar();

@@ -1,9 +1,12 @@
 #include "mp/mp_hotseat_loop.h"
 
 #include "avatar.h"
+#include "color.h"
 #include "game.h"
 #include "map.h"
+#include "messages.h"
 #include "mp/mp_tether.h"
+#include "translations.h"
 
 bool mp_hotseat_do_turn()
 {
@@ -24,11 +27,28 @@ bool mp_hotseat_do_turn()
         while( who.get_moves() > 0 && who.activity ) {
             who.activity.do_turn( who );
         }
+        bool warned = false;
         while( who.get_moves() > 0 ) {
+            const tripoint_abs_ms pos_before = who.pos_abs();
             if( !g->handle_action() ) {
                 break;
             }
             who.action_taken();
+            // Tether (section 5.7 of the design spec): an outward step past the
+            // hard limit is undone and ends the slot's turn; the warning band is
+            // reported once per turn. Intercepted here rather than in
+            // avatar_action::move so the single-player path is untouched.
+            const tether_state tether = mp_tether_check( who.pos_abs() );
+            if( tether == tether_state::blocked ) {
+                who.setpos( get_map(), get_map().get_bub( pos_before ) );
+                add_msg( m_bad, _( "You cannot go that far from your partner." ) );
+                who.set_moves( 0 );
+                break;
+            }
+            if( tether == tether_state::warning && !warned ) {
+                add_msg( m_warning, _( "You are getting far from your partner." ) );
+                warned = true;
+            }
         }
     }
     g->set_active_slot( 0 );

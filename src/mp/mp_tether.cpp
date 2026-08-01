@@ -26,3 +26,21 @@ tripoint_abs_ms mp_bubble_anchor()
                             static_cast<int>( sy / count ),
                             g->player_at( 0 ).pos_abs().z() );
 }
+
+// Section 5.7 of the design spec: the bubble is 132x132 tiles, so +/-66 from
+// the anchor. Twenty four tiles of margin are reserved because monsters and
+// fields at the bubble edge are not simulated correctly, leaving 42.
+static constexpr int tether_soft_limit = 32;
+static constexpr int tether_hard_limit = 42;
+
+tether_state mp_tether_check( const tripoint_abs_ms &proposed )
+{
+    const int d = rl_dist( mp_bubble_anchor(), proposed );
+    if( d > tether_hard_limit ) {
+        return tether_state::blocked;
+    }
+    if( d > tether_soft_limit ) {
+        return tether_state::warning;
+    }
+    return tether_state::ok;
+}
