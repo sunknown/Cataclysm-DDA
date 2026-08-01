@@ -892,6 +892,8 @@ struct intent_trade {
 4. `activity_actor.cpp:1617` `bionic_operation_activity_actor::do_turn` — вызывается движком активности каждый ход. Внутри: расчёт времени, проверка автодока, вызов `perform_install`/`perform_uninstall`. **Ни одного обращения к UI-функциям из списка.**
 5. `activity_actor.cpp:1766` `bionic_operation_activity_actor::finish` — сообщения об успехе/неудаче, удаление эффекта `effect_under_operation`. **Ни одного обращения к UI-функциям из списка.**
 
+**Вердикт (бионика):** режется
+
 *Дополнительные точки входа в бионику:*
 - `iexamine.cpp:5932` `game_menus::inv::install_bionic(you, you, patient)` → `autodoc_internal` (`game_inventory.cpp:2833`) → `inventory_pick_selector::execute()` (`inventory_ui.cpp:3877`) с `ui_manager::redraw` в цикле — P, до мутации. Затем `can_install_bionics`/`install_bionics` — как выше.
 - `npctalk_funcs.cpp:583` `bionic_install_common` → `patient.can_install_bionics(it, p, false, 20)` → `patient.install_bionics(it, p, false, 20)` — те же функции, те же классы.
@@ -930,9 +932,9 @@ struct intent_trade {
 | `exam_vehicle` / `exam_appliance` (возврат в меню после активности) | `src/activity_actor.cpp:11333` / `:11331` | косв. | A | Вызывается из `finish` для не-NPC, если на позиции осталась деталь. Возвращает игрока в интерактивное меню транспорта — тот же цикл с P-обращениями. |
 | `uilist` («Consume what?», выбор компонента при установке детали) | вызов `src/activity_actor.cpp:11387` (`consume_items`) → `crafting.cpp:3327` (`Character::consume_items`) → `crafting.cpp:2923` (`select_item_component`) → `uilist cmenu` (`crafting.cpp:3052`) | косв. | A | Найдено трассировкой: `complete_vehicle` при `VEHICLE_INSTALL` вызывает `consume_items` для потребления компонентов. Если у компонента несколько подходящих предметов в инвентаре/на карте, вызывается `uilist` для выбора. Вызывается из `finish` активности. |
 
-Итог по проходам: базовый grep по `bionics.cpp`/`veh_interact.cpp` дал 11 различающихся мест вызова (5 в `bionics.cpp`, 6 в `veh_interact.cpp`), все — класса P. Проход трассировки на один уровень косвенности (файлы `inventory_ui.cpp`, `game_inventory.cpp`, `activity_actor.cpp`, `crafting.cpp`, `veh_shape.cpp`, `veh_utils.cpp`, не входящие в список брифа) добавил 7 мест: 1 P (в `inventory_ui.cpp`/`game_inventory.cpp` — выбор бионика через autodoc), 6 A (в `activity_actor.cpp`/`crafting.cpp` — `change_part_shape`/`orient_part`/`exam_vehicle`/`uilist(consume_items)` в `complete_vehicle`/`finish`). Итого: **0 M**, **6 A**-достижимых обращений.
+Итог по проходам: базовый grep по `bionics.cpp`/`veh_interact.cpp` дал 9 различающихся мест вызова (4 в `bionics.cpp`, 5 в `veh_interact.cpp`), все — класса P. Проход трассировки на один уровень косвенности (файлы `inventory_ui.cpp`, `game_inventory.cpp`, `activity_actor.cpp`, `crafting.cpp`, `veh_shape.cpp`, `veh_utils.cpp`, не входящие в список брифа) добавил 7 мест: 1 P (в `inventory_ui.cpp`/`game_inventory.cpp` — выбор бионика через autodoc), 6 A (в `activity_actor.cpp`/`crafting.cpp` — `change_part_shape`/`orient_part`/`exam_vehicle`/`uilist(consume_items)` в `complete_vehicle`/`finish`). Итого: **0 M**, **6 A**-достижимых обращений.
 
-**Вердикт:** режется с оговоркой
+**Вердикт (транспорт):** режется с оговоркой
 
 **Набросок намерения:**
 
