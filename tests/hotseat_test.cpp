@@ -30,8 +30,12 @@ class game_test_helper
             g->player_slots.clear();
             g->player_slots.push_back( &base );
             g->active_slot_index = 0;
-            // Clear the base avatar's ID to avoid conflicts during deserialization.
-            base.setID( character_id(), true );
+            // Note: do NOT clear the base avatar's ID here. Setting it to a
+            // fresh character_id() leaves the avatar with ID -1, and any later
+            // test that finalizes a passive craft (which stores the crafter's
+            // ID) then sees "crafter -1 gone" and crashes. The ID reset was
+            // only ever needed to deserialize a save into the live game, which
+            // the round-trip test no longer does.
         }
 };
 
@@ -69,12 +73,14 @@ TEST_CASE( "second_slot_has_own_map_memory", "[hotseat]" )
     game_test_helper::reset_player_slots();
 }
 
+#include "json_loader.h"
 #include <sstream>
 #include <string>
 
 TEST_CASE( "extra_players_survive_a_save_round_trip", "[hotseat]" )
 {
     game_test_helper::reset_player_slots();
+    const std::string slot0_name = g->player_at( 0 ).name;
     avatar &second = g->add_player_slot();
     second.name = "SlotOneProbe";
     const size_t expected = g->player_slot_count();
@@ -90,12 +96,29 @@ TEST_CASE( "extra_players_survive_a_save_round_trip", "[hotseat]" )
     CHECK( doc.find( "SlotOneProbe" ) != std::string::npos );
     CHECK( expected == 2 );
 
-    // Step 5: Deserialize the save back and verify slot count and names match.
-    // Reset player slots before deserializing to avoid duplicating slots.
-    game_test_helper::reset_player_slots();
-    g->unserialize( doc );
-    CHECK( g->player_slot_count() == expected );
-    CHECK( g->player_at( 1 ).name == "SlotOneProbe" );
+    // Step 5: Round-trip the document into fresh avatar objects. The document
+    // must not be fed to game::unserialize here: it replaces the shared
+    // test-game state (maps, calendar, world) and leaks into every later test,
+    // which surfaced as a SIGSEGV in an unrelated crafting test. Reading the
+    // two keys into fresh avatars exercises the same serialization format
+    // without touching the live game.
+    JsonObject root = json_loader::from_string( doc );
+    avatar reloaded0;
+    avatar reloaded1;
+    root.read( "player", reloaded0 );
+    size_t extra = 0;
+    if( root.has_member( "extra_players" ) ) {
+        for( JsonValue jv : root.get_array( "extra_players" ) ) {
+            jv.read( reloaded1 );
+            ++extra;
+        }
+    }
+    // The document is the full game save; only the player keys are under test
+    // here, so allow the remaining members instead of flagging them as unread.
+    root.allow_omitted_members();
+    CHECK( reloaded0.name == slot0_name );
+    CHECK( extra == 1 );
+    CHECK( reloaded1.name == "SlotOneProbe" );
 
     // Clean up for subsequent tests.
     game_test_helper::reset_player_slots();
