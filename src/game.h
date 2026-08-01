@@ -195,6 +195,7 @@ class game
         friend memorial_logger &get_memorial();
         friend class game_test_helper;
         friend bool turn_handler::cleanup_at_end();
+        friend bool mp_hotseat_do_turn();
         friend global_variables &get_globals();
     public:
         game();
