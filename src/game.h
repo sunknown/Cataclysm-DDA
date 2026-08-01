@@ -715,6 +715,14 @@ class game
         // Helper to make calling with a player pointer less verbose.
         point_rel_sm update_map( Character &p, bool z_level_changed = false );
         point_rel_sm update_map( int &x, int &y, bool z_level_changed = false );
+        // Shift the reality bubble so that @p target sits near its centre,
+        // without moving any player slot. Unlike update_map(), which relocates
+        // the active avatar to the target, this is used by the hotseat loop to
+        // keep the bubble anchored on the midpoint between players.
+        void shift_map_center( const tripoint_abs_ms &target );
+        // Shift the reality bubble to z-level @p z_after without moving any
+        // player slot. Returns false if the z-level is out of range.
+        bool shift_map_z( int z_after );
         void update_overmap_seen(); // Update which overmap tiles we can see
 
         void peek();

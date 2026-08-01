@@ -11,6 +11,7 @@
 #include "map.h"
 #include "map_helpers_tests.h"
 #include "mp/mp_hotseat_loop.h"
+#include "mp/mp_tether.h"
 #include "player_activity.h"
 #include "player_helpers.h"
 #include "type_id.h"
@@ -42,6 +43,27 @@ TEST_CASE( "nearest_player_picks_the_closer_slot", "[hotseat]" )
     capture_debugmsg_during( [&]() {
         CHECK( g->nearest_player( here.get_abs( tripoint_bub_ms( 45, 50, 0 ) ) ) == &a );
         CHECK( g->nearest_player( here.get_abs( tripoint_bub_ms( 75, 50, 0 ) ) ) == &b );
+    } );
+}
+
+TEST_CASE( "anchor_is_integer_midpoint", "[hotseat]" )
+{
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+
+    avatar &a = g->player_at( 0 );
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    a.setpos( get_map(), tripoint_bub_ms( 40, 40, 0 ) );
+    b.setpos( get_map(), tripoint_bub_ms( 61, 40, 0 ) );
+
+    // A fresh slot's is_dead_state() warns about invincibility; with both
+    // slots alive the anchor is their integer midpoint.
+    capture_debugmsg_during( [&]() {
+        const tripoint_abs_ms anchor = mp_bubble_anchor();
+        // Odd spans round down, deterministically and without floating point.
+        CHECK( anchor.x() == ( a.pos_abs().x() + b.pos_abs().x() ) / 2 );
+        CHECK( anchor.z() == a.pos_abs().z() );
     } );
 }
 

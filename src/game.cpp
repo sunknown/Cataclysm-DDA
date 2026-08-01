@@ -10208,6 +10208,19 @@ std::optional<tripoint_bub_ms> game::find_or_make_stairs( map &mp, const int z_a
 
 bool game::vertical_shift( const int z_after )
 {
+    const int z_before = u.posz();
+    if( !shift_map_z( z_after ) ) {
+        return false;
+    }
+    u.move_to( tripoint_abs_ms( u.pos_abs().xy(), z_after ) );
+
+    vertical_notes( z_before, z_after );
+
+    return z_before != z_after;
+}
+
+bool game::shift_map_z( const int z_after )
+{
     map &here = get_map();
 
     if( z_after < -OVERMAP_DEPTH || z_after > OVERMAP_HEIGHT ) {
@@ -10218,15 +10231,89 @@ bool game::vertical_shift( const int z_after )
 
     scent.reset();
 
-    const int z_before = u.posz();
-    u.move_to( tripoint_abs_ms( u.pos_abs().xy(), z_after ) );
-
     // Shift the map itself
     here.vertical_shift( z_after );
 
-    vertical_notes( z_before, z_after );
+    return true;
+}
 
-    return z_before != z_after;
+void game::shift_map_center( const tripoint_abs_ms &target )
+{
+    map &here = get_map();
+    const tripoint_bub_ms targ = here.get_bub( target );
+    int x = targ.x();
+    int y = targ.y();
+
+    point_rel_sm shift;
+    while( x < HALF_MAPSIZE_X ) {
+        x += SEEX;
+        shift.x()--;
+    }
+    while( x >= HALF_MAPSIZE_X + SEEX ) {
+        x -= SEEX;
+        shift.x()++;
+    }
+    while( y < HALF_MAPSIZE_Y ) {
+        y += SEEY;
+        shift.y()--;
+    }
+    while( y >= HALF_MAPSIZE_Y + SEEY ) {
+        y -= SEEY;
+        shift.y()++;
+    }
+
+    if( shift == point_rel_sm::zero ) {
+        // Already centred; nothing to shift and no player to relocate.
+        return;
+    }
+
+    // this handles loading/unloading submaps that have scrolled on or off the viewport
+    // NOLINTNEXTLINE(cata-use-named-point-constants)
+    inclusive_rectangle<point_rel_sm> size_1( {-1, -1}, { 1, 1 } );
+    point_rel_sm remaining_shift = shift;
+    while( remaining_shift != point_rel_sm::zero ) {
+        point_rel_sm this_shift = clamp( remaining_shift, size_1 );
+        here.shift( point_rel_sm( this_shift ) );
+        remaining_shift -= this_shift;
+    }
+
+    // Shift monsters
+    shift_monsters( { shift, 0 } );
+    const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
+
+    // Shift NPCs
+    for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {
+        ( *it )->shift( shift );
+        const tripoint_bub_ms pos = ( *it )->pos_bub( here );
+
+        // TODO: This could probably be replaced by an inbounds check.
+        if( pos.x() < 0 || pos.x() >= MAPSIZE_X ||
+            pos.y() < 0 || pos.y() >= MAPSIZE_Y ) {
+            //Remove the npc from the active list. It remains in the overmap list.
+            ( *it )->on_unload();
+            it = critter_tracker->active_npc.erase( it );
+        } else {
+            ++it;
+        }
+    }
+
+    scent.shift( shift_ms );
+
+    // Only do the loading after all coordinates have been shifted.
+
+    // Check for overmap saved npcs that should now come into view.
+    // Put those in the active list.
+    load_npcs();
+
+    // Make sure map cache is consistent since it may have shifted.
+    for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {
+        here.invalidate_map_cache( zlev );
+    }
+    here.build_map_cache( here.get_abs_sub().z() );
+
+    // Spawn monsters if appropriate
+    // This call will generate new monsters in addition to loading, so it's placed after NPC loading
+    here.spawn_monsters( false ); // Static monsters
 }
 
 void game::vertical_notes( int z_before, int z_after )
