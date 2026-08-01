@@ -1100,6 +1100,179 @@ struct intent_hack {
 
 Отдельно, но с тем же диагнозом «единого локального игрока»: `uistate.ags_pay_gas_selected_pump` (`iexamine.cpp:5425`, используется в `activity_actor.cpp:1088`) — состояние UI, которое сохраняется между вызовами газовой станции. В многопользовательской игре этот индекс должен передаваться в намерении как поле `gas_pump_index`, а не читаться из глобального состояния. Это не влияет на вердикт (вердикт «режется»), но требует внимательности при реализации `apply_intent`.
 
+## 10. Погрузка и разгрузка контейнеров
+
+**Точка входа:** `src/handle_action.cpp:2878` (`case ACTION_UNLOAD_CONTAINER`), плюс расширенный инвентарь в `src/advanced_inv.cpp`.
+
+Расширенный инвентарь содержит `test_mode ? amount = possible_max : query_int(...)` (`src/advanced_inv.cpp:2351`) — готовый пример наполовину разрезанного действия.
+
+### Шаг 1: Путь исполнения
+
+Путь разветвляется на три ветви в зависимости от контекста вызова:
+
+**Ветвь A: Базовая разгрузка (ACTION_UNLOAD_CONTAINER → game::unload_container)**
+
+```
+handle_action.cpp:2878 (ACTION_UNLOAD_CONTAINER)
+  → game.cpp:6621 game::unload_container(tripoint_bub_ms*)
+    → game.cpp:6623 choose_adjacent("Unload where?")        [если нет цели]
+    → game_inventory.cpp:2121 game_menus::inv::unload_container()
+      → inventory_ui.cpp:4513 inventory_multiselector::execute()  [интерактивное меню]
+    → character_inventory.cpp:705 Character::drop(drop_locations, tripoint_bub_ms)
+      → character_inventory.cpp:726 query_yn("The %s would spill...")  [если ведро в машине]
+      → character_inventory.cpp:735 assign_activity(stash_activity_actor)
+        или
+      → character_inventory.cpp:737 assign_activity(drop_activity_actor)
+```
+
+**Ветвь B: Разгрузка из расширенного инвентаря (action_unload)**
+
+```
+advanced_inv.cpp:1831 advanced_inventory::action_unload(sitem, spane, dpane)
+  → character_inventory.cpp:2458 Character::unload(item_location&, bool, item_location)
+    → character_inventory.cpp:2524 uilist("Unload what?")  [если несколько разгружаемых частей]
+    → character_inventory.cpp:2500 assign_activity(unload_activity_actor)
+      или
+    → character_inventory.cpp:2502 assign_activity(insert_item_activity_actor)  [с конкретной целью]
+```
+
+**Ветвь C: Перемещение предметов в расширенном инвентаре (action_move_item / move_all_items)**
+
+```
+advanced_inv.cpp:1893-1896 process_action → action_move_item(sitem, dpane, spane, action)
+  → advanced_inv.cpp:2181 query_destination(aim_location&)           [uilist для выбора направления]
+  → advanced_inv.cpp:2239 query_charges(destarea, sitem, action, amount)
+    → advanced_inv.cpp:2351 query_int(...)                          [обёрнут в test_mode]
+  → advanced_inv.cpp:1475 start_activity(...)
+    → wear_activity_actor / wield_activity_actor / pickup_activity_actor / move_items_activity_actor
+```
+
+### Шаг 2: Обращения к UI (базовый grep)
+
+**handle_action.cpp, game.cpp, game_inventory.cpp:**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `choose_adjacent("Unload where?")` | `src/game.cpp:6623` | грep | P | Выбор направления разгрузки, до `assign_activity`. |
+| `query_yn("The %s would spill if stored there...")` | `src/character_inventory.cpp:726` | грep | P | Подтверждение выливания ведра при drop в машину, до `assign_activity`. |
+| `uilist("Unload what?")` | `src/character_inventory.cpp:2524` | грep | P | Выбор компонента для разгрузки (оружие с магазинами), до `assign_activity`. |
+| `query_int(amount, false, popupmsg)` | `src/advanced_inv.cpp:2351` | грep | D | Количество перемещаемых зарядов — обёрнут в `test_mode ? amount = possible_max : query_int(...)`. |
+
+**advanced_inv.cpp (действия расширенного инвентаря):**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `uilist menu` (выбор направления) | `src/advanced_inv.cpp:2191` | грep | P | `query_destination()` — выбор AIM-зоны назначения. До `assign_activity`. |
+| `popup_getkey` (×34) | `src/advanced_inv.cpp:1044,1050,1055,1060,1075,1095,1115,1119,1127,1178,1460,1463,1466,1469,1547,1554,1619,1625,1647,1661,1666,1674,1693,1756,1881,2009,2187,2256,2260,2270,2281,2300,2318,2347` | грep | P | Проверки прединститутов (пусто, нельзя, уже там и т.д.) — все до `assign_activity`. |
+| `query_yn` (×7) | `src/advanced_inv.cpp:979,994,1183,1191,1509,1578,1640` | грep | P | Подтверждения (проливание, разоружение, перемещение всех избранных и т.д.) — до `assign_activity`. |
+| `popup` | `src/advanced_inv.cpp:1178,1881` | грep | P | Сообщения «None of the items can be moved there» и «Default layout was saved». |
+| `string_input_popup` | `src/advanced_inv.cpp:1913-1932` | грep | P | Редактирование фильтра предметов. |
+| `ui_manager::redraw` / `ui_manager::redraw_invalidated` | `src/advanced_inv.cpp:1921,2107` | грep | P | Рендер в основном цикле `display()`, до `assign_activity`. |
+
+**inventory_ui.cpp (execute() меню):**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `ui_manager::redraw()` | `src/inventory_ui.cpp:4518` | грep | P | Рендер в цикле `inventory_multiselector::execute()`. Часть интерактивного меню, до `assign_activity`. |
+| `popup_getkey("No items were selected...")` | `src/inventory_ui.cpp:4524` | грep | P | Подсказка при пустом выборе. До `assign_activity`. |
+
+### Шаг 2 (продолжение): Обращения к UI в activity_actor (один уровень индирекции)
+
+**pickup_activity_actor::do_turn → Pickup::do_pickup → handle_problematic_pickup:**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `uilist amenu` (Wield/Spill/CANCEL) | `src/pickup.cpp:93` | косв. | A | `handle_problematic_pickup()` вызывается из `Pickup::do_pickup()` (`pickup.cpp:278`), который вызывается из `pickup_activity_actor::do_turn()` (`activity_actor.cpp:3095`). Внутри активности. |
+| `amenu.query()` | `src/pickup.cpp:107` | косв. | A | Тот же вызов — запрос выбора в uilist. |
+
+**insert_item_activity_actor::finish → try_insert:**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `query_yn("The parent container does not have enough space...")` | `src/activity_actor.cpp:7743` | косв. | A | `try_insert()` вызывается из `insert_item_activity_actor::finish()` (`activity_actor.cpp:7813`). Внутри активности. |
+
+**drop_activity_actor, stash_activity_actor, unload_activity_actor, wear_activity_actor, wield_activity_actor, move_items_activity_actor:**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| *Индирекция не найдена* | — | косв. | — | `do_turn`/`finish` этих акторов не содержат UI-вызовов из списка (finish пустые, do_turn содержат только логику перемещения/подборa). |
+
+### Шаг 3: test_mode обёртки
+
+```
+grep -c "test_mode" src/advanced_inv.cpp → 2 (строки 2349-2351)
+```
+
+Одна обёртка: `query_int` в `query_charges` (`advanced_inv.cpp:2351`). Это снижает стоимость Ф1 — одна из трёх веток перемещения уже частично разрезана.
+
+### Итог по проходам
+
+Базовый grep: 4 реальных обращения (3 P, 1 D).
+Индирекция (один уровень вглубь): +2 строки A-класса (`pickup.cpp:93,107` — uilist; `activity_actor.cpp:7743` — query_yn).
+Итого по всем проходам: **0 M, 2 A, 3 P, 1 D**.
+
+### Вердикт: режется с оговоркой
+
+Два A-обращения требуют конкретных обходов:
+
+**A1: `uilist amenu` в `handle_problematic_pickup()` (`pickup.cpp:93-107`)**
+
+Вызывается из `Pickup::do_pickup()` → `pickup_activity_actor::do_turn()`. Меню предлагает три варианта: WIELD (взять ведро), SPILL (вылить содержимое), CANCEL.
+
+Обход: в `intent_pickup` добавить поле `int precomputed_pickup_option` (enum: STASH/WIELD/SPILL/CANCEL). Значение вычисляется в фазе выбора: если `u.can_stash(empty_it) && u.can_pickWeight(empty_it)` — всегда STASH, меню не нужно. Если ведро и нельзя надеть — SPILL. Если ведро и можно надеть — WIELD. Если ничего из этого — CANCEL. В `do_turn` вместо `handle_problematic_pickup()` использовать предвычисленное значение.
+
+**A2: `query_yn` в `try_insert()` (`activity_actor.cpp:7743-7754`)**
+
+Вызывается из `insert_item_activity_actor::finish()`. Спрашивает, надеть ли контейнер, чтобы освободить место.
+
+Обход: в `intent_insert_item` добавить поле `bool precomputed_wield_parent`. Значение вычисляется в фазе выбора: если `!holster.parents_can_contain_recursive(&it).success()` и `carrier->is_avatar()`, проверить `carrier->can_wield(*holster.get_item())`. Если да — надеть и продолжить. Если нет — отмена. Результат сохраняется в намерении, а `try_insert` в фазе execute использует его без запроса.
+
+### Набросок намерения
+
+```cpp
+struct intent_unload_container {
+    item_location source;               // разгружаемый контейнер (выбран в menu)
+    tripoint_bub_ms drop_target;        // куда сбрасывать (choose_adjacent или AIM-зона)
+    item_location dest_container;       // конкретный контейнер-приёмник (если есть)
+
+    // Результат выбора в inventory_multiselector::execute():
+    std::vector<drop_location> selected_items;  // пара (item_location, count)
+
+    // Предрешённые вопросы:
+    bool confirm_spill_bucket;          // ответ на query_yn о выливании ведра (character_inventory.cpp:726)
+    int gun_component_index;            // выбор компонента для разгрузки (character_inventory.cpp:2524, -1 если один)
+
+    // Для move_items_activity_actor (перемещение на карту/в машину):
+    tripoint_rel_ms relative_destination; // куда перемещать
+    bool to_vehicle;                    // в машину или на землю
+
+    // Для pickup_activity_actor (подбор с земли):
+    std::vector<item_location> target_items;
+    std::vector<int> quantities;
+    std::optional<tripoint_bub_ms> starting_pos;
+
+    // Предрешённые результаты для activity phase:
+    int precomputed_pickup_option;      // STASH/WIELD/SPILL/CANCEL (pickup.cpp:93-107)
+    bool precomputed_wield_parent;      // надеть ли контейнер (activity_actor.cpp:7743)
+
+    // Результаты применения:
+    bool success;                       // все предметы перемещены
+    std::string error_message;          // если что-то не удалось
+};
+```
+
+### Что мешает и как обойти
+
+Два A-обращения в activity phase:
+
+1. `uilist` в `handle_problematic_pickup()` (`pickup.cpp:93-107`) — выбор между WIELD/SPILL/CANCEL при подборе ведра. Игрок выбирает действие в фазе выбора через поле `precomputed_pickup_option` в намерении. Значение детерминируется из `can_stash(empty_it)` и `can_wield(holster)`.
+
+2. `query_yn` в `try_insert()` (`activity_actor.cpp:7743-7754`) — запрос на надевание контейнера для освобождения места. Игрок выбирает в фазе выбора через поле `precomputed_wield_parent` в намерении. Значение детерминируется из `parents_can_contain_recursive()` и `can_wield()`.
+
+Оба обхода названы конкретно, M-обращений не обнаружено (все UI-вызовы в activity phase имеют класс A). Вердикт «режется с оговоркой» обоснован.
+
+Отдельно, но с тем же диагнозом: `uistate.last_popup_dest` (`advanced_inv.cpp:2225,2233`) — состояние UI для запоминания последнего выбранного направления в `query_destination()`. В многопользовательской игре это состояние должно передаваться в намерении как поле `last_destination`, а не читаться из глобального uistate. Это не влияет на вердикт (вердикт «режется с оговоркой»), но требует внимательности при реализации `apply_intent`.
+
 
 ## Сводка
 
@@ -1111,6 +1284,7 @@ struct intent_hack {
 | 8 | Установка (бионика) | режется | 0 | 0 |
 | 8 | Установка (транспорт) | режется с оговоркой | 0 | 6 |
 | 9 | Взлом | режется | 0 | 0 |
+| 10 | Погрузка/разгрузка контейнеров | режется с оговоркой | 0 | 2 |
 
 ## Решение по воротам
 
