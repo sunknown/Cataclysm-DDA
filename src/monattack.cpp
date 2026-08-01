@@ -23,6 +23,7 @@
 #include "calendar.h"
 #include "cata_assert.h"
 #include "cata_utility.h"
+#include "avatar.h"
 #include "character.h"
 #include "character_id.h"
 #include "character_martial_arts.h"
@@ -234,9 +235,10 @@ static bool within_visual_range( monster *z, int max_range )
 {
     const map &here = get_map();
 
-    Character &player_character = get_player_character();
-    return !( rl_dist( z->pos_abs(), player_character.pos_abs() ) > max_range ||
-              !z->sees( here, player_character ) );
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    return nearest != nullptr &&
+           !( rl_dist( z->pos_abs(), nearest->pos_abs() ) > max_range ||
+              !z->sees( here, *nearest ) );
 }
 
 static bool within_target_range( const monster *const z, const Creature *const target, int range )
@@ -475,7 +477,7 @@ bool mattack::eat_food( monster *z )
             continue;
         }
         // Don't snap up food RIGHT under the player's nose.
-        if( z->friendly && rl_dist( get_player_character().pos_bub(), p ) <= 2 ) {
+        if( z->friendly && g->any_player_within( p, 2 ) ) {
             continue;
         }
         map_stack items = here.i_at( p );
@@ -507,7 +509,7 @@ bool mattack::eat_carrion( monster *z )
     map &here = get_map();
     for( const tripoint_bub_ms &p : here.points_in_radius( z->pos_bub(), 1 ) ) {
         // Don't snap up food RIGHT under the player's nose.
-        if( rl_dist( get_player_character().pos_bub(), p ) <= 2 ) {
+        if( g->any_player_within( p, 2 ) ) {
             continue;
         }
         map_stack items = here.i_at( p );
@@ -534,7 +536,7 @@ bool mattack::graze( monster *z )
     //Grazers eat grass and entire plants or bushes. Toxic/inedible plants can be blacklisted with GRAZER_INEDIBLE.
     for( const tripoint_bub_ms &p : here.points_in_radius( z->pos_bub(), 1 ) ) {
         //Don't eat grass right next to the player.
-        if( z->friendly && rl_dist( get_player_character().pos_bub(), p ) <= 2 ) {
+        if( z->friendly && g->any_player_within( p, 2 ) ) {
             continue;
         }
         if( here.has_flag( ter_furn_flag::TFLAG_FLOWER, p ) &&
@@ -565,7 +567,7 @@ bool mattack::browse( monster *z )
     //Browsers eat fruit/nuts/etc off of seasonally harvestable plants and trees.
     for( const tripoint_bub_ms &p : here.points_in_radius( z->pos_bub(), 1 ) ) {
         // Don't forage for food if the player is right there.
-        if( z->friendly && rl_dist( get_player_character().pos_bub(), p ) <= 2 ) {
+        if( z->friendly && g->any_player_within( p, 2 ) ) {
             continue;
         }
         if( here.has_flag( ter_furn_flag::TFLAG_BROWSABLE, p ) ) {
@@ -677,9 +679,10 @@ bool mattack::rattle( monster *z )
 
     // TODO: Let it rattle at non-player friendlies
     const int min_dist = z->friendly != 0 ? 1 : 4;
-    Creature *target = &get_player_character();
+    Creature *target = g->nearest_player( z->pos_abs() );
     // Can't use attack_target - the snake has no target
-    if( rl_dist( z->pos_abs(), target->pos_abs() ) > min_dist ||
+    if( target == nullptr ||
+        rl_dist( z->pos_abs(), target->pos_abs() ) > min_dist ||
         !z->sees( here, *target ) ) {
         return false;
     }
@@ -830,7 +833,7 @@ bool mattack::shockstorm( monster *z )
 
     const tripoint_bub_ms target_pos = target->pos_bub( here );
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     bool seen = player_character.sees( here, *z );
 
     bool can_attack = z->sees( here, *target ) && rl_dist( z->pos_abs(), target->pos_abs() ) <= 12;
@@ -998,7 +1001,7 @@ bool mattack::resurrect( monster *z )
         raising_level = z->get_effect_int( effect_raising ) * 40;
     }
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     bool sees_necromancer = player_character.sees( here, *z );
     std::vector<std::pair<tripoint_bub_ms, item *>> corpses;
     // Find all corpses that we can see within 10 tiles.
@@ -1363,7 +1366,7 @@ bool mattack::growplants( monster *z )
 bool mattack::grow_vine( monster *z )
 {
     if( z->friendly ) {
-        if( rl_dist( get_player_character().pos_bub(), z->pos_bub() ) <= 3 ) {
+        if( g->any_player_within( z->pos_bub(), 3 ) ) {
             // Friendly vines keep the area around you free, so you can move.
             return false;
         }
@@ -1483,11 +1486,12 @@ bool mattack::triffid_heartbeat( monster *z )
         return true;
         // TODO: when friendly: open a way to the stairs, don't spawn monsters
     }
-    Character &player_character = get_player_character();
-    if( player_character.posz() != z->posz() ) {
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr || nearest->posz() != z->posz() ) {
         // Maybe remove this and allow spawning monsters above?
         return true;
     }
+    Character &player_character = *nearest;
 
     map &here = get_map();
     const tripoint_bub_ms pos = player_character.pos_bub( here );
@@ -1678,9 +1682,13 @@ bool mattack::fungus_big_blossom( monster *z )
 bool mattack::fungus_inject( monster *z )
 {
     map &here = get_map();
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr ) {
+        return false;
+    }
     // For faster copy+paste
-    Creature *target = &get_player_character();
-    Character &player_character = get_player_character();
+    Creature *target = nearest;
+    Character &player_character = *nearest;
     if( rl_dist( z->pos_bub(), player_character.pos_bub() ) > 1 ) {
         return false;
     }
@@ -1744,7 +1752,7 @@ bool mattack::fungus_bristle( monster *z )
 {
     map &here = get_map();
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     if( player_character.has_trait( trait_THRESH_MARLOSS ) ||
         player_character.has_trait( trait_THRESH_MYCUS ) ) {
         z->friendly = 1;
@@ -1809,9 +1817,9 @@ bool mattack::fungus_sprout( monster *z )
 {
     // To avoid map shift weirdness
     bool push_player = false;
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( z->pos_abs() );
     for( const tripoint_bub_ms &dest : get_map().points_in_radius( z->pos_bub(), 1 ) ) {
-        if( player_character.pos_bub() == dest ) {
+        if( nearest != nullptr && nearest->pos_bub() == dest ) {
             push_player = true;
         }
         if( monster *const wall = g->place_critter_at( mon_fungal_wall, dest ) ) {
@@ -1819,10 +1827,10 @@ bool mattack::fungus_sprout( monster *z )
         }
     }
 
-    if( push_player ) {
-        const units::angle angle = coord_to_angle( z->pos_bub(), player_character.pos_bub() );
+    if( push_player && nearest != nullptr ) {
+        const units::angle angle = coord_to_angle( z->pos_bub(), nearest->pos_bub() );
         add_msg( m_bad, _( "You're shoved away as a fungal wall grows!" ) );
-        g->fling_creature( &player_character, angle, rng( 10, 50 ) );
+        g->fling_creature( nearest, angle, rng( 10, 50 ) );
     }
 
     return true;
@@ -1834,8 +1842,12 @@ bool mattack::fungus_fortify( monster *z )
         // TODO: handle friendly monsters
         return false;
     }
-    Creature *target = &get_player_character();
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr ) {
+        return false;
+    }
+    Creature *target = nearest;
+    Character &player_character = *nearest;
     bool mycus = false;
     bool peaceful = true;
     //No nifty support effects.  Yet.  This lets it rebuild hedges.
@@ -2172,11 +2184,13 @@ bool mattack::callblobs( monster *z )
         return false;
     }
     // The huge brain blob interposes other blobs between it and any threat.
-    // For the moment just target the player, this gets a bit more complicated
-    // if we want to deal with NPCS and friendly monsters as well.
-    // The strategy is to send about 1/3 of the available blobs after the player,
-    // and keep the rest near the brain blob for protection.
-    const tripoint_abs_ms enemy = get_player_character().pos_abs();
+    // The strategy is to send about 1/3 of the available blobs after the
+    // nearest player, and keep the rest near the brain blob for protection.
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr ) {
+        return false;
+    }
+    const tripoint_abs_ms enemy = nearest->pos_abs();
     const std::vector<tripoint_abs_ms> nearby_points = closest_points_first( z->pos_abs(), 3 );
     std::list<monster *> allies;
     for( monster &candidate : g->all_monsters() ) {
@@ -2433,7 +2447,7 @@ bool mattack::nurse_operate( monster *z )
     if( z->has_effect( effect_dragging ) || z->has_effect( effect_operating ) ) {
         return false;
     }
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     const bool u_see = player_character.sees( here, *z );
 
     if( u_see && one_in( 100 ) ) {
@@ -2585,7 +2599,11 @@ bool mattack::photograph( monster *z )
         return false;
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr ) {
+        return false;
+    }
+    Character &player_character = *nearest;
     const item_location weapon = player_character.get_wielded_item();
     // Badges should NOT be swappable between roles.
     // Hence separate checking.
@@ -2756,7 +2774,7 @@ void mattack::taze( monster *z, Creature *target )
         return;
     }
 
-    game_message_type m_type = target->attitude_to( get_player_character() ) ==
+    game_message_type m_type = target->attitude_to( get_avatar_legacy() ) ==
                                Creature::Attitude::FRIENDLY ?
                                m_bad : m_neutral;
     target->add_msg_player_or_npc( m_type,
@@ -2843,7 +2861,7 @@ bool mattack::searchlight( monster *z )
         }
     }
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     for( int i = 0; i < max_lamp_count; i++ ) {
 
         item &settings = z->inv[i];
@@ -3027,12 +3045,13 @@ bool mattack::ratking( monster *z )
         // TODO: handle friendly monsters
         return false;
     }
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( z->pos_abs() );
     // Disable z-level ratting or it can get silly
-    if( rl_dist( z->pos_bub(), player_character.pos_bub() ) > 50 ||
-        z->posz() != player_character.posz() ) {
+    if( nearest == nullptr || rl_dist( z->pos_bub(), nearest->pos_bub() ) > 50 ||
+        z->posz() != nearest->posz() ) {
         return false;
     }
+    Character &player_character = *nearest;
 
     switch( rng( 1, 5 ) ) { // What do we say?
         case 1:
@@ -3169,7 +3188,8 @@ bool mattack::brandish( monster *z )
         return false;
     }
     // Only brandish if we can see you!
-    if( !z->sees( here, get_player_character() ) ) {
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr || !z->sees( here, *nearest ) ) {
         return false;
     }
     add_msg( m_warning, _( "He's brandishing a knife!" ) );
@@ -3251,7 +3271,7 @@ bool mattack::absorb_meat( monster *z )
     const int max_meat_absorbed = monster_volume / 10.0f * average_meat_chunk_volume;
     //For every milliliter of meat absorbed, heal this many HP
     const float meat_absorption_factor = 0.01f;
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     map &here = get_map();
     //Search surrounding tiles for meat
     for( const tripoint_bub_ms &p : here.points_in_radius( z->pos_bub(), 1 ) ) {
@@ -3383,7 +3403,8 @@ bool mattack::blow_whistle( monster *z )
         return false;
     }
     // Only blow whistle if we can see you!
-    if( !z->sees( here, get_player_character() ) ) {
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr || !z->sees( here, *nearest ) ) {
         return false;
     }
     add_msg_if_player_sees( *z, m_warning, _( "The %1$s loudly blows their whistle!" ), z->name() );
@@ -3452,10 +3473,11 @@ bool mattack::slimespring( monster *z )
 {
     const map &here = get_map();
 
-    Character &player_character = get_player_character();
-    if( rl_dist( z->pos_abs(), player_character.pos_abs() ) > 30 ) {
+    Character *nearest = g->nearest_player( z->pos_abs() );
+    if( nearest == nullptr || rl_dist( z->pos_abs(), nearest->pos_abs() ) > 30 ) {
         return false;
     }
+    Character &player_character = *nearest;
 
     // This morale buff effect could get spammy
     if( player_character.get_morale_level() <= 1 ) {
@@ -3758,7 +3780,7 @@ bool mattack::evolve_kill_strike( monster *z )
             z->name() );
         return true;
     }
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     if( target->is_dead_state() && g->is_empty( &here, target_pos ) &&
         target->made_of_any( Creature::cmat_flesh ) ) {
         const std::string old_name = z->name();
@@ -4507,8 +4529,8 @@ bool mattack::grenadier( monster *const z )
 
     // Only can actively target the player right now. Once we have the ability to grab targets that we aren't
     // actively attacking change this to use that instead.
-    Creature *const target = static_cast<Creature *>( &get_player_character() );
-    if( z->attitude_to( *target ) == Creature::Attitude::FRIENDLY ) {
+    Creature *const target = g->nearest_player( z->pos_abs() );
+    if( target == nullptr || z->attitude_to( *target ) == Creature::Attitude::FRIENDLY ) {
         return false;
     }
     int ret = grenade_helper( z, target, 30, 60, grenades );
@@ -4540,8 +4562,8 @@ bool mattack::grenadier_elite( monster *const z )
 
     // Only can actively target the player right now. Once we have the ability to grab targets that we aren't
     // actively attacking change this to use that instead.
-    Creature *const target = static_cast<Creature *>( &get_player_character() );
-    if( z->attitude_to( *target ) == Creature::Attitude::FRIENDLY ) {
+    Creature *const target = g->nearest_player( z->pos_abs() );
+    if( target == nullptr || z->attitude_to( *target ) == Creature::Attitude::FRIENDLY ) {
         return false;
     }
     int ret = grenade_helper( z, target, 30, 60, grenades );

@@ -4648,6 +4648,17 @@ bool game::any_player_sees( const tripoint_abs_ms &pos )
     return false;
 }
 
+bool game::any_player_within( const tripoint_bub_ms &p, int dist )
+{
+    map &here = get_map();
+    for( avatar *slot : player_slots ) {
+        if( !slot->is_dead_state() && rl_dist( slot->pos_bub( here ), p ) <= dist ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 size_t game::num_creatures() const
 {
     // Plus one for the player.

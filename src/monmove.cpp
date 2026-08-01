@@ -16,6 +16,7 @@
 #include "bionics.h"
 #include "cata_assert.h"
 #include "cata_utility.h"
+#include "avatar.h"
 #include "character.h"
 #include "creature_tracker.h"
 #include "damage.h"
@@ -276,8 +277,9 @@ bool monster::know_danger_at( map *here, const tripoint_bub_ms &p ) const
             }
 
             // Some things are only avoided if we're not attacking
-            if( get_player_character().pos_abs() != get_dest() ||
-                attitude( &get_player_character() ) != MATT_ATTACK ) {
+            Character *nearest = g->nearest_player( pos_abs() );
+            if( nearest == nullptr || nearest->pos_abs() != get_dest() ||
+                attitude( nearest ) != MATT_ATTACK ) {
                 // Sharp terrain is ignored while attacking
                 if( avoid_sharp && here->has_flag( ter_furn_flag::TFLAG_SHARP, p ) &&
                     !( type->size == creature_size::tiny || flies() ||
@@ -925,7 +927,11 @@ void monster::move()
         die( &here, nullptr );
         return;
     }
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( nearest == nullptr ) {
+        return;
+    }
+    Character &player_character = *nearest;
 
     behavior::monster_oracle_t oracle( this );
     behavior::tree goals;
@@ -1479,7 +1485,9 @@ void monster::nursebot_operate( Character *dragged_foe )
                                          static_cast<float>( 77 ) - static_cast<float>( 77 ) / static_cast<float>( 10.0 ) );
 
             dragged_foe->cancel_activity();
-            get_player_character().uninstall_bionic( real_target, *this, *dragged_foe, adjusted_skill );
+            if( Character *nearest = g->nearest_player( pos_abs() ) ) {
+                nearest->uninstall_bionic( real_target, *this, *dragged_foe, adjusted_skill );
+            }
 
             // Remove target grab
             for( const effect &eff : dragged_foe->get_effects_with_flag( json_flag_GRAB ) ) {
@@ -1540,7 +1548,11 @@ void monster::footsteps( const tripoint_bub_ms &p )
     if( volume == 0 ) {
         return;
     }
-    int dist = rl_dist( p, get_player_character().pos_bub() );
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( nearest == nullptr ) {
+        return;
+    }
+    int dist = rl_dist( p, nearest->pos_bub() );
     sounds::add_footstep( p, volume, dist, this, type->get_footsteps() );
 }
 
@@ -1570,8 +1582,8 @@ tripoint_bub_ms monster::scent_move()
         smell_threshold = 400;
     }
 
-    Character &player_character = get_player_character();
-    const bool fleeing = is_fleeing( player_character );
+    Character *nearest = g->nearest_player( pos_abs() );
+    const bool fleeing = nearest != nullptr && is_fleeing( *nearest );
     int scent_here = scents.get_unsafe( pos_bub() );
     if( fleeing ) {
         bestsmell = scent_here;
@@ -1634,7 +1646,7 @@ tripoint_bub_ms monster::scent_move()
         // Add some randomness to make creatures zigzag towards the source
         for( const tripoint_bub_ms &dest : here.points_in_radius( direction, 1 ) ) {
             if( here.valid_move( pos_bub(), dest, can_bash, true ) &&
-                ( can_move_to( dest ) || ( dest == player_character.pos_bub() ) ||
+                ( can_move_to( dest ) || ( nearest != nullptr && dest == nearest->pos_bub() ) ||
                   ( can_bash && here.bash_rating( bash_estimate(), dest ) > 0 ) ) ) {
                 smoves.push_back( dest );
             }
@@ -1979,7 +1991,11 @@ bool monster::attack_at( const tripoint_bub_ms &p )
         return false;
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( nearest == nullptr ) {
+        return false;
+    }
+    Character &player_character = *nearest;
     const bool sees_player = sees( here, player_character );
     // Targeting player location
     if( p == player_character.pos_bub() &&
@@ -2408,7 +2424,7 @@ bool monster::push_to( const tripoint_bub_ms &p, const int boost, const size_t d
 
     g->swap_critters( *critter, *this );
     critter->add_effect( effect_stunned, rng( 0_turns, 2_turns ) );
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     // Only print the message when near player or it can get spammy
     if( rl_dist( player_character.pos_bub(), pos_bub() ) < 4 ) {
         add_msg_if_player_sees( *critter, m_warning, _( "The %1$s tramples %2$s." ),
@@ -2615,7 +2631,11 @@ bool monster::will_reach( const point_bub_ms &p )
     const map &here = get_map();
     const tripoint_bub_ms t = { p, posz() };
 
-    monster_attitude att = attitude( &get_player_character() );
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( nearest == nullptr ) {
+        return false;
+    }
+    monster_attitude att = attitude( nearest );
     if( att != MATT_FOLLOW && att != MATT_ATTACK && att != MATT_FRIEND ) {
         return false;
     }

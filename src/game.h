@@ -449,6 +449,8 @@ class game
         Character *nearest_player( const tripoint_abs_ms &pos );
         /** True if any alive avatar has line-of-sight to @p pos on the current map. */
         bool any_player_sees( const tripoint_abs_ms &pos );
+        /** True if any alive avatar is within @p dist tiles of @p p on the current map. */
+        bool any_player_within( const tripoint_bub_ms &p, int dist );
         /**
          * Returns the approximate number of creatures in the reality bubble.
          * Because of performance restrictions it may return a slightly incorrect

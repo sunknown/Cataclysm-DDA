@@ -498,6 +498,10 @@ class avatar : public Character
 };
 
 avatar &get_avatar();
+// Explicit alias for call sites that intentionally keep the "local player"
+// meaning of get_avatar(); simulation paths must prefer the multi-player
+// accessors (game::nearest_player etc.) so this name stands out in review.
+avatar &get_avatar_legacy();
 std::unique_ptr<talker> get_talker_for( avatar &me );
 std::unique_ptr<talker> get_talker_for( avatar *me );
 
