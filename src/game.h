@@ -184,6 +184,7 @@ class game
         friend creature_tracker &get_creature_tracker();
         friend Character &get_player_character();
         friend avatar &get_avatar();
+        friend avatar &get_avatar_legacy();
         friend viewer &get_player_view();
         friend weather_manager &get_weather();
         friend const scenario *get_scenario();

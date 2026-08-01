@@ -10,6 +10,7 @@
 #include "game.h"
 #include "map.h"
 #include "map_helpers_tests.h"
+#include "monster.h"
 #include "mp/mp_hotseat_loop.h"
 #include "mp/mp_tether.h"
 #include "player_activity.h"
@@ -89,6 +90,33 @@ TEST_CASE( "tether_thresholds_match_the_spec", "[hotseat]" )
         CHECK( mp_tether_check( anchor + tripoint_rel_ms( 33, 0, 0 ) ) == tether_state::warning );
         CHECK( mp_tether_check( anchor + tripoint_rel_ms( 43, 0, 0 ) ) == tether_state::blocked );
     } );
+}
+
+TEST_CASE( "monster_targets_the_closer_player", "[hotseat]" )
+{
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+
+    avatar &a = g->player_at( 0 );
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    // Both slots sit within the monster's (short) test sight range, slot 1
+    // strictly closer, so plan() can actually see slot 0 and would pick it
+    // before the migration. Slot positions are set explicitly so the assertion
+    // does not depend on where the harness left the avatars.
+    a.setpos( get_map(), tripoint_bub_ms( 56, 50, 0 ) );
+    b.setpos( get_map(), tripoint_bub_ms( 59, 50, 0 ) );
+
+    monster &z = spawn_test_monster( "mon_zombie", tripoint_bub_ms( 58, 50, 0 ) );
+    // The test harness leaves the map's visibility cache empty, so no monster
+    // can see any player; build it so plan() actually chooses a target.
+    get_map().build_map_cache( 0 );
+    z.plan();
+
+    // Before the migration the monster targets slot 0, which is one tile
+    // further away than slot 1.
+    REQUIRE( g->nearest_player( z.pos_abs() ) == &b );
+    CHECK( rl_dist( z.get_dest(), b.pos_abs() ) < rl_dist( z.get_dest(), a.pos_abs() ) );
 }
 
 TEST_CASE( "hotseat_turn_advances_calendar_once", "[hotseat]" )

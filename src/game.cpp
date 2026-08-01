@@ -11699,6 +11699,15 @@ avatar &get_avatar()
     return g->player_at( g->active_slot() );
 }
 
+// Thin alias for the "local player" meaning of get_avatar(). Simulation paths
+// must not call get_avatar() or get_player_character() directly once they have
+// been migrated to see every player slot; this name keeps the remaining
+// single-player-oriented call sites explicit and greppable in review.
+avatar &get_avatar_legacy()
+{
+    return get_avatar();
+}
+
 map &get_map()
 {
     return g->current_map.get_map();

@@ -524,15 +524,19 @@ void monster::plan()
     map &here = get_map();
     std::bitset<OVERMAP_LAYERS> seen_levels = here.get_inter_level_visibility( posz() );
     monster_attitude mood = attitude();
-    Character &player_character = get_player_character();
+    // Target the nearest live player slot rather than only the active slot, so
+    // monsters react to every player in a co-op session (phase Ф6 of the spec).
+    Character *nearest_pc = g->nearest_player( pos_abs() );
     // If this monster locks on via LoS, refresh the locked-on tracking effect
-    if( has_flag( mon_flag_LOCKS_ON ) &&
-        sees( here, player_character.pos_bub( here ), true ) ) {
+    if( nearest_pc != nullptr && has_flag( mon_flag_LOCKS_ON ) &&
+        sees( here, nearest_pc->pos_bub( here ), true ) ) {
         add_effect( effect_monster_locked_on, 2_minutes );
     }
     // If we can see the player, move toward them or flee.
-    if( friendly == 0 && seen_levels.test( player_character.posz() + OVERMAP_DEPTH ) &&
-        sees( here, player_character ) ) {
+    if( nearest_pc != nullptr && friendly == 0 &&
+        seen_levels.test( nearest_pc->posz() + OVERMAP_DEPTH ) &&
+        sees( here, *nearest_pc ) ) {
+        Character &player_character = *nearest_pc;
         mon_plan.dist = rate_target( player_character, mon_plan.dist, mon_plan.smart_planning );
         mon_plan.fleeing = mon_plan.fleeing || is_fleeing( player_character );
         mon_plan.target = &player_character;
@@ -833,11 +837,11 @@ void monster::plan()
             next_stop = patrol_route.at( next_patrol_point );
         }
         set_dest( next_stop );
-    } else if( friendly != 0 && has_effect( effect_led_by_leash ) &&
+    } else if( friendly != 0 && has_effect( effect_led_by_leash ) && nearest_pc != nullptr &&
                pos_abs().z() == get_dest().z() ) {
         // visibility doesn't matter, we're getting pulled by a leash
         // To use stairs smoothly, if the destination is on a different Z-level, move there first.
-        set_dest( player_character.pos_abs() );
+        set_dest( nearest_pc->pos_abs() );
         if( friendly > 0 && one_in( 3 ) ) {
             // Grow restless with no targets
             friendly--;
@@ -845,12 +849,12 @@ void monster::plan()
     } else if( friendly > 0 && one_in( 3 ) ) {
         // Grow restless with no targets
         friendly--;
-    } else if( is_pet_follow() && sees( here, player_character ) &&
-               ( pos_abs().z() == player_character.pos_abs().z() ||
+    } else if( is_pet_follow() && nearest_pc != nullptr && sees( here, *nearest_pc ) &&
+               ( pos_abs().z() == nearest_pc->pos_abs().z() ||
                  pos_abs().z() == get_dest().z() ) ) {
         // Simpleminded animals are too dumb to follow the player.
         // To use stairs smoothly, if the destination is on a different Z-level, move there first.
-        set_dest( player_character.pos_abs() );
+        set_dest( nearest_pc->pos_abs() );
     }
 }
 
