@@ -439,6 +439,7 @@ class game
         size_t active_slot() const;
         void set_active_slot( size_t index );
         avatar &player_at( size_t index );
+        avatar &add_player_slot();
         /**
          * Returns the approximate number of creatures in the reality bubble.
          * Because of performance restrictions it may return a slightly incorrect

@@ -4603,6 +4603,13 @@ avatar &game::player_at( size_t index )
     return *player_slots[index];
 }
 
+avatar &game::add_player_slot()
+{
+    owned_extra_players.push_back( std::make_unique<avatar>() );
+    player_slots.push_back( owned_extra_players.back().get() );
+    return *player_slots.back();
+}
+
 size_t game::num_creatures() const
 {
     // Plus one for the player.
