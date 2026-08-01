@@ -473,6 +473,9 @@ game::game() :
     dimension_prefix( dimension_world_default )
 {
     current_map.set( &m );
+    // Slot 0 aliases the pimpl-owned avatar that game::u refers to.
+    // Ownership stays with u_ptr; this vector only observes.
+    player_slots.push_back( &u );
     first_redraw_since_waiting_started = true;
     reset_light_level();
     events().subscribe( &*stats_tracker_ptr );
@@ -4576,6 +4579,28 @@ monster *game::place_critter_at_or_within( const shared_ptr_fast<monster> &mon, 
         return mon.get();
     }
     return nullptr;
+}
+
+size_t game::player_slot_count() const
+{
+    return player_slots.size();
+}
+
+size_t game::active_slot() const
+{
+    return active_slot_index;
+}
+
+void game::set_active_slot( size_t index )
+{
+    cata_assert( index < player_slots.size() );
+    active_slot_index = index;
+}
+
+avatar &game::player_at( size_t index )
+{
+    cata_assert( index < player_slots.size() );
+    return *player_slots[index];
 }
 
 size_t game::num_creatures() const
@@ -11529,17 +11554,17 @@ achievements_tracker &get_achievements()
 
 Character &get_player_character()
 {
-    return g->u;
+    return g->player_at( g->active_slot() );
 }
 
 viewer &get_player_view()
 {
-    return g->u;
+    return g->player_at( g->active_slot() );
 }
 
 avatar &get_avatar()
 {
-    return g->u;
+    return g->player_at( g->active_slot() );
 }
 
 map &get_map()

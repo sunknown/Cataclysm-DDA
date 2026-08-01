@@ -435,6 +435,10 @@ class game
         monster *place_critter_at_or_within( const shared_ptr_fast<monster> &mon, map *here,
                                              const tripoint_bub_ms &center, const tripoint_range<tripoint_bub_ms> &range );
         /** @} */
+        size_t player_slot_count() const;
+        size_t active_slot() const;
+        void set_active_slot( size_t index );
+        avatar &player_at( size_t index );
         /**
          * Returns the approximate number of creatures in the reality bubble.
          * Because of performance restrictions it may return a slightly incorrect
@@ -1164,6 +1168,15 @@ class game
         pimpl<map> map_ptr; // NOLINT(cata-serialize)
         pimpl<::current_map> current_map_ptr; // NOLINT(cata-serialize)
         pimpl<avatar> u_ptr; // NOLINT(cata-serialize)
+        // Player slots. Always at least one; slot 0 points at the pimpl-owned
+        // avatar that game::u refers to and is not owned here. Ownership of
+        // any additional avatar lives in owned_extra_players, which is why the
+        // two vectors are separate rather than one vector of smart pointers:
+        // std::unique_ptr bakes its deleter into the type, so a non-owning
+        // slot 0 cannot share a vector with owning slots.
+        std::vector<avatar *> player_slots;                        // NOLINT(cata-serialize)
+        std::vector<std::unique_ptr<avatar>> owned_extra_players;  // NOLINT(cata-serialize)
+        size_t active_slot_index = 0;                              // NOLINT(cata-serialize)
         pimpl<live_view> liveview_ptr; // NOLINT(cata-serialize)
         live_view &liveview; // NOLINT(cata-serialize)
         pimpl<scent_map> scent_ptr; // NOLINT(cata-serialize)
