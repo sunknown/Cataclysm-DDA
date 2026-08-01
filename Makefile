@@ -995,6 +995,11 @@ ifeq ($(SOUND), 1)
   CXXFLAGS += -DSDL_SOUND
 endif
 
+ifeq ($(MULTIPLAYER), 1)
+  DEFINES += -DMULTIPLAYER
+  SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)
+endif
+
 # We don't use SDL_main -- we have proper main()/WinMain()
 CXXFLAGS := $(filter-out -Dmain=SDL_main,$(CXXFLAGS))
 LDFLAGS := $(filter-out -lSDL2main,$(LDFLAGS))

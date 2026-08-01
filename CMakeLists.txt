@@ -39,6 +39,7 @@ option(CATA_CLANG_TIDY_PLUGIN "Build Cata's custom clang-tidy checks as a plugin
 option(CATA_CLANG_TIDY_EXECUTABLE "Build Cata's custom clang-tidy checks as an executable" "OFF")
 option(WARN_STALE_DATA "Warn if file integrity check fails" "OFF")
 option(TESTS "Compile Cata's tests" "ON")
+option(MULTIPLAYER "Build co-op multiplayer mode" OFF)
 set(CATA_CLANG_TIDY_INCLUDE_DIR "" CACHE STRING
         "Path to internal clang-tidy headers required for plugin (e.g. ClangTidy.h)")
 set(CATA_CHECK_CLANG_TIDY "" CACHE STRING "Path to check_clang_tidy.py for plugin tests")
@@ -477,6 +478,12 @@ endif ()
 
 if (USE_XDG_DIR)
     add_definitions(-DUSE_XDG_DIR)
+endif ()
+
+if (MULTIPLAYER)
+    add_definitions(-DMULTIPLAYER)
+    file(GLOB MULTIPLAYER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mp/*.cpp)
+    list(APPEND CATACLYSM_DDA_SOURCES ${MULTIPLAYER_SOURCES})
 endif ()
 
 find_program(CCACHE_FOUND ccache HINTS ${CMAKE_CURRENT_SOURCE_DIR}/ccache)
