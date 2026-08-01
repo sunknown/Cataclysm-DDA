@@ -878,6 +878,134 @@ struct intent_trade {
 Риски (не влияющие на вердикт): `npc.will_exchange_items_freely()` и кредитные лимиты — если NPC потерял статус shopkeeper или изменил отношение к игроку между отправкой намерения и выполнением, `apply_intent` должен отклонить intent (проверка `npc_will_accept_trade` в `_confirm_trade` воспроизводится детерминированно). Это не UI-проблема, а логика валидации.
 
 
+## 8. Установка бионики и частей транспорта
+
+**Точка входа (бионика):** `src/iuse_actor.cpp:4578` (`install_bionic_actor::use`, вызов `can_install_bionics` → `install_bionics`).
+**Точка входа (транспорт):** `src/veh_interact.cpp:949` (`veh_interact::do_install`, интерактивный выбор детали).
+
+**Путь исполнения:**
+
+*Бионика:*
+1. `iuse_actor.cpp:4578` `install_bionic_actor::use(Character*, item&)` — вызывает `p->can_install_bionics(*it.type, *p, false)` (`iuse_actor.cpp:4581`), затем при успешной проверке — `p->install_bionics(*it.type, *p, false)` (`iuse_actor.cpp:4586`).
+2. `bionics.cpp:2460` `Character::can_install_bionics` — содержит обращения к UI: `query_yn` о конфликтующих мутациях (`:2496`), `popup` о нехватке слотов (`:2512`), `query_yn` о шансе успеха (`:2518`, `:2524`). Все до вызова `install_bionics`, то есть до мутации мира. Класс P.
+3. `bionics.cpp:2547` `Character::install_bionics` — **не содержит** обращений к UI. Вызывает `assign_activity( bionic_operation_activity_actor(...) )` (`bionics.cpp:2584`). Фаза выбора заканчивается здесь.
+4. `activity_actor.cpp:1617` `bionic_operation_activity_actor::do_turn` — вызывается движком активности каждый ход. Внутри: расчёт времени, проверка автодока, вызов `perform_install`/`perform_uninstall`. **Ни одного обращения к UI-функциям из списка.**
+5. `activity_actor.cpp:1766` `bionic_operation_activity_actor::finish` — сообщения об успехе/неудаче, удаление эффекта `effect_under_operation`. **Ни одного обращения к UI-функциям из списка.**
+
+*Дополнительные точки входа в бионику:*
+- `iexamine.cpp:5932` `game_menus::inv::install_bionic(you, you, patient)` → `autodoc_internal` (`game_inventory.cpp:2833`) → `inventory_pick_selector::execute()` (`inventory_ui.cpp:3877`) с `ui_manager::redraw` в цикле — P, до мутации. Затем `can_install_bionics`/`install_bionics` — как выше.
+- `npctalk_funcs.cpp:583` `bionic_install_common` → `patient.can_install_bionics(it, p, false, 20)` → `patient.install_bionics(it, p, false, 20)` — те же функции, те же классы.
+
+*Транспорт:*
+1. `veh_interact.cpp:949` `veh_interact::do_install(map&)` — интерактивный цикл выбора детали. Содержит: `string_input_popup_imgui popup(34)` для фильтра (`:1009`), `query_yn` о потере летучести (`:1042`), `query_yn` о складывании (`:1051`), `ui_manager::redraw()` в цикле (`:1004`). Все — до `assign_activity`. Класс P.
+2. `veh_interact.cpp:162` `veh_interact::assign_activity(map&)` — вычисляет время, вызывает `player_character.assign_activity( vehicle_activity_actor( sel_cmd, time, veh, ... ) )` (`:209`). **Ни одного обращения к UI.** Фаза выбора заканчивается здесь.
+3. `activity_actor.cpp:11343` `vehicle_activity_actor::complete_vehicle(player_activity&, Character&)` — для `VEHICLE_INSTALL`:
+   - Потребление компонентов/инструментов (без UI).
+   - `veh.install_part(...)` (`:11411`) — без UI.
+   - Если `vp_new.info().variants.size() > 1` (`:11419`) — вызывает `veh_shape::change_part_shape(...)` (`:11420`) → `veh_menu::query()` (`veh_utils.cpp:427`) → `uilist menu` (`veh_utils.cpp:436`). **Класс A** (живёт внутри `finish` активности).
+   - Если деталь имеет световые флаги (`:11427-11429`) — вызывает `orient_part(...)` (`:11430`) → `popup(...)` (`veh_interact.cpp:231`) + `g->look_around()` (`:235`). **Класс A**.
+   - `here.board_vehicle(...)` если `VPFLAG_BOARDABLE` — без UI.
+   - `you.practice(...)` — без UI.
+4. `activity_actor.cpp:11305` `vehicle_activity_actor::finish(...)` — после `complete_vehicle`, для не-NPC: при наличии vehicle_part на позиции вызывает `g->exam_vehicle(vp->vehicle(), mount_loc)` (`:11333`) или `g->exam_appliance(...)` (`:11331`). Это **возврат в интерактивное меню транспорта**, то есть новый цикл с P-обращениями. Класс A (вызывается из `finish`).
+5. `vehicle_activity_actor::do_turn` (`activity_actor_definitions.h:2865`) — пустой (`{};`), без UI.
+
+**Шаг 2 брифа (grep по указанным файлам):**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `query_yn` («Installing this bionic will remove the conflicting traits…») | `src/bionics.cpp:2496` | грep | P | В `can_install_bionics`, вызываемой из `install_bionic_actor::use` (`iuse_actor.cpp:4581`) и из `iexamine.cpp:5962`/`npctalk_funcs.cpp:583` — до `install_bionics`, до мутации. |
+| `popup` («Not enough space for bionic installation!») | `src/bionics.cpp:2512` | грep | P | Там же, в `can_install_bionics`, до мутации. |
+| `query_yn` («Are you sure you wish to install the selected bionic?») | `src/bionics.cpp:2518` | грep | P | Там же, в `can_install_bionics`, до мутации. |
+| `query_yn` («WARNING: %i percent chance of failure…») | `src/bionics.cpp:2524` | грep | P | Там же, в `can_install_bionics`, до мутации. |
+| `ui_manager::redraw` (в цикле `inventory_pick_selector::execute`) | `src/inventory_ui.cpp:3884` | косв. | P | Найдено трассировкой: `iexamine.cpp:5932` → `game_menus::inv::install_bionic` (`game_inventory.cpp:3058`) → `autodoc_internal` (`game_inventory.cpp:2867`) → `inventory_pick_selector::execute()` (`inventory_ui.cpp:3877`), внутри цикла `while(true)` на `:3883` — `ui_manager::redraw()` на `:3884`. До `can_install_bionics`/`install_bionics`, до мутации. |
+| `popup` («You don't have any bionics to install.») | `src/game_inventory.cpp:2883` | косв. | P | Та же трассировка: `autodoc_internal` при пустом инвентаре биоников. До мутации. |
+| `string_input_popup_imgui popup(34)` («Search for part») | `src/veh_interact.cpp:1009` | грep | P | В `do_install`, интерактивный цикл выбора детали, до `assign_activity`. |
+| `query_yn` («Installing this part will mean that this vehicle is no longer flightworthy.») | `src/veh_interact.cpp:1042` | грep | P | В `do_install`, до `assign_activity`. |
+| `query_yn` («Installing this part will make the vehicle unfoldable. Continue?») | `src/veh_interact.cpp:1051` | грep | P | В `do_install`, до `assign_activity`. |
+| `ui_manager::redraw` (в цикле `do_install`) | `src/veh_interact.cpp:1004` | грep | P | В `do_install`, каждый ход цикла выбора детали. До `assign_activity`. |
+| `ui_manager::redraw` (в цикле `do_main_loop`) | `src/veh_interact.cpp:529` | грep | P | В `do_main_loop` (`veh_interact.cpp:513`), вызываемом из `run` (`:254`) перед `assign_activity` (`:255`). До мутации. |
+| `uilist` (через `veh_menu::query` в `change_part_shape`) | вызов `src/activity_actor.cpp:11420` → `veh_shape.cpp:146` → `veh_utils.cpp:427` (`veh_menu::query`) → `uilist menu` (`:436`) | косв. | A | Найдено трассировкой: `complete_vehicle` при `variants.size() > 1`. Вызывается из `finish` активности, то есть внутри многоходовой деятельности. |
+| `popup` («Press space, choose a facing direction…») | вызов `src/activity_actor.cpp:11430` → `veh_interact.cpp:231` | косв. | A | Найдено трассировкой: `orient_part` при световых флагах детали. Вызывается из `finish` активности. |
+| `look_around` | вызов `src/activity_actor.cpp:11430` → `veh_interact.cpp:235` | косв. | A | Та же трассировка: `orient_part` вызывает `g->look_around()` для выбора направления. Внутри активности. |
+| `exam_vehicle` / `exam_appliance` (возврат в меню после активности) | `src/activity_actor.cpp:11333` / `:11331` | косв. | A | Вызывается из `finish` для не-NPC, если на позиции осталась деталь. Возвращает игрока в интерактивное меню транспорта — тот же цикл с P-обращениями. |
+| `uilist` («Consume what?», выбор компонента при установке детали) | вызов `src/activity_actor.cpp:11387` (`consume_items`) → `crafting.cpp:3327` (`Character::consume_items`) → `crafting.cpp:2923` (`select_item_component`) → `uilist cmenu` (`crafting.cpp:3052`) | косв. | A | Найдено трассировкой: `complete_vehicle` при `VEHICLE_INSTALL` вызывает `consume_items` для потребления компонентов. Если у компонента несколько подходящих предметов в инвентаре/на карте, вызывается `uilist` для выбора. Вызывается из `finish` активности. |
+
+Итог по проходам: базовый grep по `bionics.cpp`/`veh_interact.cpp` дал 11 различающихся мест вызова (5 в `bionics.cpp`, 6 в `veh_interact.cpp`), все — класса P. Проход трассировки на один уровень косвенности (файлы `inventory_ui.cpp`, `game_inventory.cpp`, `activity_actor.cpp`, `crafting.cpp`, `veh_shape.cpp`, `veh_utils.cpp`, не входящие в список брифа) добавил 7 мест: 1 P (в `inventory_ui.cpp`/`game_inventory.cpp` — выбор бионика через autodoc), 6 A (в `activity_actor.cpp`/`crafting.cpp` — `change_part_shape`/`orient_part`/`exam_vehicle`/`uilist(consume_items)` в `complete_vehicle`/`finish`). Итого: **0 M**, **6 A**-достижимых обращений.
+
+**Вердикт:** режется с оговоркой
+
+**Набросок намерения:**
+
+```cpp
+// Намерение «установить бионик» — покрывает путь от выбора бионика
+// в инвентаре до assign_activity(bionic_operation_activity_actor).
+// Сам activity_actor не содержит UI-вызовов, поэтому execute-фаза
+// полностью детерминированна.
+struct intent_install_bionic {
+    item_location bionic_item;      // выбранный бионик (CBM)
+    bool installing;                // true = установка, false = удаление (can_uninstall_bionic)
+    bionic_id installed_bionic;     // ID устанавливаемого/удаляемого бионика
+    bionic_uid uninstalled_bionic;  // UID удаляемого бионика (для uninstall)
+    bool operation_autodoc;         // автодок или ручной
+    int operation_skill;            // навык установщика
+    int operation_difficulty;       // сложность операции
+    bionic_id upgraded_from;        // ID бионика, который будет заменён при апгрейде (upgraded_bionic)
+    std::string installer_name;     // имя установщика для сообщений
+
+    // Результаты can_install_bionics, предрешённые в фазе выбора:
+    bool confirm_conflicting_muts;  // ответ на query_yn о конфликтующих мутациях (bionics.cpp:2496)
+    bool confirm_success_chance;    // ответ на query_yn о шансе успеха (bionics.cpp:2518/2524)
+
+    // Разрешение конфликта «нехватка слотов» — если can_install_bionics
+    // вернула false с popup («Not enough space…», bionics.cpp:2512),
+    // намерение не создаётся вовсе. Если вернула true, значит слоты есть,
+    // и это поле не нужно.
+};
+
+// Намерение «установить деталь транспорта» — покрывает путь от выбора детали
+// в veh_interact::do_install до assign_activity(vehicle_activity_actor).
+// Содержит все предрешённые вопросы (летучесть, складывание, вариант, ориентация, компоненты).
+struct intent_install_vehicle_part {
+    vpart_id part_id;               // выбранная деталь
+    int part_index;                 // индекс детали в автомобиле (для позиционирования)
+    point_rel_ms mount_location;    // куда устанавливать
+    vpart_id variant_chosen;        // выбранный косметический вариант (если variants.size() > 1)
+                                     // — предрешается в do_install через veh_menu::query
+    units::angle direction;         // направление установки (если деталь имеет световые флаги)
+                                     // — предрешается в do_install через orient_part/look_around
+
+    // Результаты query_yn из do_install, предрешённые в фазе выбора:
+    bool confirm_flightworthy_loss; // ответ на query_yn о потере летучести (veh_interact.cpp:1042)
+    bool confirm_unfoldable;        // ответ на query_yn о складывании (veh_interact.cpp:1051)
+
+    // Результаты select_item_component/select_tool_component, предрешённые в фазе выбора:
+    // — предрешаются в do_install через аналогичный выбор компонентов/инструментов
+    // — поля comp_selection<item_comp> и comp_selection<tool_comp> уже сериализуемы
+    //   (crafting.cpp:91-133), как показано в Task 5
+    std::vector<comp_selection<item_comp>> component_selections;
+    std::vector<comp_selection<tool_comp>> tool_selections;
+
+    // Разрешение «возврата в меню» после активности (activity_actor.cpp:11333):
+    // Это не часть намерения установки, а побочный эффект finish().
+    // В apply_intent после успешной установки достаточно показать сообщение
+    // «You install a X into the Y» и вернуть управление — повторный вход
+    // в меню необязателен (см. "Что мешает" ниже).
+};
+```
+
+**Что мешает и как обойти:**
+
+Для бионики: путь чистый — `can_install_bionics` содержит все P-обращения (подтверждение конфликта мутаций, нехватка слотов, шанс успеха), `install_bionics` не имеет UI и создаёт активность, а `bionic_operation_activity_actor::{do_turn,finish}` не содержат ни одного вызова из списка. Вердикт «режется» без оговорок.
+
+Для транспорта: шесть A-обращений в `complete_vehicle`/`finish` устраняются так:
+1. `veh_shape::change_part_shape` → `uilist` (veh_utils.cpp:436, вызов из activity_actor.cpp:11420) — выбор косметического варианта. Игрок выбирает вариант в интерактивном цикле `do_install` до `assign_activity`. Поле `variant_chosen` в `intent_install_vehicle_part` передаёт выбор в execute-фазу.
+2. `orient_part` → `popup` + `look_around` (veh_interact.cpp:231/235, вызов из activity_actor.cpp:11430) — выбор направления для светящихся деталей. Игрок выбирает направление в том же цикле `do_install`. Поле `direction` в намерении передаёт выбор.
+3. `exam_vehicle`/`exam_appliance` (activity_actor.cpp:11333) — не является частью установки как таковой: это побочный эффект `finish()`, который просто возвращает игрока в меню транспорта для дальнейших действий. В `apply_intent` этот вызов не нужен — достаточно показать сообщение об успехе и завершить активность.
+4. `uilist` в `select_item_component` (crafting.cpp:3052, вызов из activity_actor.cpp:11387 через `consume_items`) — выбор компонента при установке детали. Игрок выбирает компоненты в фазе выбора (аналогично `intent_start_craft` из Task 5). Поля `component_selections`/`tool_selections` в намерении передают уже выбранные компоненты. После этого `consume_items` вызывается с конкретными предметами, без `uilist`.
+
+Все четыре обхода названы конкретно, M-обращений не обнаружено (все UI-вызовы в `complete_vehicle`/`finish` имеют класс A, а не M, поскольку живут внутри активности). Вердикт «режется с оговоркой» обоснован.
+
+
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
