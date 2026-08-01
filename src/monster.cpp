@@ -266,7 +266,7 @@ monster::monster( const mtype_id &id ) : monster()
     moves = type->speed;
     Creature::set_speed_base( type->speed );
     hp = type->hp;
-    dialogue d( get_talker_for( this ), get_talker_for( get_avatar() ) );
+    dialogue d( get_talker_for( this ), get_talker_for( get_avatar_legacy() ) );
     for( const auto &sa : type->special_attacks ) {
         mon_special_attack &entry = special_attacks[sa.first];
         entry.cooldown = rng( 0, sa.second->cooldown.evaluate( d ) );
@@ -380,7 +380,7 @@ void monster::poly( const mtype_id &id )
     morale = type->morale;
     hp = static_cast<int>( hp_percentage * type->hp );
     special_attacks.clear();
-    dialogue d( get_talker_for( this ), get_talker_for( get_avatar() ) );
+    dialogue d( get_talker_for( this ), get_talker_for( get_avatar_legacy() ) );
     for( const auto &sa : type->special_attacks ) {
         mon_special_attack &entry = special_attacks[sa.first];
         entry.cooldown = sa.second->cooldown.evaluate( d );
@@ -784,7 +784,7 @@ void monster::get_HP_Bar( nc_color &color, std::string &text ) const
 
 std::pair<std::string, nc_color> monster::get_attitude() const
 {
-    const auto att = attitude_names.at( attitude( &get_player_character() ) );
+    const auto att = attitude_names.at( attitude( &get_avatar_legacy() ) );
     return {
         _( att.first ),
         all_colors.get( att.second )
@@ -831,7 +831,7 @@ std::string monster::speed_description( float mon_speed_rating,
         return std::string();
     }
 
-    const avatar &ply = get_avatar();
+    const avatar &ply = get_avatar_legacy();
     double player_runcost = ply.run_cost( 100 );
     if( player_runcost <= 0.00 ) {
         player_runcost = 0.01f;
@@ -882,7 +882,7 @@ int monster::print_info( const catacurses::window &w, int vStart, int vLines, in
     oss << "<color_h_white>" << get_effect_status() << "</color>";
     vStart += fold_and_print( w, point( column, vStart ), max_width, c_white, oss.str() );
 
-    Character &pc = get_player_character();
+    Character &pc = get_avatar_legacy();
     bool sees_player = sees( here, pc );
     const bool player_knows = !pc.has_trait( trait_INATTENTIVE );
 
@@ -997,13 +997,13 @@ void monster::print_info_imgui() const
                         get_effect_status().c_str() );
 
     if( debug_mode ) {
-        dialogue d( get_talker_for( const_cast<monster *>( this ) ), get_talker_for( get_avatar() ) );
+        dialogue d( get_talker_for( const_cast<monster *>( this ) ), get_talker_for( get_avatar_legacy() ) );
         for( const std::pair<const std::string, mtype_special_attack> &attack : type->special_attacks ) {
             ImGui::Text( "%s: %g", attack.first.c_str(), attack.second->cooldown.evaluate( d ) );
         }
     }
 
-    Character &pc = get_player_character();
+    Character &pc = get_avatar_legacy();
     bool sees_player = sees( here, pc );
     const bool player_knows = !pc.has_trait( trait_INATTENTIVE );
 
@@ -1094,7 +1094,7 @@ std::vector<std::string> monster::extended_description() const
     get_HP_Bar( bar_color, bar_str );
     std::string hpbar = colorize( bar_str, bar_color ) +
                         colorize( std::string( 5 - utf8_width( bar_str ), '.' ), c_white );
-    Character &pc = get_player_character();
+    Character &pc = get_avatar_legacy();
     const bool player_knows = !pc.has_trait( trait_INATTENTIVE );
     const std::pair<std::string, nc_color> att = get_attitude();
 
@@ -2215,9 +2215,9 @@ bool monster::melee_attack( Creature &target, float accuracy )
         return true;
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     if( target.is_avatar() ||
-        ( target.is_npc() && player_character.attitude_to( target ) == Attitude::FRIENDLY ) ) {
+        ( target.is_npc() && nearest != nullptr && nearest->attitude_to( target ) == Attitude::FRIENDLY ) ) {
         // Make us a valid target for a few turns
         add_effect( effect_hit_by_player, 3_turns );
     }
@@ -2226,9 +2226,9 @@ bool monster::melee_attack( Creature &target, float accuracy )
         add_effect( effect_run, 4_turns );
     }
 
-    const bool u_see_me = player_character.sees( here, *this );
-    const bool u_see_my_spot = player_character.sees( here, this->pos_bub( here ) );
-    const bool u_see_target = player_character.sees( here, target );
+    const bool u_see_me = get_avatar_legacy().sees( here, *this );
+    const bool u_see_my_spot = get_avatar_legacy().sees( here, this->pos_bub( here ) );
+    const bool u_see_target = get_avatar_legacy().sees( here, target );
 
     damage_instance damage = !is_hallucination() ? type->melee_damage : damage_instance();
     if( !is_hallucination() && type->melee_dice > 0 ) {
@@ -2288,7 +2288,7 @@ bool monster::melee_attack( Creature &target, float accuracy )
                          body_part_name_accusative( dealt_dam.bp_hit ) );
             } else if( target.is_npc() ) {
                 if( has_effect( effect_ridden ) && has_flag( mon_flag_RIDEABLE_MECH ) &&
-                    pos_bub() == player_character.pos_bub() ) {
+                    pos_bub() == get_avatar_legacy().pos_bub() ) {
                     //~ %1$s: name of your mount, %2$s: target NPC name, %3$d: damage value
                     add_msg( m_good, _( "Your %1$s hits %2$s for %3$d damage!" ), name(), target.disp_name(),
                              total_dealt );
@@ -2300,7 +2300,7 @@ bool monster::melee_attack( Creature &target, float accuracy )
                 }
             } else {
                 if( has_effect( effect_ridden ) && has_flag( mon_flag_RIDEABLE_MECH ) &&
-                    pos_bub() == player_character.pos_bub() ) {
+                    pos_bub() == get_avatar_legacy().pos_bub() ) {
                     //~ %1$s: name of your mount, %2$s: target creature name, %3$d: damage value
                     add_msg( m_good, _( "Your %1$s hits %2$s for %3$d damage!" ), get_name(), target.disp_name(),
                              total_dealt );
@@ -2910,13 +2910,13 @@ void monster::reset_stats()
 
 void monster::reset_special( const std::string &special_name )
 {
-    dialogue d( get_talker_for( this ), get_talker_for( get_avatar() ) );
+    dialogue d( get_talker_for( this ), get_talker_for( get_avatar_legacy() ) );
     set_special( special_name, type->special_attacks.at( special_name )->cooldown.evaluate( d ) );
 }
 
 void monster::reset_special_rng( const std::string &special_name )
 {
-    dialogue d( get_talker_for( this ), get_talker_for( get_avatar() ) );
+    dialogue d( get_talker_for( this ), get_talker_for( get_avatar_legacy() ) );
     set_special( special_name, rng( 0,
                                     type->special_attacks.at( special_name )->cooldown.evaluate( d ) ) );
 }
@@ -3052,7 +3052,7 @@ void monster::process_turn()
                 sounds::sound( pos_bub(), 20, sounds::sound_t::combat, _( "vrrrRRRUUMMMMMMMM!" ), false,
                                "explosion",
                                "default" );
-                Character &player_character = get_player_character();
+                Character &player_character = get_avatar_legacy();
                 if( player_character.sees( here, pos_bub( here ) ) ) {
                     add_msg( m_bad, _( "Lightning strikes the %s!" ), name() );
                     add_msg( m_bad, _( "Your vision goes white!" ) );
@@ -3173,8 +3173,8 @@ void monster::die( map *here, Creature *nkiller )
     }
 
     // This is special-cased "death guilt" for human "monsters". They apply full murder penalties, it's quite a bit different to kill a living human than to re-kill the corpse of a child.
-    if( type->has_flag( mon_flag_GUILT_HUMAN ) && get_killer() == &get_player_character() ) {
-        get_player_character().apply_murder_penalties( this );
+    if( type->has_flag( mon_flag_GUILT_HUMAN ) && get_killer() == &get_avatar_legacy() ) {
+        get_avatar_legacy().apply_murder_penalties( this );
     }
 
     if( type->mdeath_effect.eoc.has_value() ) {
@@ -3530,9 +3530,9 @@ void monster::process_one_effect( effect &it, bool is_new )
                            "cough" );
         }
 
-        avatar &you = get_avatar(); // No NPCs for now.
-        if( rl_dist( pos_bub(), you.pos_bub() ) <= 1 ) {
-            you.get_sick( false );
+        Character *nearest = g->nearest_player( pos_abs() );
+        if( nearest != nullptr && rl_dist( pos_bub(), nearest->pos_bub() ) <= 1 ) {
+            nearest->get_sick( false );
         }
     } else if( id == effect_fake_flu ) {
         // Need to define the two separately because it's theoretically (and realistically) possible to have both flu and cold at once, both for players and monsters.
@@ -3541,9 +3541,9 @@ void monster::process_one_effect( effect &it, bool is_new )
                            "cough" );
         }
 
-        avatar &you = get_avatar(); // No NPCs for now.
-        if( rl_dist( pos_bub(), you.pos_bub() ) <= 1 ) {
-            you.get_sick( true );
+        Character *nearest = g->nearest_player( pos_abs() );
+        if( nearest != nullptr && rl_dist( pos_bub(), nearest->pos_bub() ) <= 1 ) {
+            nearest->get_sick( true );
         }
     }
 
@@ -3580,7 +3580,7 @@ void monster::process_effects()
         set_speed_bonus( min_speed_bonus );
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     //If this monster has the ability to heal in combat, do it now.
     int regeneration_amount = type->regenerates;
     //Apply effect-triggered regeneartion modifiers
@@ -3621,7 +3621,7 @@ void monster::process_effects()
     //Monster will regen morale and aggression if it is at/above max HP
     //It regens more morale and aggression if is currently fleeing.
     if( type->regen_morale && hp >= type->hp ) {
-        if( is_fleeing( player_character ) ) {
+        if( nearest != nullptr && is_fleeing( *nearest ) ) {
             morale = type->morale;
             anger = type->agro;
         }
@@ -4116,7 +4116,8 @@ void monster::hear_sound( const tripoint_bub_ms &source, const int vol, const in
         return;
     }
     // only trigger this if the monster is not friendly or the source isn't the player
-    if( friendly == 0 || source != get_player_character().pos_bub() ) {
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( friendly == 0 || nearest == nullptr || source != nearest->pos_bub() ) {
         process_trigger( mon_trigger::SOUND, volume );
     }
     provocative_sound = tmp_provocative;

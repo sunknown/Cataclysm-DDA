@@ -4620,9 +4620,11 @@ Character *game::nearest_player( const tripoint_abs_ms &pos )
     Character *best = nullptr;
     int best_dist = std::numeric_limits<int>::max();
     // Slots are visited in index order, so ties resolve to the lower slot
-    // deterministically.
+    // deterministically. get_hp() <= 0 is used rather than is_dead_state()
+    // because the latter emits an invincibility debugmsg for bodyless avatars,
+    // which some tests create transiently.
     for( avatar *slot : player_slots ) {
-        if( slot->is_dead_state() ) {
+        if( slot->get_hp() <= 0 ) {
             continue;
         }
         const int d = rl_dist( slot->pos_abs(), pos );
@@ -4641,7 +4643,7 @@ bool game::any_player_sees( const tripoint_abs_ms &pos )
     // absolute position is converted once rather than per slot.
     const tripoint_bub_ms local = here.get_bub( pos );
     for( avatar *slot : player_slots ) {
-        if( !slot->is_dead_state() && slot->sees( here, local ) ) {
+        if( slot->get_hp() > 0 && slot->sees( here, local ) ) {
             return true;
         }
     }
@@ -4652,7 +4654,7 @@ bool game::any_player_within( const tripoint_bub_ms &p, int dist )
 {
     map &here = get_map();
     for( avatar *slot : player_slots ) {
-        if( !slot->is_dead_state() && rl_dist( slot->pos_bub( here ), p ) <= dist ) {
+        if( slot->get_hp() > 0 && rl_dist( slot->pos_bub( here ), p ) <= dist ) {
             return true;
         }
     }
