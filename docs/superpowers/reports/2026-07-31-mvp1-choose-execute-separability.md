@@ -790,10 +790,99 @@ struct intent_read {
 Риски (не влияющие на вердикт): `continuous`-режим с `learner_id` — если слушатель (NPC) покидает группу или меняет состояние между отправкой намерения и выполнением, активность может завершиться досрочно (`player_read()` проверяет `learner_id` на `:2333/2356`). Это не UI-проблема, а логика отмены активности. Ereader charges — если ereader разрядился или был потерян между отправкой и выполнением, `do_turn` отменит активность (`activity_actor.cpp:2173-2189`). Это детерминированная проверка, не требующая UI.
 
 
+## 7. Торговля
+
+**Точка входа:** `src/game.cpp:5433` (`case ACTION_TRADE:` → `npc_trading::trade( who, 0, _( "Trade" ) );`) и `src/npctalk_funcs.cpp:200,230,1132` (ветки диалога «Reward», «Trade», «Pay:»). Единое определение — `src/npctrade.cpp:287` `bool npc_trading::trade( npc &np, int cost, const std::string &deal )`.
+
+**Путь исполнения:**
+
+1. `npctrade.cpp:287` `npc_trading::trade()` — подготовка: `np.shop_restock()` (`:289`), `np.drop_invalid_inventory()` (`:292`). Затем создаётся `std::unique_ptr<trade_ui>` (`:294`) и вызывается `tradeui->perform_trade()` (`:295`). **Фаза выбора заканчивается здесь и передаёт управление интерактивному циклу**, мутации мира ещё не было.
+
+2. `trade_ui.cpp:193` `trade_ui::perform_trade()` — интерактивный цикл `while( !_exit )`, внутри которого на каждом шаге вызывается `_panes[_cpane]->execute()` (`:199`) и обрабатываются события из очереди через `_process( ev )` (`:204`). Цикл работает, пока не придёт событие `TRADECANCEL`, `TRADEOK` или `SWITCH`. При `TRADEOK` вызывается `_confirm_trade()` (`:286`), который может открыть `popup()` или `query_yn()`. При успешном завершении (`_traded == true`) возвращается `trade_result_t` со списками выбранных предметов и расчётами.
+
+3. `trade_selector::execute()` (наследник `inventory_drop_selector`, реализован в `inventory_ui.cpp:5353`) — собственный цикл обработки ввода игрока в рамках одной панели торгового окна. Содержит вызов `ui_manager::redraw_invalidated()` (`:5362`) внутри цикла — это перерисовка, а не вопрос. Обработка ввода идёт через `_ctxt_trade.handle_input()` (`:5363`), который может сгенерировать события `SWITCH`, `TRADEOK`, `TRADECANCEL`, `AUTO_BALANCE`, `BANK_BALANCE`, либо передать управление в `inventory_drop_selector::on_input()` (`:5382`) для стандартных действий инвентаря (выбор предмета, фильтр и т.д.).
+
+4. `_confirm_trade()` (`trade_ui.cpp:301`) — проверка условий сделки: если NPC не готов принять сделку, показывается `popup()` (`:307`/`:309`/`:314`). Если NPC не может запомнить долг, вызывается `query_yn( "I'm never going to be able to pay you back..." )` (`:317`). Иначе — финальное подтверждение `query_yn( "Looks like a deal! Accept this trade?" )` (`:323`). Все вызовы происходят **до** мутации мира, в рамках интерактивного цикла выбора.
+
+5. После возврата из `perform_trade()`, если `trade_result.traded == true`, выполняются фактические перемещения предметов:
+   - `npc_trading::transfer_items( trade_result.items_you, ... )` (`npctrade.cpp:305`) — перемещение предметов игрока в эскроу.
+   - `npc_trading::transfer_items( trade_result.items_trader, ... )` (`:307`) — перемещение предметов NPC к игроку.
+   - `distribute_items_to_npc_zones( escrow, np )` (`:310`, для shopkeeper) или цикл `np.i_add()` (`:312-314`) — размещение полученных предметов у NPC.
+   - Обработка `trade_charges`/`trade_amount` на тайлах карты (`:317-335`).
+   - Обновление баланса: `player_character.cash -= trade_result.delta_bank` (`:339`), `update_npc_owed()` (`:340`), `player_character.practice()` (`:341`).
+
+**Классификация всех найденных обращений к UI:**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `ui_manager::redraw_invalidated()` (основной цикл перерисовки) | `src/inventory_ui.cpp:5362` (внутри `trade_selector::execute()`) | грep | P | Перерисовка внутри интерактивного цикла выбора. До мутации, до `perform_trade()`. |
+| `ui_manager::redraw()` (запрос строки фильтра) | `src/inventory_ui.cpp:3233` (внутри `inventory_selector::query_string()`, вызываемой из `query_count()`) | косв. | P | Вызывается, когда игрок вводит фильтр в торговом окне. До мутации. |
+| `string_input_popup` (запрос строки фильтра) | `src/inventory_ui.cpp:3214` (внутри `inventory_selector::query_string()`) | косв. | P | Создаётся при вводе фильтра. До мутации. |
+| `popup( "%s cannot be traded." )` | `src/trade_ui.cpp:242` (внутри `autobalance()`) | грep | P | Показывается, если автобаланс пытается добавить нес tradeable предмет. До мутации. |
+| `popup( "Your promises of digital payment..." )` | `src/trade_ui.cpp:258` (внутри `bank_balance()`) | грep | P | Показывается, если опция CAPITALISM выключена. До мутации. |
+| `popup( "You'll need to offer me more than that." )` | `src/trade_ui.cpp:307` (внутри `_confirm_trade()`) | грep | P | Показывается, если NPC не готов принять сделку и не может extend credit. До мутации. |
+| `popup( "Sorry, I'm only willing to extend you %s in credit." )` | `src/trade_ui.cpp:309` (внутри `_confirm_trade()`) | грep | P | Показывается, если NPC не готов принять сделку, но может extend credit. До мутации. |
+| `popup( "%s doesn't have the appropriate pockets..." )` | `src/trade_ui.cpp:314` (внутри `_confirm_trade()`) | грep | P | Показывается, если у NPC нет карманов для принимаемых предметов. До мутации. |
+| `query_yn( "I'm never going to be able to pay you back..." )` | `src/trade_ui.cpp:317` (внутри `_confirm_trade()`) | грep | P | Вопрос о том, соглашается ли игрок на долг, который NPC не может запомнить. До мутации. |
+| `query_yn( "Looks like a deal! Accept this trade?" )` | `src/trade_ui.cpp:323` (внутри `_confirm_trade()`) | грep | P | Финальное подтверждение сделки. До мутации. |
+
+Как решалось, что вызов «на пути»: путь исполнения прослежен от `npc_trading::trade()` через `trade_ui::perform_trade()` → `trade_selector::execute()` → `_process( ev )` → `_confirm_trade()`, а также через индикредность `inventory_selector::query_string()` (вызываемую из `query_count()` при вводе фильтра). Все вызовы происходят внутри интерактивного цикла `perform_trade()`, который завершается ДО любого перемещения предметов. Фактическая мутация мира происходит после возврата из `perform_trade()` в `npc_trading::trade()` (`:297-343`), и ни один из вызовов в этом участке не содержит UI-функций (проверено: `transfer_items`, `distribute_items_to_npc_zones`, `update_npc_owed`, `player_character.practice` — все детерминированные, без вопросов).
+
+**Вердикт:** режется
+
+**Набросок намерения:**
+
+```cpp
+struct intent_trade {
+    item_location trader;                 // NPC-продавец (character_id или equivalent)
+    bool trade_accepted;                  // результат query_yn("Looks like a deal!") — ключевое поле:
+                                          // если false, сделка не состоится, и apply_intent не должен
+                                          // мутировать мир. Предрешается в choose-фазе.
+
+    // Списки обмениваемых предметов, собранные в choose-фазе:
+    struct trade_item {
+        item_location location;           // исходная локация предмета (откуда берётся)
+        int quantity;                     // количество (для charge-based предметов — заряды)
+    };
+    std::vector<trade_item> items_from_player;   // что игрок отдаёт NPC
+    std::vector<trade_item> items_from_trader;   // что NPC отдаёт игроку
+
+    // Расчёты, известные в момент подтверждения:
+    int value_player_items;               // суммарная стоимость предметов игрока
+    int value_trader_items;               // суммарная стоимость предметов NPC
+    int balance;                          // разница (player - trader), <0 = игрок доплачивает
+    int delta_bank;                       // изменение банковского счёта (withdrawal/deposit)
+    int cost;                             // начальная стоимость услуги (если cost > 0, это не barter)
+
+    // Для NPC, которые не обмениваются бесплатно:
+    bool will_exchange_freely;            // np.will_exchange_items_freely() — известен заранее
+    int max_credit_extended;              // максимальный кредит NPC — известен заранее
+    int max_willing_to_owe;               // максимум, готовый запомнить долг — известен заранее
+    bool debt_over_limit_confirmed;       // результат query_yn("I'm never going to be able...") —
+                                          // предрешается в choose-фазе, если долг превышает лимит
+};
+```
+
+Поля `items_from_player` и `items_from_trader` используют `item_location` с указанием исходной локации, потому что `transfer_items()` в `apply_intent` обязан восстановить те же перемещения, что были выбраны в choose-фазе. Поле `trade_accepted` — критическое: если игрок отказался от подтверждения (`query_yn` вернул false), намерение должно быть отброшено без применения. Поля `max_credit_extended` и `max_willing_to_owe` нужны, чтобы `apply_intent` мог детерминированно воспроизвести логику `_confirm_trade()` без вызова UI — но поскольку решение уже предрешено в choose-фазе (`trade_accepted`), эти поля фактически не используются в execute, а служат для валидации намерения (если состояние мира изменилось так, что сделка больше невозможна, intent должен быть отклонён).
+
+Не включено (сознательно): `npc.shop_restock()` и `np.drop_invalid_inventory()` — это обслуживание NPC перед торговлей, не часть исхода сделки. `distribute_items_to_npc_zones()` — детерминированная логика размещения, не требует UI. `player_character.practice(skill_speech, ...)` — детерминированный расчёт, не требует UI.
+
+**Что мешает и как обойти:** Проблем нет. Торговля — один из самых чистых случаев для разделения choose/execute:
+
+1. **Фаза выбора (P):** Весь UI-взаимодействие происходит внутри `perform_trade()` до мутации мира: выбор предметов обоими сторонами, автобаланс, банковский баланс, подтверждения долга и финальное "Looks like a deal?". Все ответы фиксируются и передаются в намерении.
+
+2. **Фаза исполнения (без UI):** После `perform_trade()` код в `npc_trading::trade()` (`:297-343`) выполняет только детерминированные перемещения предметов и расчёты — ни одного вызова из списка UI-функций. Нет activities, нет `assign_activity`, нет многоходовых процессов.
+
+3. **Мультиплеер:** Вопрос "accept this trade?" задаётся каждому игроку отдельно в фазе выбора. Ответ (`trade_accepted`) передаётся в намерении. Внутри execute код опирается только на переданные списки предметов и расчёты, не требуя дополнительных решений от других игроков.
+
+Риски (не влияющие на вердикт): `npc.will_exchange_items_freely()` и кредитные лимиты — если NPC потерял статус shopkeeper или изменил отношение к игроку между отправкой намерения и выполнением, `apply_intent` должен отклонить intent (проверка `npc_will_accept_trade` в `_confirm_trade` воспроизводится детерминированно). Это не UI-проблема, а логика валидации.
+
+
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
 |---|---|---|---|---|
+| 7 | Торговля | режется | 0 | 0 |
 
 ## Решение по воротам
 
