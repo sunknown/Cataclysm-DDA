@@ -995,11 +995,6 @@ ifeq ($(SOUND), 1)
   CXXFLAGS += -DSDL_SOUND
 endif
 
-ifeq ($(MULTIPLAYER), 1)
-  DEFINES += -DMULTIPLAYER
-  SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)
-endif
-
 # We don't use SDL_main -- we have proper main()/WinMain()
 CXXFLAGS := $(filter-out -Dmain=SDL_main,$(CXXFLAGS))
 LDFLAGS := $(filter-out -lSDL2main,$(LDFLAGS))
@@ -1106,6 +1101,10 @@ ifeq ($(HEADERPOPULARITY), 1)
   SOURCES := $(shell echo "$$(echo $$(grep -oh "^#include \"[^\"]*.h\"" $(SRC_DIR)/*.cpp | sort | uniq -c | sort -rn | cut -d \" -f 2 | sed -e 's/\.h$$/.cpp/' | sed -e 's/^/$(SRC_DIR)\//') | xargs -n 1 ls 2> /dev/null; ls -1 $(SRC_DIR)/*.cpp)" | awk '!x[$$0]++')
 else
   SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
+endif
+ifeq ($(MULTIPLAYER), 1)
+  DEFINES += -DMULTIPLAYER
+  SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)
 endif
 C_SOURCES := $(SRC_DIR)/cata_allocator_c.c
 THIRD_PARTY_SOURCES := $(wildcard $(SRC_DIR)/third-party/flatbuffers/*.cpp $(SRC_DIR)/third-party/fmt/*.cc)
