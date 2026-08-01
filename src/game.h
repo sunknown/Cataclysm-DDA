@@ -441,6 +441,12 @@ class game
         void set_active_slot( size_t index );
         avatar &player_at( size_t index );
         avatar &add_player_slot();
+        /** Returns a snapshot of every player slot (raw pointers). */
+        std::vector<avatar *> get_players();
+        /** Returns the alive avatar whose absolute position is closest to @p pos. */
+        Character *nearest_player( const tripoint_abs_ms &pos );
+        /** True if any alive avatar has line-of-sight to @p pos on the current map. */
+        bool any_player_sees( const tripoint_abs_ms &pos );
         /**
          * Returns the approximate number of creatures in the reality bubble.
          * Because of performance restrictions it may return a slightly incorrect

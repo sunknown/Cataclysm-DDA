@@ -4610,6 +4610,44 @@ avatar &game::add_player_slot()
     return *player_slots.back();
 }
 
+std::vector<avatar *> game::get_players()
+{
+    return player_slots;
+}
+
+Character *game::nearest_player( const tripoint_abs_ms &pos )
+{
+    Character *best = nullptr;
+    int best_dist = std::numeric_limits<int>::max();
+    // Slots are visited in index order, so ties resolve to the lower slot
+    // deterministically.
+    for( avatar *slot : player_slots ) {
+        if( slot->is_dead_state() ) {
+            continue;
+        }
+        const int d = rl_dist( slot->pos_abs(), pos );
+        if( d < best_dist ) {
+            best_dist = d;
+            best = slot;
+        }
+    }
+    return best;
+}
+
+bool game::any_player_sees( const tripoint_abs_ms &pos )
+{
+    map &here = get_map();
+    // Creature::sees takes bubble coordinates (src/creature.h:407), so the
+    // absolute position is converted once rather than per slot.
+    const tripoint_bub_ms local = here.get_bub( pos );
+    for( avatar *slot : player_slots ) {
+        if( !slot->is_dead_state() && slot->sees( here, local ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 size_t game::num_creatures() const
 {
     // Plus one for the player.
