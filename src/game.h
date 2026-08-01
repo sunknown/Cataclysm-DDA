@@ -193,6 +193,7 @@ class game
         friend timed_event_manager &get_timed_events();
         friend item_wakeup_manager &get_item_wakeups();
         friend memorial_logger &get_memorial();
+        friend class game_test_helper;
         friend bool turn_handler::cleanup_at_end();
         friend global_variables &get_globals();
     public:
