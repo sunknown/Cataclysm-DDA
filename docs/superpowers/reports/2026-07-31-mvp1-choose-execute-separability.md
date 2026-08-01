@@ -1007,12 +1007,110 @@ struct intent_install_vehicle_part {
 
 Все четыре обхода названы конкретно, M-обращений не обнаружено (все UI-вызовы в `complete_vehicle`/`finish` имеют класс A, а не M, поскольку живут внутри активности). Вердикт «режется с оговоркой» обоснован.
 
+## 9. Взлом
+
+**Точка входа:** `src/iexamine_actors.cpp:235` (`iexamine::try_start_hacking`).
+
+**Путь исполнения:**
+
+1. `iexamine_actors.cpp:235` `iexamine::try_start_hacking(Character&, const tripoint_bub_ms&)` — вызывается после подтверждения игрока (`query_yn`, строка 234). Внутри: вызов `can_hack(you)` (`iexamine.cpp:1370`), затем при успешной проверке — `hacking_tool->consume_tool_uses(1, ...)` (`iexamine.cpp:1374`) и `you.assign_activity(hacking_activity_actor(hacking_tool))` (`iexamine.cpp:1375`). **Ни одного обращения к UI-функциям из списка.** Фаза выбора заканчивается здесь.
+
+2. `iexamine.cpp:1352` `iexamine::can_hack(Character&)` — проверяет наличие читаемости (`trait_ILLITERATE`) и наличие инструмента взлома с достаточными зарядами. Содержит `add_msg(...)` для сообщений об ошибке, но **ни одного** вызова `query_yn`/`query_int`/`uilist`/`popup`/остальных функций из списка. Класс D (недостижимо в нормальном прохождении — функция возвращает `false` и активность не начинается).
+
+3. `activity_actor.cpp:974` `hacking_activity_actor::start(player_activity&, Character&)` — устанавливает `act.moves_total = 5_minutes` и `act.moves_left = 5_minutes`. **Ни одного обращения к UI.**
+
+4. `activity_actor_definitions.h:713` `hacking_activity_actor::do_turn(player_activity&, Character&)` — объявлен как пустой (`{};`). **Ни одного обращения к UI.**
+
+5. `activity_actor.cpp:1057` `hacking_activity_actor::finish(player_activity&, Character&)` — вызывает `get_hack_type(examp)` (`activity_actor.cpp:1060`) и `hack_attempt(who, tool)` (`activity_actor.cpp:1061`). Затем в зависимости от результата:
+   - `hack_result::FAIL`: вызывает `get_event_bus().send<event_type::triggers_alarm>(...)` и `sounds::sound(...)` — **без UI**.
+   - `hack_result::SUCCESS` с `type == hack_type::GAS`: вызывает `iexamine::getNearFilledGasTank(...)` (`activity_actor.cpp:1081`) → `iexamine.cpp:5127` (поиск цистерны, без UI), затем `iexamine::getGasPumpByNumber(...)` (`activity_actor.cpp:1087`) → `iexamine.cpp:5236` (поиск насоса по индексу `uistate.ags_pay_gas_selected_pump`, без UI), затем `iexamine::toPumpFuel(...)` (`activity_actor.cpp:1089`) → `iexamine.cpp:5250` (перемещение топлива, без UI).
+   - `hack_result::SUCCESS` с `type == hack_type::SAFE`: `add_msg_if_player(...)` и `here.furn_set(...)` — **без UI**.
+   - `hack_result::SUCCESS` с `type == hack_type::DOOR`: `add_msg_if_player(...)` и цикл `here.ter_set(...)` — **без UI**.
+   - В конце: `act.set_to_null()` (`activity_actor.cpp:1111`) — **без UI**.
+
+**Дополнительные точки входа в взлом:**
+- `iexamine.cpp:1439` `cardreader_foodplace(...)` — `query_yn("Attempt to hack this card-reader?")` → `try_start_hacking(...)`. Класс P (до `assign_activity`).
+- `iexamine.cpp:1866` `gunsafe_el(...)` — `query_yn("Attempt to hack this safe?")` → `try_start_hacking(...)`. Класс P.
+- `iexamine.cpp:5471` `ags_pay_gas(...)` — выбор «Hack console» из `uilist amenu` (`iexamine.cpp:5377-5402`) → `try_start_hacking(...)`. Класс P (выбор из меню до `assign_activity`).
+
+**Шаг 2 брифа (grep по указанным файлам):**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `query_yn` («Attempt to hack this card-reader?») | `src/iexamine_actors.cpp:234` | грep | P | Вызов перед `try_start_hacking` (`iexamine_actors.cpp:235`), до `assign_activity`. |
+| `query_yn` («Attempt to hack this safe?») | `src/iexamine.cpp:1865` | грep | P | Вызов перед `try_start_hacking` (`iexamine.cpp:1866`), до `assign_activity`. |
+| `query_yn` («Attempt to hack this card-reader?») | `src/iexamine.cpp:1438` | грep | P | Вызов перед `try_start_hacking` (`iexamine.cpp:1439`), до `assign_activity`. |
+| `uilist amenu` (меню газовой станции, опция «Hack console») | `src/iexamine.cpp:5377-5402` | грep | P | Выбор действия в меню газовой станции, включая возможность взлома. До `try_start_hacking` (`iexamine.cpp:5471`) и до `assign_activity`. |
+
+**Шаг 2 брифа (grep по указанным файлам, продолжение):**
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `query_yn` («Swipe your ID card?») | `src/iexamine.cpp:1384` | грep | P | В `cardreader_robofac(...)`, до любой мутации. Не относится к взлому, но в том же файле. |
+| `query_yn` («Press mask on the reader?») | `src/iexamine.cpp:1400` | грep | P | В `cardreader_foodplace(...)`, до любой мутации. Не относится к взлому, но в том же файле. |
+| `query_yn` («Lock doors?») | `src/iexamine.cpp:1416` | грep | P | В `cardreader_foodplace(...)`, ветка «двери уже разблокированы». Не относится к взлому, но в том же файле. |
+
+**Индирекция (один уровень вглубь, по A1):** для каждой функции, вызываемой на пути (п.1-5 выше), проверено, обращается ли она сама к списку UI-функций. Найдено 0 мест:
+- `can_hack` (`iexamine.cpp:1352`) — только чтение состояния, без UI.
+- `consume_tool_uses` (`item.cpp:3964`, вызов из `iexamine.cpp:1374`) — расход зарядов инструмента, без UI.
+- `get_hack_type` (`activity_actor.cpp:1039`) — проверка типа терминала по флагам, без UI.
+- `hack_attempt` (`activity_actor.cpp:1011`) — RNG-бросок успеха/неудачи, без UI.
+- `getNearFilledGasTank` (`iexamine.cpp:5127`) — поиск цистерны в радиусе, без UI.
+- `getGasPumpByNumber` (`iexamine.cpp:5236`) — поиск насоса по индексу, без UI.
+- `toPumpFuel` (`iexamine.cpp:5250`) — перемещение топлива между тайлами, без UI.
+
+Других мест на один уровень вглубь не найдено: `hack_level` (`activity_actor.cpp:997`) — расчёт уровня взлома по навыку/интеллекту/качеству инструмента, без UI; `get_event_bus().send<event_type::triggers_alarm>(...)` (`activity_actor.cpp:1068`) — отправка события в EventBus, без UI; `sounds::sound(...)` (`activity_actor.cpp:1069`) — воспроизведение звука, без UI.
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| *Индирекция не найдена* | — | косв. | — | Все функции на пути (п.1-5) и на один уровень вглубь не содержат обращений к UI-функциям из списка. |
+
+**Итог по проходам:** базовый grep по `src/iexamine.cpp`/`src/activity_actor.cpp` даёт **4** строки реальных обращений (все P, все до `assign_activity`). Индирекция (один уровень вглубь) не добавила ни одной строки: все функции на пути чистые. Итого по всем проходам: **0 M, 0 A, 4 P, 0 D**.
+
+**Вердикт:** режется
+
+**Набросок намерения:**
+
+```cpp
+struct intent_hack {
+    tripoint_abs_ms target;             // позиция взламываемого терминала/сейфа
+    item_location hacking_tool;         // инструмент взлома (выбран до `try_start_hacking`)
+    int tool_uses_consumed = 1;         // количество потраченных зарядов (детерминировано: 1 базово, +2 при success <= -5)
+
+    // Детерминированные вычисления, известные в момент выбора:
+    int hack_level;                     // результат hack_level(who, tool) (activity_actor.cpp:997-1009)
+    time_duration time_taken;           // 5 минут (activity_actor.cpp:976)
+
+    // Результат RNG-броска, известный после отправки намерения и применения на сервере:
+    int success_roll;                   // normal_roll(hack_level, 5) (activity_actor.cpp:1023)
+    hack_type target_type;              // SAFE/DOOR/GAS/NONE (activity_actor.cpp:1039-1055)
+
+    // Для hack_type::GAS:
+    tripoint_abs_ms gas_tank_location;  // позиция ближайшей цистерны (iexamine.cpp:5127)
+    int fuel_units;                     // объём топлива в цистерне (iexamine.cpp:5128)
+    fuel_station_fuel_type fuel_type;   // тип топлива (iexamine.cpp:5129)
+    tripoint_abs_ms gas_pump_location;  // позиция выбранного насоса (uistate.ags_pay_gas_selected_pump)
+
+    // Результат применения намерения (возвращается клиенту):
+    hack_result result;                 // UNABLE/FAIL/NOTHING/SUCCESS
+};
+```
+
+**Что мешает и как обойти:** Препятствий нет. Все UI-обращения (четыре `query_yn`/`uilist`) происходят **до** вызова `try_start_hacking`, то есть до `assign_activity` и до начала мутации мира. Внутри активности (`do_turn` пустой, `finish` содержит только расчёт RNG, отправку событий и изменение состояния карты) ни одного обращения к UI-функциям из списка нет. Вердикт «режется» обоснован.
+
+Отдельно, но с тем же диагнозом «единого локального игрока»: `uistate.ags_pay_gas_selected_pump` (`iexamine.cpp:5425`, используется в `activity_actor.cpp:1088`) — состояние UI, которое сохраняется между вызовами газовой станции. В многопользовательской игре этот индекс должен передаваться в намерении как поле `gas_pump_index`, а не читаться из глобального состояния. Это не влияет на вердикт (вердикт «режется»), но требует внимательности при реализации `apply_intent`.
+
 
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
 |---|---|---|---|---|
+| 5 | Строительство | не режется | 2 | 5 |
+| 6 | Чтение | режется | 0 | 0 |
 | 7 | Торговля | режется | 0 | 0 |
+| 8 | Установка (бионика) | режется | 0 | 0 |
+| 8 | Установка (транспорт) | режется с оговоркой | 0 | 6 |
+| 9 | Взлом | режется | 0 | 0 |
 
 ## Решение по воротам
 
