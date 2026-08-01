@@ -531,6 +531,139 @@ struct intent_theft_predetermination {
 
 **Итог раунда 3:** классификация P/M и вердикт «не режется» не изменились — все 5 находок этого раунда исправляют прозу (списки сайтов, арифметику суммирования, формулировку про A3, описание поля намерения), а не переоткрывают классификацию обращений.
 
+## 5. Строительство
+
+**Точка входа:** `src/handle_action.cpp:2935` (`case ACTION_CONSTRUCT:`) → при `!player_character.in_vehicle` вызывает `construction_menu( false )` (`handle_action.cpp:2939`, определение — `src/construction.cpp:521`).
+
+**Путь исполнения:**
+
+1. `construction.cpp:521` `construction_menu()` — целиком UI: список конструкций, фильтр, превью, выбор пункта. По `CONFIRM` (`:1109`), если `player_can_build(...)` (`:1191`) и пройдены проверки видимости/территории (см. п.2 ниже) — вызывает `place_construction( { constructs[select] } )` (`:1131`) и завершает меню (`exit = true`, `:1133`). Мутации мира в самом `construction_menu()` нет.
+2. Внутри ветки `CONFIRM`, до `place_construction`, — `g->warn_player_maybe_anger_local_faction( true )` (`construction.cpp:1124`). Это не проверка без побочных эффектов: при отказе игрока продолжать функция сама портит отношения с фракцией (`game.cpp:5729-5731`) — но это происходит строго до `place_construction`, то есть до собственной мутации строительства. См. таблицу и отдельное примечание после неё.
+3. `place_construction()` (`construction.cpp:1357`) — `choose_adjacent( "Construct where?", ... )` (`:1385`) выбирает точку, всё ещё без мутации. Затем цикл по группам компонентов (`:1438-1445`) вызывает `player_character.consume_items( it, 1, is_crafting_component, return_false<itype_id>, true )` (`:1439`) для каждой требуемой группы материалов — этот вызов, если у игрока и рядом на карте одновременно есть подходящий материал, сам открывает `uilist` (см. п.4). Затем `here.partial_con_set( pnt, pc )` (`:1448`) — это первая безусловная мутация мира в этой активности (запись частичной конструкции на тайл). Сразу после неё — цикл по группам инструментов (`:1449-1451`), вызывающий `player_character.consume_tools( it )` (`:1450`), который тоже может открыть `uilist` (см. п.4) — уже гарантированно после `partial_con_set`. Далее — инвалидация кэшей и `player_character.assign_activity( build_construction_activity_actor(...) )` (`:1456`). **Фаза выбора в сегодняшнем коде формально не заканчивается на входе в `place_construction()` — часть UI из списка находится ВНУТРИ неё, вперемешку с первыми мутациями.**
+4. Индирекция (см. таблицу): `consume_items( const std::vector<item_comp>&, ... )` (`crafting.cpp:3327`) вызывает `select_item_component()` (`crafting.cpp:2923`), которая при неоднозначности источника (и на карте, и у игрока есть подходящий материал) открывает `uilist cmenu` («Use which component?», объявление `crafting.cpp:3052`, `.query()` — `:3162`); аналогично `consume_tools( const std::vector<tool_comp>&, ... )` (`crafting.cpp:3938`) вызывает `select_tool_component()` (`crafting.cpp:3358`), которая при неоднозначности источника инструмента открывает `uilist tmenu` («Use which tool?», объявление `crafting.cpp:3417`, `.query()` — `:3460`).
+5. `build_construction_activity_actor::do_turn()` (`activity_actor.cpp:8899`) — вызывается движком активности каждый ход. Каждый ход: `pc->id->do_turn_special( construction_bub, you )` (`:8944`) — вызывает JSON-заданную per-turn функцию конкретной конструкции (`do_turn_shovel`/`do_turn_deconstruct`/`do_turn_exhume`/пустышку `check_nothing`-аналог, в зависимости от `post_special`/`pre_special` в данных). Когда счётчик прогресса достигает 100% — `complete_construction( act, you )` (`:8951`), тоже вызывается прямо из `do_turn()`. Отдельного `finish()` у `build_construction_activity_actor` **нет** — завершение целиком происходит внутри `do_turn()`.
+6. `complete_construction()` (`construction.cpp:1457`) — начисляет опыт, раздаёт опыт помощникам, убирает `partial_con`, перемещает предметы с тайла, меняет террейн/фёрнитуру, спавнит побочные продукты, чистит активность (`act.set_to_null()`, `:1543`) — и **после** этого вызывает все `built.post_specials` (`:1548`) — это и есть `done_*`-функции (`done_vehicle`, `done_wiring`, `done_grave`, `done_digormine_stair` и т.д.), заданные в JSON конструкции. Если в `backlog` уже стоял `ACT_MULTIPLE_CONSTRUCTION` — назначает `multi_build_construction_activity_actor()` (`:1550-1552`), тоже из `do_turn()`.
+7. `multi_build_construction_activity_actor` — отдельная, зонная активность «построить всё в зоне»; её `multi_activity_do()` (`activity_item_handling.cpp:3823`) при наличии частичной конструкции на тайле просто переставляет `build_construction_activity_actor` (`:3837`), иначе вызывает статический хелпер `construction_activity()` (`activity_item_handling.cpp:3161`), который дублирует логику потребления компонентов/инструментов из `place_construction()` (включая те же `consume_items`/`consume_tools`, то есть тот же потенциальный `uilist`) и тоже завершается `assign_activity( build_construction_activity_actor(...) )` (`:3194`). Файл прочитан целиком — новых UI-функций из списка нет. Эта активность назначается только через отдельный, зонный вход (не через `ACTION_CONSTRUCT`), кроме продолжения через `backlog` в п.6.
+
+**Отдельно — возобновление прерванного строительства (по прямому указанию брифа):** обнаружение незаконченной конструкции на тайле обрабатывается не активностью, а `iexamine::part_con()` (`src/iexamine.cpp:4776`), доступной через `ACTION_EXAMINE` — отдельную точку входа, не через `ACTION_CONSTRUCT`. Внутри — `query_yn( "Unfinished task: %s, %d%% complete here, continue construction?" )` (`iexamine.cpp:4787`) и, при отказе, `query_yn( "Cancel construction?" )` (`:4789`). Оба вызова происходят **до** повторного `you.assign_activity( build_construction_activity_actor(...) )` (`:4794`) — то есть до какой-либо мутации в рамках этого конкретного возобновления. Внутри самой активности (`do_turn`, п.5 выше) при возобновлении ничего заново не спрашивается — `do_turn()` просто продолжает считать прогресс с сохранённого `pc->counter`. Значит для действия «продолжить прерванную конструкцию» нужна собственная пара «выбор/исполнение» (выбор = ответ на эти два `query_yn`), но она не привязана к `ACTION_CONSTRUCT` и не входит в разбираемый здесь путь исполнения.
+
+**Базовый (грep) проход** — дословный `grep -nE "query_yn|query_int|uilist|popup|popup_getkey|string_input_popup|choose_adjacent|choose_adjacent_highlight|look_around|game_menus::inv|target_handler::mode_|ui_manager::redraw|cancel_activity_query|cancel_activity_or_ignore_query" src/construction.cpp` даёт 20 строк. Из них 2 — не вызовы (`:40`, `:70`, оба `#include`), и часть остальных — это сеттеры/геттеры на локальных объектах `popup`/`string_input_popup_imgui` (`:1075-1078`, `:1080`, `:1836`), которые не считаются отдельными UI-обращениями сверх самого объявления/`.query()` того же объекта (тот же подход, что и в разделе про Task 3 к `uilist smenu`/`kmenu`). Реальных, отдельных UI-обращений — 8: `popup` (`:532`), `ui_manager::redraw()` (`:1063`), `string_input_popup_imgui` (поиск-фильтр, объявление `:1074`/`.query()` `:1079`), `popup` (`:1136`), `choose_adjacent` (`:1385`), `string_input_popup_imgui` (имя машины, объявление `:1835`/`.query()` `:1837`), `query_yn` (`:1882`), `query_yn` (`:2033`), `who.query_yn` (`:2232`), `who.query_yn` (`:2271`) — то есть 10 отдельных строк таблицы (уточнение счёта: 8 «функций», но `string_input_popup_imgui` даёт 2 отдельные строки за счёт двух разных использований в разных функциях, а `query_yn`/`popup` встречаются по несколько раз в разных местах — итоговых строк в таблице ниже для базового прохода **10**).
+
+**Индирекция (один уровень вглубь, по A1):** для каждой функции, вызываемой на пути (п.2-4, 6 выше), проверено, обращается ли она сама к списку UI-функций. Найдено 4 места:
+- `g->warn_player_maybe_anger_local_faction( true )` (`construction.cpp:1124`) → `query_yn(...)` (`game.cpp:5706`).
+- `iuse::handle_ground_graffiti(...)` внутри `construct::done_grave()` (`construction.cpp:1804`) → `string_input_popup_imgui` (объявление `iuse.cpp:4991`, `.query()` — `:4995`).
+- `player_character.consume_items( it, 1, is_crafting_component, return_false<itype_id>, true )` (`construction.cpp:1439`) → `Character::consume_items(vector)` (`crafting.cpp:3327`) → `select_item_component()` (`crafting.cpp:2923`) → `uilist cmenu` («Use which component?», объявление `:3052`, `.query()` — `:3162`).
+- `player_character.consume_tools( it )` (`construction.cpp:1450`) → `Character::consume_tools(vector)` (`crafting.cpp:3938`) → `select_tool_component()` (`crafting.cpp:3358`) → `uilist tmenu` («Use which tool?», объявление `:3417`, `.query()` — `:3460`).
+
+Других мест на один уровень вглубь не найдено: `player_can_build`/`player_can_see_to_build`/`load_available_constructions`/`valid_constructions_near_player` (только чтение состояния, без UI); все `check_*`-предикаты конструкции (`construction.cpp:1559-1751`, файл прочитан целиком) — чистые предикаты по карте/трансформам, без UI; `done_trunk_plank`→`iuse::cut_log_into_planks()` (`iuse.cpp:4566`) — только назначает `chop_planks_activity_actor`, без UI; сама эта активность (`activity_actor.cpp:9938-9965`, `do_turn`/`finish` прочитаны целиком) — без UI; `place_appliance()` (`veh_appliance.cpp:86-140`, тело прочитано целиком) — без UI, хотя остальной файл `veh_appliance.cpp` содержит несколько обращений из списка (`:424`, `:525`, `:568`, `:570`, `:737`) — все они принадлежат другим функциям того же файла (взаимодействие с уже построенным устройством через `ACTION_EXAMINE`), не `place_appliance()`, и не лежат на пути `ACTION_CONSTRUCT`; `multi_build_construction_activity_actor::multi_activity_do()`/`construction_activity()` (`activity_item_handling.cpp:3823`/`:3161`, оба прочитаны целиком) — используют те же `consume_items`/`consume_tools`, что уже учтены выше, новых мест нет.
+
+| Обращение | Файл:строка | Проход | Класс | Обоснование |
+|---|---|---|---|---|
+| `popup` («You can not construct anything here.») | `src/construction.cpp:532` | грep | P | Первая строка `construction_menu()`, до построения UI списка и до любой мутации. |
+| `ui_manager::redraw()` | `src/construction.cpp:1063` | грep | P | Перерисовка меню конструкций внутри цикла ввода, до `CONFIRM`, до `place_construction`. |
+| `string_input_popup_imgui` (поиск/фильтр списка), объявление `:1074`, `.query()` — `:1079` | `src/construction.cpp:1074`/`:1079` | грep | P | Фильтрация видимого списка конструкций внутри `construction_menu()`, до выбора пункта и до `place_construction`. |
+| `popup` («You can't build that!») | `src/construction.cpp:1136` | грep | P | Ветка `CONFIRM`, когда `player_can_build` вернул `false` — сообщение об ошибке, `place_construction` не вызывается вовсе. |
+| `choose_adjacent` («Construct where?») | `src/construction.cpp:1385` | грep | P | Первая содержательная строка `place_construction()` — до `consume_items`/`partial_con_set`, мутации ещё не было. |
+| `string_input_popup_imgui` (имя машины), объявление `:1835`, `.query()` — `:1837` | `src/construction.cpp:1835`/`:1837` | грep | A | Первая строка `construct::done_vehicle()` — `post_special`, вызывается из `complete_construction()` (`:1548`), вызываемой из `do_turn()` (`activity_actor.cpp:8951`). К этому моменту террейн/предметы уже мутированы `complete_construction()` (смена террейна, спавн байпродуктов, `act.set_to_null()`, все — до `post_specials`). |
+| `query_yn` («Also reveal all nearby wirings?») | `src/construction.cpp:1882` | грep | A | Внутри `construct::done_wiring()`, тот же `post_special`-механизм, что и строка выше — после того, как `place_appliance()` уже создал устройство на тайле в той же функции. |
+| `query_yn` («The rock feels much warmer than normal.  Proceed?») | `src/construction.cpp:2033` | грep | A | Внутри `construct::done_digormine_stair()`, тот же `post_special`-механизм. Ответ определяет исход (яма vs открытый проём) уже после того, как в этой же функции потрачены калории/вода/сон персонажа (`:2028-2030`, до проверки). |
+| `who.query_yn` («%s\nConfirm deconstruct?») | `src/construction.cpp:2232` | грep | A | Внутри `construct::do_turn_deconstruct()` — вызывается не через `post_specials`, а напрямую через `pc->id->do_turn_special()` (`activity_actor.cpp:8944`), то есть буквально на каждом первом ходу `do_turn()` для этой конструкции (`counter == 0`, `:2227`). При отказе — `here.partial_con_remove()`+`who.cancel_activity()` (`:2248-2249`), т.е. активность уже была назначена и частично мутировала мир (`partial_con_set` в `place_construction`) до этого вопроса. |
+| `who.query_yn` («Would you really touch the sacred resting place of the dead?») | `src/construction.cpp:2271` | грep | A | Внутри `construct::do_turn_exhume()`, тоже напрямую через `pc->id->do_turn_special()` из `do_turn()`, на каждом ходу, пока не появится соответствующая мораль (`!who.has_morale(morale_gravedigger)`, `:2269`). |
+| `query_yn` («You're in the territory of %s… Continue anyway?») | `src/game.cpp:5706`, вызов — `construction.cpp:1124` | косв. | P | Вызывается внутри `construction_menu()` строго до `place_construction()` — до собственной мутации строительства. Побочный эффект отказа/согласия — изменение отношений с фракцией (`game.cpp:5713-5715`) — происходит атомарно с самим вопросом, а не после отдельной, уже начатой мутации стройки; см. примечание после таблицы. |
+| `string_input_popup_imgui` (текст на надгробии), объявление `iuse.cpp:4991`, `.query()` — `:4995`; вызов — `construction.cpp:1804` (`construct::done_grave()`) | `src/iuse.cpp:4991`/`:4995` | косв. | A | `done_grave()` — тоже `post_special`, вызывается из `complete_construction()` из `do_turn()`; к этому моменту `here.destroy_furn(p, true)` (`construction.cpp:1811`) в этой же функции ещё не произошло (вызывается последней строкой), но `complete_construction()` уже сменил террейн/фёрнитуру и очистил активность до вызова `post_specials`. |
+| `uilist cmenu` («Use which component?»), объявление `crafting.cpp:3052`, `.query()` — `:3162`; вызов — `construction.cpp:1439` через `consume_items`→`select_item_component` | `src/crafting.cpp:3052`/`:3162` | косв. | M | Вызывается внутри цикла по группам компонентов в `place_construction()` (`:1438-1445`), **до** `here.partial_con_set` (`:1448`), но каждая итерация цикла реально изымает предметы из мира сразу внутри `Character::consume_items(map&, const comp_selection<item_comp>&, ...)` (`crafting.cpp:3221`, реальное изъятие — `m.use_charges` на `:3248` / `m.use_amount` на `:3252`). Для конструкции с 2+ требуемыми группами материалов вторая и последующие итерации задают этот вопрос **после** того, как материалы первой группы уже необратимо изъяты — то есть после начала мутации мира, и ответ определяет, какие именно предметы будут изъяты дальше. Не гейтировано `test_mode`. |
+| `uilist tmenu` («Use which tool?»), объявление `crafting.cpp:3417`, `.query()` — `:3460`; вызов — `construction.cpp:1450` через `consume_tools`→`select_tool_component` | `src/crafting.cpp:3417`/`:3460` | косв. | M | Вызывается в цикле по группам инструментов в `place_construction()` (`:1449-1451`) — безусловно **после** `here.partial_con_set( pnt, pc )` (`:1448`), которая уже записала частичную конструкцию на тайл. Мировая мутация к этому моменту уже началась независимо от того, сколько групп инструментов требуется; ответ определяет, чей запас заряда инструмента будет потрачен. Не гейтировано `test_mode`. |
+
+Итог по проходам: базовый grep по `construction.cpp` даёт **10** строк реальных обращений (5 P, 5 A) из 20 совпадений regex (2 — `#include`, остальные — сеттеры/`.cancelled()` на тех же двух объектах `popup`/`string_input_popup_imgui`, уже учтённых объявлением+`.query()`). Индирекция (один уровень вглубь) добавляет **4** строки: 1 P, 1 A, **2 M**. Итого по всем проходам: **6 P, 6 A, 2 M, 0 D**.
+
+**Примечание к строке `game.cpp:5706` (P):** в отличие от прочих P-строк, эта не является чистой проверкой без последствий — отказ/согласие сразу меняет `likes_u`/`trusts_u`/`respects_u` владельца лагеря (`game.cpp:5713-5715`). Это не нарушает инвариант для фазы выбора (диалог+мутация репутации происходят до какой-либо мутации строительства и не зависят от неё), но означает, что при переносе в намерение нужно записать не просто «был ли задан вопрос», а его результат как решение, которое `apply_intent` обязан воспроизвести (изменить репутацию фракции) — это не бесплатная UI-проверка, а совмещённый в текущем коде «вопрос+детерминированный побочный эффект», который переносится в фазу выбора целиком.
+
+**Вердикт:** не режется
+
+Основание — механическое, без интерпретационных зазоров (в отличие от Task 4): в таблице есть 2 строки класса M (`crafting.cpp:3162`, `crafting.cpp:3460`, обе — из индирекции через `place_construction()`). Правило `conventions.md` формулирует «не режется» напрямую через «есть хотя бы одно M»; `controller-addenda.md` (A3) требует **ноль** M-обращений для «режется с оговоркой» без исключений — количество A-строк и наличие для них обходов на выбор между «режется с оговоркой» и «не режется» не влияет, если M > 0. Обе M-находки реальны (не за `test_mode`), обе достижимы при обычной игре (конструкция с ≥2 группами материалов, либо любая конструкция, требующая инструмент, при наличии у игрока одновременно личного и ближнего источника материала/заряда) — ни одна не является гипотетическим краевым случаем.
+
+**Набросок намерения:**
+
+```cpp
+// place_construction() сегодня смешивает выбор (choose_adjacent, выбор
+// источника компонента/инструмента при неоднозначности) с первой мутацией
+// (partial_con_set) в одной синхронной функции. Чтобы убрать оба M
+// (crafting.cpp:3162/:3460), весь выбор источника материалов/инструментов
+// должен переехать в фазу выбора целиком — это НЕ один булев ответ, как в
+// A-находках, а набор решений по числу требуемых групп компонентов/
+// инструментов конкретной конструкции (JSON-зависимо, не константа).
+struct intent_construct {
+    tripoint_bub_ms location;              // choose_adjacent, construction.cpp:1385, класс P
+    construction_id chosen_construction;   // выбор пункта меню, construction_menu(), класс P
+
+    // Предрешает uilist "Use which component?" (crafting.cpp:3162) для КАЖДОЙ
+    // группы con.requirements->get_components(), где источник неоднозначен
+    // (и на карте, и у игрока есть материал одновременно). usage_from —
+    // реальный enum из comp_selection<item_comp> (character.h), не отдельная
+    // самодельная перечислимая обёртка.
+    std::vector<comp_selection<item_comp>> component_selection;
+
+    // Предрешает uilist "Use which tool?" (crafting.cpp:3460) для каждой
+    // группы con.requirements->get_tools(), тем же типом comp_selection,
+    // что реально хранит select_tool_component().
+    std::vector<comp_selection<tool_comp>> tool_selection;
+
+    // Предрешает query_yn о территории фракции (game.cpp:5706, P, но с
+    // побочным эффектом — см. примечание к таблице). Нужно "_prompted",
+    // чтобы отличить "вопроса не было" от "был и получил отказ" — оба
+    // случая иначе дают одинаковый false у "_accepted".
+    bool faction_territory_prompted;
+    bool faction_territory_accepted;
+};
+
+// Поля для A-находок (do_turn_special на каждый ход, done_* при завершении).
+// Не отдельная структура "на будущее" — они обязаны попасть в тот же
+// intent_construct, потому что apply_intent не может звать query_yn ни на
+// каком ходу активности.
+struct intent_construct_activity_hooks {
+    // do_turn_deconstruct (construction.cpp:2232): предрешается тем же
+    // текстом (potential_deconstruct_items), который известен уже в момент
+    // выбора точки строительства/сноса — это не зависит от исхода мутации.
+    bool deconstruct_confirmed;             // значим только для конструкций
+                                             // категории DECONSTRUCT
+
+    // do_turn_exhume (construction.cpp:2271): зависит только от
+    // has_trait(trait_SPIRITUAL) — черта не меняется во время активности.
+    bool grave_desecration_accepted;        // значим только для эксгумации
+
+    // done_digormine_stair (construction.cpp:2033): t_lava под тайлом на
+    // момент старта неизвестен игроку (не вскрыт) — заменяется
+    // детерминированным правилом, а не предрешённым ответом (см. "Что
+    // мешает"), поэтому здесь НЕ булево поле игрока, а константа поведения.
+    bool lava_tunnel_policy_continue;       // true = "да, вопреки жаре"
+                                             // (текущий текст default-ответа
+                                             // не хранит игрок — это дизайн-
+                                             // решение, см. ниже)
+
+    // done_vehicle (construction.cpp:1837): произвольный текст, вводимый
+    // игроком, не зависит от исхода мутации.
+    std::string vehicle_name;               // пусто = "Car" (текущий дефолт)
+
+    // done_wiring (construction.cpp:1882): чистое предпочтение игрока, не
+    // зависит от исхода.
+    bool reveal_nearby_wirings;
+
+    // done_grave (construction.cpp:1804, через iuse::handle_ground_graffiti):
+    // произвольный текст; запрашивается в выборе, только если у персонажа
+    // qual_CUT на момент выбора (construction.cpp:1803) — детерминировано.
+    std::optional<std::string> grave_inscription;
+};
+```
+
+**Что мешает и как обойти:** вердикт определён двумя M-строками; обход для них назван, но ЭТО НЕ МЕНЯЕТ ВЕРДИКТ (M блокирует «режется с оговоркой» независимо от наличия обхода, см. «Вердикт» выше и прецедент Task 4).
+
+1. **`crafting.cpp:3162`/`:3460` (выбор источника компонента/инструмента).** Оба спрашивают «откуда взять материал/заряд» и оба детерминированы состоянием мира на момент старта строительства (что лежит у игрока, что — на тайлах рядом) — то же самое состояние, которое `place_construction()` читает сегодня прямо перед вопросом. Обход: перенести весь цикл выбора источника (`select_item_component`/`select_tool_component` для каждой требуемой группы) в фазу выбора, записать результат как `component_selection`/`tool_selection` в `intent_construct`; `apply_intent` вызывает уже существующие `Character::consume_items(comp_selection<item_comp>, ...)`/`consume_tools(comp_selection<tool_comp>, ...)` — перегрузки, принимающие готовый `comp_selection`, без похода в `select_*_component()` и без `uilist`, — эти перегрузки уже существуют и используются сегодня как второй шаг внутри `select_item_component`/`select_tool_component`, так что `apply_intent` не придумывает новый путь мутации, а просто пропускает интерактивный первый шаг.
+2. **`construction.cpp:2232` (подтверждение сноса).** Текст вопроса строится из `potential_deconstruct_items()` для террейна/фёрнитуры на выбранном тайле — известен уже в `place_construction()`, до `assign_activity`. Обход: задать вопрос в фазе выбора для конструкций категории `DECONSTRUCT`, записать `deconstruct_confirmed`; `do_turn_deconstruct()` читает готовый ответ вместо `query_yn` на первом ходу.
+3. **`construction.cpp:2271` (эксгумация).** Зависит только от `has_trait(trait_SPIRITUAL)` — не меняется за время активности. Обход: посчитать в фазе выбора, записать `grave_desecration_accepted`.
+4. **`construction.cpp:2033` (лава под тайлом при копке).** В отличие от пп.2-3, это НЕ предрешаемый вопрос — наличие `t_lava` под тайлом на старте копки, как правило, ещё не открыто игроку (не вскрытая клетка), так что «спросить заранее» подменяло бы реальную неопределённость поддельным выбором вслепую. Подходящий по конвенции обход — третий из трёх названных в `conventions.md» вариантов, «заменить на детерминированное правило»: зафиксировать политику (например, всегда продолжать копку, как если бы игрок сегодня отвечал «да», либо всегда останавливаться безопасно, как при «нет») вместо интерактивного вопроса; любой вариант убирает диалог из `do_turn()`, но меняет наблюдаемое поведение относительно сегодняшнего интерактивного выбора — отсюда `lava_tunnel_policy_continue` в намеченной структуре как поле дизайн-политики, а не поле, заполняемое игроком за ходом выбора.
+5. **`construction.cpp:1837`/`:1882`/`iuse.cpp:4991` (имя машины / раскрыть проводку / надпись на могиле).** Все три — независимые от исхода мутации ввод/предпочтение игрока, знание о которых доступно уже на момент выбора точки строительства (в первых двух случаях — сразу; для надписи — только если у персонажа `qual_CUT`, тоже известно заранее). Обход — простое перемещение в фазу выбора, без изменения семантики.
+6. **`game.cpp:5706` (территория фракции, класс P с побочным эффектом).** Не требует обхода для вердикта (уже P), но обход всё равно назван в наброске намерения (`faction_territory_prompted`/`_accepted`) для полноты — тот же самый паттерн, что применён к аналогичным находкам в Task 4 (`theft_prompted`/`_accepted`).
+
 ## Сводка
 
 | # | Действие | Вердикт | M-обращений | A-обращений |
