@@ -1528,10 +1528,13 @@ void Character::mount_creature( monster &z )
     }
     mounted_creature = mons;
     mons->mounted_player = this;
-    avatar &player_avatar = get_avatar();
-    if( is_avatar() && player_avatar.get_grab_type() != object_type::NONE ) {
+    // `this` -- not some other, unrelated avatar -- is the one mounting up,
+    // so cast `this` to avatar rather than pulling in get_avatar() (which,
+    // with two hotseat avatars, need not be `this` at all).
+    avatar *player_avatar = as_avatar();
+    if( player_avatar && player_avatar->get_grab_type() != object_type::NONE ) {
         add_msg( m_warning, _( "You let go of the grabbed object." ) );
-        player_avatar.grab( object_type::NONE );
+        player_avatar->grab( object_type::NONE );
     }
     add_msg_if_player( m_good, _( "You climb on the %s." ), z.get_name() );
     if( z.has_flag( mon_flag_RIDEABLE_MECH ) ) {
@@ -1541,9 +1544,9 @@ void Character::mount_creature( monster &z )
         }
         add_msg_if_player( m_good, _( "You hear your %s whir to life." ), z.get_name() );
     }
-    if( is_avatar() ) {
-        if( player_avatar.is_hauling() ) {
-            player_avatar.stop_hauling();
+    if( player_avatar ) {
+        if( player_avatar->is_hauling() ) {
+            player_avatar->stop_hauling();
         }
         g->place_player( pnt );
     } else {
@@ -1750,18 +1753,19 @@ void Character::forced_dismount()
         add_msg_debug( debugmode::DF_CHARACTER,
                        "Forced_dismount could not find a square to deposit player" );
     }
-    if( is_avatar() ) {
-        avatar &player_character = get_avatar();
-        if( player_character.get_grab_type() != object_type::NONE ) {
+    // `this` is who was forced to dismount, so cast `this` to avatar rather
+    // than pulling in get_avatar() (which need not be `this`).
+    if( avatar *player_avatar = as_avatar() ) {
+        if( player_avatar->get_grab_type() != object_type::NONE ) {
             add_msg( m_warning, _( "You let go of the grabbed object." ) );
-            player_character.grab( object_type::NONE );
+            player_avatar->grab( object_type::NONE );
         }
         set_movement_mode( move_mode_walk );
-        if( player_character.is_auto_moving() || player_character.has_destination() ||
-            player_character.has_destination_activity() ) {
-            player_character.abort_automove();
+        if( player_avatar->is_auto_moving() || player_avatar->has_destination() ||
+            player_avatar->has_destination_activity() ) {
+            player_avatar->abort_automove();
         }
-        g->update_map( player_character );
+        g->update_map( *player_avatar );
     }
     if( activity ) {
         cancel_activity();
@@ -1791,10 +1795,13 @@ void Character::dismount()
             weapon.typeId() == critter->type->mech_weapon ) {
             remove_item( weapon );
         }
-        avatar &player_character = get_avatar();
-        if( is_avatar() && player_character.get_grab_type() != object_type::NONE ) {
-            add_msg( m_warning, _( "You let go of the grabbed object." ) );
-            player_character.grab( object_type::NONE );
+        // `this` is who's dismounting, so cast `this` to avatar rather than
+        // pulling in get_avatar() (which need not be `this`).
+        if( avatar *player_avatar = as_avatar() ) {
+            if( player_avatar->get_grab_type() != object_type::NONE ) {
+                add_msg( m_warning, _( "You let go of the grabbed object." ) );
+                player_avatar->grab( object_type::NONE );
+            }
         }
         critter->remove_effect( effect_ridden );
         critter->add_effect( effect_controlled, 5_turns );
@@ -1897,7 +1904,9 @@ bool Character::uncanny_dodge()
     map &here = get_map();
 
     bool is_u = is_avatar();
-    bool seen = get_player_view().sees( here, *this );
+    // Message-worthy visibility is inherently about whoever is at the
+    // keyboard right now (the active hotseat slot), not any player.
+    bool seen = get_avatar_legacy().sees( here, *this );
 
     const units::energy trigger_cost = bio_uncanny_dodge->power_trigger;
 
@@ -2645,7 +2654,10 @@ float Character::fine_detail_vision_mod( const tripoint_bub_ms &p ) const
     // Same calculation as above, but with a result 3 lower.
     float ambient_light{};
     tripoint_bub_ms const check_p = p.is_invalid() ? pos_bub() : p;
-    tripoint_bub_ms const avatar_p = get_avatar().pos_bub();
+    // The light map is only built for one shared z-level (the bubble's
+    // reference z-level), so this stays scoped to the active/local avatar
+    // rather than "nearest," matching the singleton nature of that cache.
+    tripoint_bub_ms const avatar_p = get_avatar_legacy().pos_bub();
     if( is_avatar() || check_p.z() == avatar_p.z() ) {
         ambient_light = std::max( 1.0f,
                                   LIGHT_AMBIENT_LIT - get_map().ambient_light_at( check_p ) + 1.0f );
@@ -3865,7 +3877,10 @@ bool Character::pour_into( item_location &container, item &liquid, bool ignore_s
         add_msg_if_player( _( "There's some left over!" ) );
     }
 
-    get_avatar().invalidate_weight_carried_cache();
+    // `this`, whose weight-carried cache actually changed (they're the one
+    // who just poured a liquid into a container they hold), not some other,
+    // unrelated avatar via get_avatar().
+    invalidate_weight_carried_cache();
 
     return true;
 }
@@ -3950,7 +3965,9 @@ std::vector<std::string> Character::extended_description() const
     wearing += !worn_string.empty() ? worn_string : _( "Nothing" );
     tmp.emplace_back( wearing );
 
-    int visibility_cap = get_player_character().get_mutation_visibility_cap( this );
+    // This builds the extended-description text for whoever is looking at
+    // `this` right now, i.e. the active/local avatar viewing the screen.
+    int visibility_cap = get_avatar_legacy().get_mutation_visibility_cap( this );
     const std::string trait_str = visible_mutations( visibility_cap );
     if( !trait_str.empty() ) {
         tmp.emplace_back( string_format( _( "Traits: %s" ), trait_str ) );
@@ -5057,7 +5074,9 @@ void Character::on_hit( map *here, Creature *source, bodypart_id bp_hit,
         as_npc()->on_attacked( *source );
     }
 
-    bool u_see = get_player_view().sees( *here, *this );
+    // Message-worthy visibility is inherently about whoever is at the
+    // keyboard right now (the active hotseat slot), not any player.
+    bool u_see = get_avatar_legacy().sees( *here, *this );
     const units::energy trigger_cost_base = bio_ods->power_trigger;
     if( has_active_bionic( bio_ods ) && get_power_level() > ( 5 * trigger_cost_base ) ) {
         if( is_avatar() ) {
@@ -5773,8 +5792,10 @@ Character::moncam_cache_t Character::get_active_moncams() const
     moncam_cache_t ret;
     for( monster const &mon : g->all_monsters() ) {
         for( const std::pair<const mtype_id, int> &moncam : get_moncams() ) {
+            // The camera range check is against `this` (whose moncam list
+            // is being consulted), not an unrelated avatar via get_avatar().
             if( mon.type->id == moncam.first && mon.friendly != 0 &&
-                rl_dist( get_avatar().pos_abs(), mon.pos_abs() ) < moncam.second ) {
+                rl_dist( pos_abs(), mon.pos_abs() ) < moncam.second ) {
                 ret.insert( { &mon, mon.pos_abs() } );
             }
         }
@@ -6978,9 +6999,12 @@ void Character::stagger()
         }
         if( here.passable( dest ) && !blocked &&
             ( creatures.creature_at( dest, is_hallucination() ) == nullptr ) ) {
-            avatar &player_avatar = get_avatar();
-            if( is_avatar() && player_avatar.get_grab_type() != object_type::NONE ) {
-                player_avatar.grab( object_type::NONE );
+            // `this` is who's stumbling, so cast `this` to avatar rather
+            // than pulling in get_avatar() (which need not be `this`).
+            if( avatar *player_avatar = as_avatar() ) {
+                if( player_avatar->get_grab_type() != object_type::NONE ) {
+                    player_avatar->grab( object_type::NONE );
+                }
             }
             add_msg_player_or_npc( m_warning,
                                    _( "You stumble!" ),
@@ -7972,7 +7996,10 @@ void Character::knock_back_to( const tripoint_bub_ms &to )
     if( here.has_flag( ter_furn_flag::TFLAG_LIQUID, to ) &&
         here.has_flag( ter_furn_flag::TFLAG_DEEP_WATER, to ) ) {
         if( !is_npc() ) {
-            avatar_action::swim( here, get_avatar(), to );
+            // `this` is who was knocked into the water (guaranteed to be an
+            // avatar since !is_npc() and Character has only two concrete
+            // subclasses), not an unrelated avatar via get_avatar().
+            avatar_action::swim( here, *as_avatar(), to );
         }
         // TODO: NPCs can't swim!
     } else if( here.impassable( to ) ) { // Wait, it's a wall
