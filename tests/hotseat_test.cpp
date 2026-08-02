@@ -179,6 +179,10 @@ TEST_CASE( "hotseat_debug_toggle_creates_slot_and_enables_mode", "[hotseat]" )
     CHECK( g->player_slot_count() == 2 );
     CHECK( mp_mode_active() );
 
+    CHECK_FALSE( g->player_at( 1 ).get_body().empty() );
+    CHECK( g->player_at( 1 ).getID().is_valid() );
+    CHECK( g->player_at( 1 ).pos_abs() == g->player_at( 0 ).pos_abs() );
+
     // Toggling again while already active must not create a third slot.
     debug_menu::toggle_hotseat( "" );
     CHECK( g->player_slot_count() == 2 );

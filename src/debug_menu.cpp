@@ -1967,7 +1967,17 @@ static void control_npc_menu()
 void toggle_hotseat( const std::string &template_name )
 {
     if( mp_mode_active() ) {
+        // Drain the currently-acting slot's moves before handing control
+        // back to slot 0, so mp_hotseat_do_turn()'s enclosing phase loop
+        // (which is still testing the acting slot's move budget) exits
+        // immediately instead of continuing to prompt for input while
+        // spending slot 0's moves under the wrong slot's while() condition.
+        g->player_at( g->active_slot() ).set_moves( 0 );
         g->set_active_slot( 0 );
+        // Re-center the view/bubble on slot 0: mp_hotseat_do_turn() may have
+        // last centered the reality bubble on the hotseat midpoint, and
+        // nothing else re-centers it once hotseat mode turns off.
+        g->update_map( g->player_at( 0 ) );
         mp_mode_set_active( false );
         add_msg( m_info, _( "Hotseat co-op disabled." ) );
         return;
@@ -1975,13 +1985,32 @@ void toggle_hotseat( const std::string &template_name )
 
     if( g->player_slot_count() == 1 ) {
         avatar &second = g->add_player_slot();
+        bool got_template = false;
         if( !template_name.empty() ) {
-            pool_type pool;
-            if( !second.load_template( template_name, pool ) ) {
+            pool_type pool = pool_type::FREEFORM;
+            got_template = second.load_template( template_name, pool );
+            if( !got_template ) {
                 popup( _( "Could not load template \"%s\"; slot 2 stays a bare avatar." ),
                        template_name );
             }
         }
+        // A freshly constructed avatar has no body parts and is therefore
+        // treated as dead/invincible by is_dead_state() -- load_template()
+        // already restores a body from the template file, so only the bare
+        // path needs this.
+        if( !got_template ) {
+            second.set_body();
+        }
+        // Every avatar needs a valid character ID: without one, a passive
+        // craft this slot starts crashes on finalization (see the comment
+        // in game_test_helper::reset_player_slots(), tests/hotseat_test.cpp).
+        second.setID( g->assign_npc_id() );
+        // A default-constructed avatar sits at (0,0,0), which
+        // mp_bubble_anchor() would average against the real player's
+        // position, snapping the reality bubble toward the world origin and
+        // permanently tether-blocking the real player. Place the new slot
+        // at slot 0's own position instead.
+        second.setpos( get_map(), g->player_at( 0 ).pos_bub( get_map() ) );
     }
 
     mp_mode_set_active( true );
