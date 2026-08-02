@@ -15,6 +15,7 @@
 
 #include "ammo_effect.h"
 #include "anatomy.h"
+#include "avatar.h"
 #include "body_part_set.h"
 #include "calendar.h"
 #include "cata_assert.h"
@@ -711,7 +712,13 @@ bool Creature::sees( const map &here, const tripoint_bub_ms &t, bool is_avatar,
         }
         if( is_avatar ) {
             // Special case monster -> player visibility, forcing it to be symmetric with player vision.
-            const float player_visibility_factor = get_player_character().visibility() / 100.0f;
+            // `t` is the specific avatar's own position (is_avatar was computed from
+            // the target Creature at t), so resolve to whichever player slot is
+            // actually there rather than a single hardcoded avatar -- otherwise a
+            // second hotseat avatar's visibility check would silently borrow the
+            // first avatar's visibility() value.
+            Character *target_pc = g->nearest_player( here.get_abs( t ) );
+            const float player_visibility_factor = target_pc ? target_pc->visibility() / 100.0f : 1.0f;
             int adj_range = std::floor( range * player_visibility_factor );
             return adj_range >= wanted_range &&
                    here.get_cache_ref( posz() ).seen_cache[pos.x()][pos.y()] > LIGHT_TRANSPARENCY_SOLID;
@@ -743,8 +750,10 @@ Creature *Creature::auto_find_hostile_target( int range, int &boo_hoo, int area 
     map &here = get_map();
 
     Creature *target = nullptr;
-    Character &player_character = get_player_character();
-    tripoint_bub_ms player_pos = player_character.pos_bub();
+    // IFF/target-priority checks are relative to whichever player is nearest
+    // to this creature, not a single hardcoded avatar.
+    Character *nearest_pc = g->nearest_player( pos_abs() );
+    tripoint_bub_ms player_pos = nearest_pc ? nearest_pc->pos_bub( here ) : pos_bub( here );
     constexpr int hostile_adj = 2; // Priority bonus for hostile targets
     const int iff_dist = ( range + area ) * 3 / 2 + 6; // iff check triggers at this distance
     // iff safety margin (degrees). less accuracy, more paranoia
@@ -754,7 +763,9 @@ Creature *Creature::auto_find_hostile_target( int range, int &boo_hoo, int area 
     boo_hoo = 0;         // how many targets were passed due to IFF. Tragically.
     bool self_area_iff = false; // Need to check if the target is near the vehicle we're a part of
     bool area_iff = false;      // Need to check distance from target to player
-    bool angle_iff = sees( here, player_character ); // Need to check if player is in cone to target
+    // Need to check if player is in cone to target. If there's no living
+    // player nearby, there's nothing to IFF-check against.
+    bool angle_iff = nearest_pc != nullptr && sees( here, *nearest_pc );
     int pldist = rl_dist( pos_bub( here ), player_pos );
     vehicle *in_veh = is_fake() ? veh_pointer_or_null( here.veh_at( pos_bub( here ) ) ) : nullptr;
     if( pldist < iff_dist && angle_iff ) {
@@ -778,7 +789,7 @@ Creature *Creature::auto_find_hostile_target( int range, int &boo_hoo, int area 
     std::vector<Creature *> targets = g->get_creatures_if( [&]( const Creature & critter ) {
         if( critter.is_monster() ) {
             // friendly to the player, not a target for us
-            return static_cast<const monster *>( &critter )->attitude( &player_character ) == MATT_ATTACK;
+            return static_cast<const monster *>( &critter )->attitude( nearest_pc ) == MATT_ATTACK;
         }
         if( critter.is_npc() ) {
             // friendly to the player, not a target for us
@@ -860,7 +871,7 @@ Creature *Creature::auto_find_hostile_target( int range, int &boo_hoo, int area 
             // Helps avoid (possibly expensive) attitude calculation
             continue;
         }
-        if( m->attitude_to( player_character ) == Attitude::HOSTILE ) {
+        if( nearest_pc && m->attitude_to( *nearest_pc ) == Attitude::HOSTILE ) {
             target_rating = ( mon_rating + hostile_adj ) / dist;
             if( maybe_boo ) {
                 boo_hoo++;
@@ -1078,7 +1089,6 @@ void projectile::apply_effects_damage( Creature &target, Creature *source,
         }
     }
 
-    Character &player_character = get_player_character();
     int amount = dam > 2 ? dam / 2 : one_in( 2 );
     if( proj_effects.count( ammo_effect_INCENDIARY ) ) {
         if( x_in_y( amount, 50 ) ) { // 1% chance for 1 damamge
@@ -1089,8 +1099,12 @@ void projectile::apply_effects_damage( Creature &target, Creature *source,
                 target.add_effect( effect_source( source ), effect_onfire, rng( 1_turns, 2_turns ) * amount,
                                    dealt_dam.bp_hit );
             }
-            if( player_character.has_unfulfilled_pyromania() ) {
-                player_character.fulfill_pyromania_sees( here, target );
+            // Pyromania is a per-avatar trait/morale state, so every hotseat
+            // slot that has it unfulfilled and can see the fire reacts.
+            for( avatar *pc : g->get_players() ) {
+                if( pc->has_unfulfilled_pyromania() ) {
+                    pc->fulfill_pyromania_sees( here, target );
+                }
             }
         }
     } else if( proj_effects.count( ammo_effect_IGNITE ) ) {
@@ -1100,8 +1114,10 @@ void projectile::apply_effects_damage( Creature &target, Creature *source,
             } else if( target.made_of_any( Creature::cmat_flesh ) ) {
                 target.add_effect( effect_source( source ), effect_onfire, 6_turns * amount, dealt_dam.bp_hit );
             }
-            if( player_character.has_unfulfilled_pyromania() ) {
-                player_character.fulfill_pyromania_sees( here, target );
+            for( avatar *pc : g->get_players() ) {
+                if( pc->has_unfulfilled_pyromania() ) {
+                    pc->fulfill_pyromania_sees( here, target );
+                }
             }
         }
     }
@@ -1264,7 +1280,9 @@ void Creature::messaging_projectile_attack( const Creature *source,
 
     const tripoint_bub_ms pos = pos_bub( here );
     const tripoint_bub_ms source_pos = source->pos_bub( here );
-    const viewer &player_view = get_player_view();
+    // Message-worthy visibility is inherently about whoever is at the
+    // keyboard right now (the active hotseat slot), not any player.
+    const viewer &player_view = get_avatar_legacy();
     const bool u_see_this = player_view.sees( here, *this );
 
     if( u_see_this ) {
@@ -1386,7 +1404,9 @@ void Creature::deal_projectile_attack( map *here, Creature *source, dealt_projec
     dealt_damage_instance &dealt_dam = attack.dealt_dam;
     const auto &proj_effects = proj.proj_effects;
 
-    viewer &player_view = get_player_view();
+    // Message-worthy visibility is inherently about whoever is at the
+    // keyboard right now (the active hotseat slot), not any player.
+    viewer &player_view = get_avatar_legacy();
     Character *guy = as_character();
     if( !magic ) {
         double range_dodge_chance = enchantment_cache->modify_value( enchant_vals::mod::RANGE_DODGE,
@@ -1565,9 +1585,12 @@ void Creature::deal_damage_handle_type( const effect_source &source, const damag
         if( rng( 0, 100 ) < adjusted_damage ) {
             add_effect( source, effect_onfire, rng( 1_turns, 3_turns ), bp );
 
-            Character &player_character = get_player_character();
-            if( player_character.has_unfulfilled_pyromania() ) {
-                player_character.fulfill_pyromania_sees( here, *this );
+            // Pyromania is a per-avatar trait/morale state, so every hotseat
+            // slot that has it unfulfilled and can see the fire reacts.
+            for( avatar *pc : g->get_players() ) {
+                if( pc->has_unfulfilled_pyromania() ) {
+                    pc->fulfill_pyromania_sees( here, *this );
+                }
             }
         }
     } else if( du.type == damage_electric ) {
@@ -2321,11 +2344,17 @@ Creature *Creature::get_summoner() const
 {
     if( !summoner ) {
         return nullptr;
-    } else if( summoner.value() == get_player_character().getID() ) {
-        return &get_player_character();
-    } else {
-        return g->find_npc( summoner.value() );
     }
+    // The summoner may be either hotseat player slot, not just whichever one
+    // is currently active, so check every player slot's ID rather than only
+    // the active avatar's. getID() is a trivial accessor, so this widening
+    // doesn't route through anything identity-sensitive.
+    for( avatar *pc : g->get_players() ) {
+        if( summoner.value() == pc->getID() ) {
+            return pc;
+        }
+    }
+    return g->find_npc( summoner.value() );
 }
 
 void Creature::set_summoner( Creature *const summoner )
