@@ -1765,7 +1765,16 @@ void Character::forced_dismount()
             player_avatar->has_destination_activity() ) {
             player_avatar->abort_automove();
         }
-        g->update_map( *player_avatar );
+        // game::update_map() relocates game::u internally regardless of the
+        // Character reference passed to it (see its two setpos() calls) --
+        // it has no per-avatar notion despite the parameter type. Passing
+        // `*player_avatar` here when `this` is a non-active hotseat slot
+        // would silently teleport the ACTIVE avatar's bubble position
+        // instead. Pass the active/local avatar specifically until
+        // update_map() itself is made slot-aware (out of scope here, same
+        // as the pre-existing game::place_player() constraint noted
+        // elsewhere in this file).
+        g->update_map( get_avatar_legacy() );
     }
     if( activity ) {
         cancel_activity();
