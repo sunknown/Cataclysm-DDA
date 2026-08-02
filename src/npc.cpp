@@ -1576,7 +1576,7 @@ void npc::stow_item( item &it )
         return;
     }
 
-    bool avatar_sees = get_player_view().sees( here, pos_bub( here ) );
+    bool avatar_sees = g->any_player_sees( pos_abs() );
     if( wear_item( it, false ) ) {
         // Wearing the item was successful, remove weapon and post message.
         if( avatar_sees ) {
@@ -1784,7 +1784,7 @@ npc_opinion npc::get_opinion_values( const Character &you ) const
     npc_values.fear += ( you.get_str_base() / 4 ) - 2;
 
     // is your health low
-    for( const std::pair<const bodypart_str_id, bodypart> &elem : get_player_character().get_body() ) {
+    for( const std::pair<const bodypart_str_id, bodypart> &elem : you.get_body() ) {
         const int hp_max = elem.second.get_hp_max();
         const int hp_cur = elem.second.get_hp_cur();
         if( hp_cur <= hp_max / 2 ) {
@@ -1866,12 +1866,10 @@ npc_opinion npc::get_opinion_values( const Character &you ) const
 
 void npc::mutiny()
 {
-    const map &here = get_map();
-
     if( !my_fac || !is_player_ally() ) {
         return;
     }
-    const bool seen = get_player_view().sees( here, pos_bub( here ) );
+    const bool seen = g->any_player_sees( pos_abs() );
     if( seen ) {
         add_msg( m_bad, _( "%s is tired of your incompetent leadership and abuse!" ), disp_name() );
     }
@@ -2045,7 +2043,7 @@ void npc::decide_needs()
 void npc::say( const std::string &line, const sounds::sound_t spriority ) const
 {
     std::string formatted_line = line;
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     parse_tags( formatted_line, player_character, *this );
     if( is_mute() ) {
         return;
@@ -2090,13 +2088,15 @@ int npc::indoor_voice() const
     // Actual hearing distance is incredibly dependent on ambient noise and our noise propagation model is... rather binary
     // But we'll assume people normally want to project their voice about 6 meters away.
     int wanted_volume = 6;
-    Character &player = get_player_character();
-    const int distance_to_player = rl_dist( pos_abs(), player.pos_abs() );
-    if( is_following() || is_ally( player ) ) {
-        wanted_volume = distance_to_player;
-    } else if( is_enemy() && sees( here, player ) ) {
-        // Battle cry! Bandits have no concept of indoor voice, even when not threatened.
-        wanted_volume = max_volume;
+    Character *player = g->nearest_player( pos_abs() );
+    if( player ) {
+        const int distance_to_player = rl_dist( pos_abs(), player->pos_abs() );
+        if( is_following() || is_ally( *player ) ) {
+            wanted_volume = distance_to_player;
+        } else if( is_enemy() && sees( here, *player ) ) {
+            // Battle cry! Bandits have no concept of indoor voice, even when not threatened.
+            wanted_volume = max_volume;
+        }
     }
     // Possible fallthrough: neutral or unaware enemy NPCs talk at default wanted_volume
 
@@ -2707,7 +2707,7 @@ bool npc::is_ally( const Character &p ) const
             return true;
         }
         if( faction_api_version < 2 ) {
-            Character &player_character = get_player_character();
+            Character &player_character = get_avatar_legacy();
             if( is_ally( player_character ) && guy.is_ally( player_character ) ) {
                 return true;
             }
@@ -2722,7 +2722,7 @@ bool npc::is_ally( const Character &p ) const
 
 bool npc::is_player_ally() const
 {
-    return is_ally( get_player_character() );
+    return is_ally( get_avatar_legacy() );
 }
 
 bool npc::is_friendly( const Character &p ) const
@@ -2737,7 +2737,7 @@ bool npc::is_minion() const
 
 bool npc::guaranteed_hostile() const
 {
-    return attitude_to( get_player_character() ) == Attitude::HOSTILE || is_enemy() ||
+    return attitude_to( get_avatar_legacy() ) == Attitude::HOSTILE || is_enemy() ||
            ( my_fac && my_fac->likes_u < -10 );
 }
 
@@ -2754,11 +2754,14 @@ bool npc::can_follow_player_now() const
     if( has_flag( json_flag_CANNOT_MOVE ) ) {
         return false;
     }
-    const Character &player = get_player_character();
-    if( player.in_vehicle && !in_vehicle ) {
+    const Character *player = g->nearest_player( pos_abs() );
+    if( !player ) {
         return false;
     }
-    if( player.in_vehicle && in_vehicle ) {
+    if( player->in_vehicle && !in_vehicle ) {
+        return false;
+    }
+    if( player->in_vehicle && in_vehicle ) {
         return false;
     }
     return true;
@@ -2850,7 +2853,7 @@ Creature::Attitude npc::attitude_to( const Creature &other ) const
         }
     }
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     if( is_player_ally() ) {
         // Friendly NPCs share player's alliances
         return player_character.attitude_to( other );
@@ -2970,13 +2973,13 @@ bool npc::is_active() const
 
 int npc::follow_distance() const
 {
-    Character &player_character = get_player_character();
+    Character *player_character = g->nearest_player( pos_abs() );
     map &here = get_map();
     // HACK: If the player is standing on stairs, follow closely
     // This makes the stair hack less painful to use
-    if( is_walking_with() &&
-        ( here.has_flag( ter_furn_flag::TFLAG_GOES_DOWN, player_character.pos_bub() ) ||
-          here.has_flag( ter_furn_flag::TFLAG_GOES_UP, player_character.pos_bub() ) ) ) {
+    if( player_character && is_walking_with() &&
+        ( here.has_flag( ter_furn_flag::TFLAG_GOES_DOWN, player_character->pos_bub() ) ||
+          here.has_flag( ter_furn_flag::TFLAG_GOES_UP, player_character->pos_bub() ) ) ) {
         return 1;
     }
     // Uses ally_rule follow_distance_2 to determine if should follow by 2 or 4 tiles
@@ -2984,7 +2987,7 @@ int npc::follow_distance() const
         return 2;
     }
     // If NPC doesn't see player, change follow distance to 2
-    if( !sees( here,  player_character ) ) {
+    if( !player_character || !sees( here, *player_character ) ) {
         return 2;
     }
     return 4;
@@ -3029,7 +3032,7 @@ int npc::print_info( const catacurses::window &w, int line, int vLines, int colu
     line += fold_and_print( w, point( column + bar_max_width + 1, line ),
                             iWidth - bar_max_width - 1, basic_symbol_color(), get_name() );
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     // Hostility and current attitude indicator on the second line.
     Attitude att = attitude_to( player_character );
     const std::pair<translation, nc_color> res = Creature::get_attitude_ui_data( att );
@@ -3299,10 +3302,11 @@ void npc::die( map *here, Creature *nkiller )
     if( Character *ch = dynamic_cast<Character *>( killer ) ) {
         get_event_bus().send<event_type::character_kills_character>( ch->getID(), getID(), get_name(),
                 myclass.c_str() );
-    }
-    Character &player_character = get_player_character();
-    if( killer == &player_character ) {
-        player_character.apply_murder_penalties( this );
+        // Any player-controlled avatar counts as "the player" for murder penalties,
+        // not just the nearest/first slot.
+        if( ch->is_avatar() ) {
+            ch->apply_murder_penalties( this );
+        }
     }
 
     if( spawn_corpse ) {
@@ -3435,9 +3439,7 @@ void npc::add_msg_player_or_npc( const game_message_params &params,
                                  const std::string &/*player_msg*/,
                                  const std::string &npc_msg ) const
 {
-    const map &here = get_map();
-
-    if( get_player_view().sees( here, *this ) ) {
+    if( g->any_player_sees( pos_abs() ) ) {
         add_msg( params, replace_with_npc_name( npc_msg ) );
     }
 }
@@ -3717,7 +3719,7 @@ bool npc::will_accept_from_player( const item &it ) const
         return false;
     }
 
-    if( is_minion() || get_player_character().has_trait( trait_DEBUG_MIND_CONTROL ) ||
+    if( is_minion() || get_avatar_legacy().has_trait( trait_DEBUG_MIND_CONTROL ) ||
         it.has_flag( flag_NPC_SAFE ) ) {
         return true;
     }
@@ -3777,15 +3779,17 @@ std::function<bool( const tripoint_bub_ms & )> npc::get_path_avoid() const
         if( here.is_open_air( p ) ) {
             return true;
         }
-        if( rules.has_flag( ally_rule::hold_the_line ) &&
-            rl_dist( p, get_avatar().pos_bub() ) == 1 &&
-            ( here.close_door( p, true, true ) ||
-              ( here.move_cost( p ) > 2  &&
-                // Ignore if target location is on same vehicle as the avatar occupies
-                !( here.veh_at( p ).has_value() && here.veh_at( get_avatar().pos_abs() ) &&
-                   here.veh_at( p ).value().vehicle().pos_abs() == here.veh_at(
-                       get_avatar().pos_abs() ).value().vehicle().pos_abs() ) ) ) ) {
-            return true;
+        if( rules.has_flag( ally_rule::hold_the_line ) ) {
+            Character *nearest = g->nearest_player( pos_abs() );
+            if( nearest && rl_dist( p, nearest->pos_bub() ) == 1 &&
+                ( here.close_door( p, true, true ) ||
+                  ( here.move_cost( p ) > 2  &&
+                    // Ignore if target location is on same vehicle as the nearest player occupies
+                    !( here.veh_at( p ).has_value() && here.veh_at( nearest->pos_abs() ) &&
+                       here.veh_at( p ).value().vehicle().pos_abs() == here.veh_at(
+                           nearest->pos_abs() ).value().vehicle().pos_abs() ) ) ) ) {
+                return true;
+            }
         }
         if( sees_dangerous_field( p ) ) {
             return true;
@@ -3822,7 +3826,7 @@ std::vector<std::string> npc::extended_description() const
 
     tmp.emplace_back( "--" );
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     Attitude att = attitude_to( player_character );
     const std::pair<translation, nc_color> res = Creature::get_attitude_ui_data( att );
     tmp.emplace_back( string_format( "%s; %s", colorize( res.first, res.second ),
@@ -3996,8 +4000,6 @@ npc_attitude npc::get_attitude() const
 
 void npc::set_attitude( npc_attitude new_attitude )
 {
-    const map &here = get_map();
-
     if( new_attitude == attitude ) {
         return;
     }
@@ -4013,7 +4015,7 @@ void npc::set_attitude( npc_attitude new_attitude )
                    get_name(), npc_attitude_id( attitude ), npc_attitude_id( new_attitude ) );
     attitude_group new_group = get_attitude_group( new_attitude );
     attitude_group old_group = get_attitude_group( attitude );
-    if( new_group != old_group && !is_fake() && get_player_view().sees( here, *this ) ) {
+    if( new_group != old_group && !is_fake() && g->any_player_sees( pos_abs() ) ) {
         switch( new_group ) {
             case attitude_group::hostile:
                 add_msg_if_npc( m_bad, _( "<npcname> gets angry!" ) );
