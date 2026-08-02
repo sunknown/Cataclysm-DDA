@@ -1786,11 +1786,18 @@ bool map::displace_vehicle( vehicle &veh, const tripoint_rel_ms &dp, const bool 
 
     // update_map() below relocates the active avatar specifically (see the
     // comment on game::update_map() vs. game::shift_map_center()), so this
-    // stays scoped to the active/local avatar rather than every slot.
+    // stays scoped to the active/local avatar rather than every slot. NOTE:
+    // this means need_update (below, keyed on any riding passenger's
+    // is_avatar()) can be true while the map only ever shifts the active
+    // slot's position — a non-active slot riding across a submap boundary
+    // shifts the wrong character's map. Pre-existing gap, not introduced by
+    // this migration; a follow-up for whichever task owns map-shift-on-move.
     Character &player_character = get_avatar_legacy();
     // Need old coordinates to check for remote control. remote_controlled()
     // tests distance to a specific Character, so use whichever player slot
-    // is closest to the vehicle for that check specifically.
+    // is closest to the vehicle for that check specifically. If every slot
+    // is dead, nearest_pc is null and remote is unconditionally false —
+    // matching single-player, where a dead avatar can't be remote-driving.
     Character *nearest_pc = g->nearest_player( veh.pos_abs() );
     const bool remote = nearest_pc && veh.remote_controlled( *nearest_pc );
 
@@ -2118,6 +2125,14 @@ bool map::furn_set( const tripoint_bub_ms &p, const furn_id &new_furniture, cons
     invalidate_max_populated_zlev( p.z() );
 
     memory_cache_dec_set_dirty( p, true );
+    // KNOWN LIMITATION: Character::sees() dispatches an avatar to
+    // map::pl_sees(), which is hard-wired to the active slot's seen/camera
+    // cache (see game::build_map_cache()) — so this condition evaluates
+    // identically for every slot rather than truly per-slot. In hotseat, a
+    // non-active slot that genuinely sees a tile the active slot cannot may
+    // keep stale decoration memory. Single-player is unaffected (there is
+    // only ever the active slot). A real per-slot fix needs a per-slot seen
+    // cache, out of scope for this migration.
     for( avatar *pc : g->get_players() ) {
         if( pc->sees( *this, p ) ) {
             pc->memorize_clear_decoration( get_abs( p ), "f_" );
@@ -2617,6 +2632,9 @@ bool map::ter_set( const tripoint_bub_ms &p, const ter_id &new_terrain, bool avo
 
     memory_cache_dec_set_dirty( p, true );
     memory_cache_ter_set_dirty( p, true );
+    // See the KNOWN LIMITATION note on the identical pattern in furn_set():
+    // sees() is hard-wired to the active slot's cache, so this isn't truly
+    // per-slot in hotseat yet.
     for( avatar *pc : g->get_players() ) {
         if( pc->sees( *this, p ) ) {
             pc->memorize_clear_decoration( get_abs( p ), "t_" );
@@ -4367,6 +4385,11 @@ void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &c
     // which hotseat slot is currently active.
     Character *driver = veh != nullptr ? veh->get_driver( *this ) : nullptr;
     const bool player_is_driver = driver != nullptr && driver->is_avatar();
+    // Note: any_player_sees() checks each slot's sees() against the current
+    // reality bubble (see game::any_player_sees()), not necessarily `this`
+    // map — the prior code had the same cross-map mismatch (it fed a
+    // bubble-resident avatar's sees() into whatever map called smash_items,
+    // which may not be the bubble). On the bubble the two are identical.
     const bool player_sees_damage = g->any_player_sees( get_abs( p ) );
 
     if( !wheel_damage_messages.empty() && ( player_is_driver || player_sees_damage ) ) {
@@ -6981,6 +7004,8 @@ void map::partial_con_remove( const tripoint_bub_ms &p )
 {
     partial_con_remove_impl( p );
     memory_cache_dec_set_dirty( p, true );
+    // See the KNOWN LIMITATION note on furn_set() re: sees() not being
+    // truly per-slot yet.
     for( avatar *pc : g->get_players() ) {
         if( pc->sees( *this, p ) ) {
             pc->memorize_clear_decoration( get_abs( p ), "tr_" );
@@ -7044,6 +7069,8 @@ void map::trap_set( const tripoint_bub_ms &p, const trap_id &type )
     }
 
     memory_cache_dec_set_dirty( p, true );
+    // See the KNOWN LIMITATION note on furn_set() re: sees() not being
+    // truly per-slot yet.
     for( avatar *pc : g->get_players() ) {
         if( pc->sees( *this, p ) ) {
             pc->memorize_clear_decoration( get_abs( p ), "tr_" );
@@ -7077,6 +7104,10 @@ void map::remove_trap( const tripoint_bub_ms &p )
     if( tid != tr_null ) {
         if( g != nullptr && this == &reality_bubble() ) {
             memory_cache_dec_set_dirty( p, true );
+            // See the KNOWN LIMITATION note on furn_set() re: sees() not
+            // being truly per-slot yet. add_known_trap() below is
+            // unconditional per slot, matching the pre-Task-9 unconditional
+            // single-avatar call.
             for( avatar *pc : g->get_players() ) {
                 if( pc->sees( *this,  p ) ) {
                     pc->memorize_clear_decoration( get_abs( p ), "tr_" );
