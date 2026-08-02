@@ -3302,9 +3302,11 @@ void npc::die( map *here, Creature *nkiller )
     if( Character *ch = dynamic_cast<Character *>( killer ) ) {
         get_event_bus().send<event_type::character_kills_character>( ch->getID(), getID(), get_name(),
                 myclass.c_str() );
-        // Any player-controlled avatar counts as "the player" for murder penalties,
-        // not just the nearest/first slot.
-        if( ch->is_avatar() ) {
+        // Character::apply_murder_penalties() asserts the killer is the local
+        // player avatar (src/character_health.cpp) and has no support for
+        // crediting/penalizing a non-active hotseat slot; a real multi-slot
+        // fix belongs there, not here.
+        if( ch == &get_avatar_legacy() ) {
             ch->apply_murder_penalties( this );
         }
     }
@@ -3439,9 +3441,7 @@ void npc::add_msg_player_or_npc( const game_message_params &params,
                                  const std::string &/*player_msg*/,
                                  const std::string &npc_msg ) const
 {
-    if( g->any_player_sees( pos_abs() ) ) {
-        add_msg( params, replace_with_npc_name( npc_msg ) );
-    }
+    add_msg_if_player_sees( *this, params, replace_with_npc_name( npc_msg ) );
 }
 
 void npc::add_msg_player_or_say( const std::string &/*player_msg*/,
@@ -4015,7 +4015,7 @@ void npc::set_attitude( npc_attitude new_attitude )
                    get_name(), npc_attitude_id( attitude ), npc_attitude_id( new_attitude ) );
     attitude_group new_group = get_attitude_group( new_attitude );
     attitude_group old_group = get_attitude_group( attitude );
-    if( new_group != old_group && !is_fake() && g->any_player_sees( pos_abs() ) ) {
+    if( new_group != old_group && !is_fake() && get_player_view().sees( get_map(), *this ) ) {
         switch( new_group ) {
             case attitude_group::hostile:
                 add_msg_if_npc( m_bad, _( "<npcname> gets angry!" ) );
