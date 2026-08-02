@@ -507,7 +507,9 @@ class mapgen_basic_container
          */
         bool generate( mapgendata &dat, const int hardcoded_weight ) {
             for( const std::shared_ptr<mapgen_function> &ptr : mapgens_to_recalc_ ) {
-                dialogue d( get_talker_for( get_avatar() ), std::make_unique<talker>() );
+                // get_avatar_legacy() matches existing behavior; this weight
+                // evaluation has no per-slot notion to widen to.
+                dialogue d( get_talker_for( get_avatar_legacy() ), std::make_unique<talker>() );
                 int const weight = ptr->weight.evaluate( d );
                 if( weight >= 1 ) {
                     weights_.add_or_replace( ptr, weight );
@@ -3518,7 +3520,11 @@ class jmapgen_remove_npcs : public jmapgen_piece
                     }
                     if( reality_bubble().inbounds( npc->pos_abs() ) ) {
                         g->remove_npc( npc->getID() );
-                        get_avatar().get_mon_visible().remove_npc( npc.get() );
+                        // Each avatar keeps its own monster-visibility cache,
+                        // so the removed NPC must be cleared from all of them.
+                        for( avatar *pc : g->get_players() ) {
+                            pc->get_mon_visible().remove_npc( npc.get() );
+                        }
                     }
                 }
             }
@@ -7609,8 +7615,9 @@ ret_val<void> update_mapgen_function_json::update_map(
     if( reality_bubble().inbounds( project_to<coords::ms>( omt_pos ) ) ) {
         // trigger main map cleanup
         p_update_smap.reset();
-        // trigger new traps, etc
-        g->place_player( get_avatar().pos_bub(), true );
+        // trigger new traps, etc. game::place_player() itself is internally
+        // scoped to game::u (the active/local avatar), so pass its position.
+        g->place_player( get_avatar_legacy().pos_bub(), true );
     }
 
     // Trigger magic to add roofs (within load) if needed.
@@ -7629,8 +7636,11 @@ ret_val<void> update_mapgen_function_json::update_map(
                                     flags_.test( jmapgen_flags::erase_furniture_before_placing_terrain );
     if( is_original_furn_removed ) {
         // Magic teleporters are special furniture. If furniture are deleted in mapgen, the corresponding translocator must also be deleted.
-        avatar &player_character = get_avatar();
-        player_character.translocators.remove_translocator( omt_pos );
+        // Each avatar keeps its own known-translocator list, so the deleted
+        // furniture's entry must be cleared from all of them.
+        for( avatar *pc : g->get_players() ) {
+            pc->translocators.remove_translocator( omt_pos );
+        }
     }
 
     return u;
