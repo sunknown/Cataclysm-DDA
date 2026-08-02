@@ -44,6 +44,10 @@
 #include "event_bus.h"
 #include "filesystem.h"
 #include "game.h"
+#if defined(MULTIPLAYER)
+#include "mp/mp_hotseat_loop.h"
+#include "mp/mp_mode.h"
+#endif
 #include "game_constants.h"
 #include "game_ui.h"
 #include "get_version.h"
@@ -874,7 +878,17 @@ int main( int argc, const char *argv[] )
 
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
         get_event_bus().send<event_type::game_begin>( getVersionString() );
-        while( !g->do_turn() ) {}
+        while( true ) {
+            bool done;
+#if defined(MULTIPLAYER)
+            done = mp_mode_active() ? mp_hotseat_do_turn() : g->do_turn();
+#else
+            done = g->do_turn();
+#endif
+            if( done ) {
+                break;
+            }
+        }
     }
 
     exit_handler( -999 );
