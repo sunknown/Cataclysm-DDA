@@ -1765,16 +1765,22 @@ void Character::forced_dismount()
             player_avatar->has_destination_activity() ) {
             player_avatar->abort_automove();
         }
-        // game::update_map() relocates game::u internally regardless of the
-        // Character reference passed to it (see its two setpos() calls) --
-        // it has no per-avatar notion despite the parameter type. Passing
-        // `*player_avatar` here when `this` is a non-active hotseat slot
-        // would silently teleport the ACTIVE avatar's bubble position
-        // instead. Pass the active/local avatar specifically until
-        // update_map() itself is made slot-aware (out of scope here, same
-        // as the pre-existing game::place_player() constraint noted
-        // elsewhere in this file).
-        g->update_map( get_avatar_legacy() );
+        // game::update_map() relocates slot 0 (game::u) internally on both
+        // its exit paths regardless of the Character reference passed to
+        // it -- it has no per-avatar notion despite the parameter type, and
+        // that reference selects only the source coordinates the shift is
+        // computed from. get_avatar_legacy() is NOT a safe substitute here:
+        // it returns the ACTIVE slot, which is `this` during that slot's
+        // own turn (mp_hotseat_loop.cpp sets active_slot() to the acting
+        // slot's index for the whole player phase) -- reintroducing the
+        // exact mismatch this fix targets whenever a non-zero slot's own
+        // mount forces a dismount via check_mount_is_spooked() or
+        // try_remove_grab(). Pass slot 0 explicitly so the source
+        // coordinates always match what update_map() actually relocates,
+        // on every path, until update_map() itself is made slot-aware (out
+        // of scope here, same as the pre-existing game::place_player()
+        // constraint noted elsewhere in this file).
+        g->update_map( g->player_at( 0 ) );
     }
     if( activity ) {
         cancel_activity();
