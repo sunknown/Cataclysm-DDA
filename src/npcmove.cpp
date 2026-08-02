@@ -480,13 +480,16 @@ tripoint_bub_ms npc::good_escape_direction( bool include_pos )
                            name );
         }
     } else if( path.empty() && run_to_friend && is_player_ally() ) {
-        Character &player_character = get_player_character();
-        int dist = rl_dist( pos_bub(), player_character.pos_bub() );
+        Character *nearest = g->nearest_player( pos_abs() );
+        if( !nearest ) {
+            return pos_bub();
+        }
+        int dist = rl_dist( pos_bub(), nearest->pos_bub() );
         int def_radius = desired_follow_radius();
         if( dist > def_radius ) {
             add_msg_debug( debugmode::DF_NPC_MOVEAI,
                            "<color_light_gray>%s is repositioning closer to</color> you", name );
-            tripoint_bub_ms destination = get_player_character().pos_bub();
+            tripoint_bub_ms destination = nearest->pos_bub();
             int loop_avoider = 0;
             while( !can_move_to( destination ) && loop_avoider < 10 ) {
                 destination.x() += rng( -2, 2 );
@@ -906,7 +909,11 @@ void npc::assess_danger()
         preferred_close_range = std::min( preferred_close_range, preferred_medium_range / 2 );
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( !nearest ) {
+        return;
+    }
+    Character &player_character = *nearest;
     bool sees_player = sees( here, player_character );
     const bool self_defense_only = rules.engagement == combat_engagement::NO_MOVE ||
                                    rules.engagement == combat_engagement::NONE;
@@ -1307,7 +1314,7 @@ void npc::act_on_danger_assessment()
 
     bool npc_ranged = get_wielded_item() && get_wielded_item()->is_gun();
     bool failed_reposition = false;
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     if( has_effect( effect_npc_run_away ) ) {
         // this check runs each turn that the NPC is repositioning and assesses if the situation is getting any better.
         // The longer they try to move without improving, the more likely they become to stop and stand their ground.
@@ -1359,9 +1366,9 @@ void npc::act_on_danger_assessment()
                 if( !is_player_ally() ) {
                     set_attitude( NPCATT_FLEE_TEMP );
                 }
-                if( mem_combat.panic > 5 && is_player_ally() && sees( here, player_character ) ) {
+                if( nearest && mem_combat.panic > 5 && is_player_ally() && sees( here, *nearest ) ) {
                     // consider warning player about panic
-                    int panic_alert = rl_dist( pos_bub(), player_character.pos_bub() ) - player_character.get_per();
+                    int panic_alert = rl_dist( pos_bub(), nearest->pos_bub() ) - nearest->get_per();
                     if( mem_combat.panic - personality.bravery > panic_alert ) {
                         if( one_in( 4 ) && mem_combat.panic < 10 + personality.bravery ) {
                             add_msg( m_bad, _( "%s is starting to panic a bit." ), name );
@@ -1493,8 +1500,8 @@ void npc::regen_ai_cache()
         warn_about( "general_danger" );
     }
     // Non-allied NPCs with a completed mission should move to the player
-    if( !is_player_ally() && !is_stationary( true ) ) {
-        Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( !is_player_ally() && !is_stationary( true ) && nearest ) {
         for( ::mission *miss : chatbin.missions_assigned ) {
             if( miss->is_complete( getID() ) ) {
                 // unless the player found an item and already told the NPC he wanted to keep it
@@ -1504,8 +1511,8 @@ void npc::regen_ai_cache()
                     has_effect( effect_npc_player_still_looking ) ) {
                     continue;
                 }
-                if( pos_abs_omt() != player_character.pos_abs_omt() ) {
-                    goal = player_character.pos_abs_omt();
+                if( pos_abs_omt() != nearest->pos_abs_omt() ) {
+                    goal = nearest->pos_abs_omt();
                 }
                 set_attitude( NPCATT_TALK );
                 break;
@@ -1575,9 +1582,9 @@ void npc::move()
                        get_name(), bt_goal, legacy_top );
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     //faction opinion determines if it should consider you hostile
-    if( !is_enemy() && guaranteed_hostile() && sees( here, player_character ) ) {
+    if( nearest && !is_enemy() && guaranteed_hostile() && sees( here, *nearest ) ) {
         if( is_player_ally() ) {
             mutiny();
         }
@@ -1634,10 +1641,10 @@ void npc::move()
     } else if( is_enemy() && vehicle_danger( avoidance_vehicles_radius ) >= 0 &&
                !has_flag( json_flag_CANNOT_MOVE ) ) {
         // TODO: Think about how this actually needs to work, for now assume flee from player
-        ai_cache.target = g->shared_from( player_character );
+        ai_cache.target = g->shared_from( *nearest );
         action = method_of_fleeing();
-    } else if( ( target == &player_character && attitude == NPCATT_FLEE_TEMP ) ||
-               has_effect( effect_npc_run_away ) ) {
+    } else if( nearest && ( ( target == nearest && attitude == NPCATT_FLEE_TEMP ) ||
+               has_effect( effect_npc_run_away ) ) ) {
         if( hp_percentage() > 30 && target && rl_dist( pos_bub(), target->pos_bub() ) <= 1 &&
             !has_flag( json_flag_CANNOT_ATTACK ) ) {
             action = method_of_attack();
@@ -1720,9 +1727,8 @@ void npc::move()
                     // the commitment clears and the fresh goal takes over.
                     completed_goal = ( new_goal != "hold_position" );
                 } else if( committed == "follow_player" ) {
-                    const Character &pc = get_player_character();
-                    completed_goal = ( rl_dist( pos_bub(), pc.pos_bub() ) <= follow_distance()
-                                       && posz() == pc.posz() );
+                    completed_goal = nearest && ( rl_dist( pos_bub(), nearest->pos_bub() ) <= follow_distance()
+                                                 && posz() == nearest->posz() );
                     if( !completed_goal ) {
                         completed_goal = ( new_goal != "follow_player" );
                     }
@@ -1999,7 +2005,7 @@ void npc::move()
         // like random NPCs
         if( attitude == NPCATT_ACTIVITY && !activity ) {
             revert_after_activity();
-            if( is_ally( player_character ) && !assigned_camp ) {
+            if( nearest && is_ally( *nearest ) && !assigned_camp ) {
                 attitude = NPCATT_FOLLOW;
                 mission = NPC_MISSION_NULL;
             }
@@ -2061,20 +2067,20 @@ void npc::move()
                 return false;
         }
     };
-    if( ai_cache.danger > 0 && target != nullptr &&
+    if( nearest && ai_cache.danger > 0 && target != nullptr &&
         is_passive_follow_action( action ) && !has_flag( json_flag_CANNOT_ATTACK ) ) {
         bool engage = false;
-        if( player_character.in_vehicle && in_vehicle && is_walking_with() ) {
+        if( nearest->in_vehicle && in_vehicle && is_walking_with() ) {
             // Both must occupy the same vehicle; player in a different vehicle
             // does not justify forcing combat.
-            const optional_vpart_position pvp = here.veh_at( player_character.pos_bub() );
+            const optional_vpart_position pvp = here.veh_at( nearest->pos_bub() );
             const optional_vpart_position nvp = here.veh_at( pos_bub() );
             engage = pvp && nvp && &pvp->vehicle() == &nvp->vehicle();
-        } else if( !player_character.in_vehicle && is_following() ) {
+        } else if( !nearest->in_vehicle && is_following() ) {
             // is_following() excludes LEAD: leaders do not get pulled into
             // close-follow combat. follow_distance() is the rule-driven radius.
-            engage = rl_dist( pos_bub(), player_character.pos_bub() ) <= follow_distance() ||
-                     posz() != player_character.posz();
+            engage = rl_dist( pos_bub(), nearest->pos_bub() ) <= follow_distance() ||
+                     posz() != nearest->posz();
         }
         if( engage ) {
             action = method_of_attack();
@@ -2111,7 +2117,7 @@ void npc::execute_action( npc_action action )
                name, target, npc_action_name(action));
     */
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     map &here = get_map();
     switch( action ) {
         case npc_do_attack:
@@ -2187,8 +2193,8 @@ void npc::execute_action( npc_action action )
                 // first build a list of positions to search
                 std::vector<tripoint_bub_ms> search_positions;
 
-                if( is_walking_with() && player_character.in_vehicle && player_character.in_sleep_state() ) {
-                    const optional_vpart_position player_part_pos = here.veh_at( player_character.pos_bub() );
+                if( nearest && is_walking_with() && nearest->in_vehicle && nearest->in_sleep_state() ) {
+                    const optional_vpart_position player_part_pos = here.veh_at( nearest->pos_bub() );
                     if( player_part_pos ) {
                         vehicle *player_vehicle = &player_part_pos->vehicle();
                         for( const vpart_reference &part : player_vehicle->get_avail_parts( VPFLAG_BOARDABLE ) ) {
@@ -2228,7 +2234,7 @@ void npc::execute_action( npc_action action )
                 move_pause();
                 if( !in_sleep_state() ) {
                     activate_bionic_by_id( bio_soporific );
-                    if( !player_character.in_sleep_state() ) {
+                    if( !nearest || !nearest->in_sleep_state() ) {
                         add_msg_if_player_sees( *this, _( "%s lies down to sleep." ), get_name() );
                     }
                     // NPCs check can_sleep() for hard blockers (meth, stim)
@@ -2297,7 +2303,9 @@ void npc::execute_action( npc_action action )
                     melee_attack( *cur, true );
                 }
             } else {
-                look_for_player( player_character );
+                if( nearest ) {
+                    look_for_player( *nearest );
+                }
             }
             break;
 
@@ -2332,8 +2340,8 @@ void npc::execute_action( npc_action action )
                 sees( here, here.get_bub( *last_player_seen_pos ) ) ) {
                 update_path( here.get_bub( *last_player_seen_pos ) );
                 move_to_next();
-            } else {
-                look_for_player( player_character );
+            } else if( nearest ) {
+                look_for_player( *nearest );
             }
             break;
 
@@ -2345,7 +2353,7 @@ void npc::execute_action( npc_action action )
                     heal_player( *patient );
                 } else if( !path.empty() ) {
                     std::string talktag = chat_snippets().snip_heal_player.translated();
-                    parse_tags( talktag, get_player_character(), *this );
+                    parse_tags( talktag, get_avatar_legacy(), *this );
                     say( string_format( talktag, patient->disp_name() ) );
                     move_to_next();
                 } else {
@@ -2355,10 +2363,14 @@ void npc::execute_action( npc_action action )
             break;
         }
         case npc_follow_player:
-            update_path( player_character.pos_bub() );
+            if( !nearest ) {
+                move_pause();
+                break;
+            }
+            update_path( nearest->pos_bub() );
             if( path.empty() ||
                 ( static_cast<int>( path.size() ) <= follow_distance() &&
-                  player_character.posz() == posz() ) ) {
+                  nearest->posz() == posz() ) ) {
                 // We're close enough to u.
                 move_pause();
             } else {
@@ -2369,7 +2381,11 @@ void npc::execute_action( npc_action action )
             break;
 
         case npc_follow_embarked: {
-            const optional_vpart_position vp = here.veh_at( player_character.pos_bub() );
+            if( !nearest ) {
+                move_pause();
+                break;
+            }
+            const optional_vpart_position vp = here.veh_at( nearest->pos_bub() );
             if( !vp ) {
                 debugmsg( "Following an embarked player with no vehicle at their location?" );
                 // TODO: change to wait? - for now pause
@@ -2482,12 +2498,14 @@ void npc::execute_action( npc_action action )
 
         break;
         case npc_talk_to_player:
-            get_avatar().talk_to( get_talker_for( this ) );
+            get_avatar_legacy().talk_to( get_talker_for( this ) );
             set_moves( 0 );
             break;
 
         case npc_mug_player:
-            mug_player( player_character );
+            if( nearest ) {
+                mug_player( *nearest );
+            }
             break;
 
         case npc_goto_to_this_pos: {
@@ -3047,7 +3065,7 @@ npc_action npc::address_needs( float danger )
 
     map &here = get_map();
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     // rng because NPCs are not meant to be hypervigilant hawks that notice everything
     // and swing into action with alarming alacrity.
     // no sometimes they are just looking the other way, sometimes they hestitate.
@@ -3064,13 +3082,13 @@ npc_action npc::address_needs( float danger )
         } else {
             deactivate_bionic_by_id( bio_nanobots );
         }
-        if( static_cast<int>( get_skill_level( skill_firstaid ) ) > 0 ) {
+        if( nearest && static_cast<int>( get_skill_level( skill_firstaid ) ) > 0 ) {
             if( is_player_ally() ) {
-                healing_options try_to_fix_other = patient_assessment( player_character );
+                healing_options try_to_fix_other = patient_assessment( *nearest );
                 if( try_to_fix_other.any_true() ) {
                     ai_cache.can_heal = has_healing_options( try_to_fix_other );
                     if( ai_cache.can_heal.any_true() ) {
-                        ai_cache.ally = g->shared_from( player_character );
+                        ai_cache.ally = g->shared_from( *nearest );
                         return npc_heal_player;
                     }
                 }
@@ -3285,7 +3303,7 @@ npc_action npc::address_needs( float danger )
             if( get_sleepiness() >= sleepiness_levels::TIRED ) {
                 return true;
             }
-            if( is_walking_with() && player_character.in_sleep_state() &&
+            if( nearest && is_walking_with() && nearest->in_sleep_state() &&
                 get_sleepiness() > ( sleepiness_levels::TIRED / 2 ) ) {
                 return true;
             }
@@ -3302,7 +3320,7 @@ npc_action npc::address_needs( float danger )
             get_sleepiness() > sleepiness_levels::MASSIVE_SLEEPINESS ) {
             return npc_sleep;
         }
-        if( player_character.in_sleep_state() ) {
+        if( nearest && nearest->in_sleep_state() ) {
             // TODO: "Guard me while I sleep" command
             return npc_sleep;
         }
@@ -3317,14 +3335,14 @@ npc_action npc::address_player()
 {
     const map &here = get_map();
 
-    Character &player_character = get_player_character();
-    if( ( attitude == NPCATT_TALK || attitude == NPCATT_RECOVER_GOODS ) &&
-        sees( here, player_character ) ) {
-        if( player_character.in_sleep_state() ) {
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( nearest && ( attitude == NPCATT_TALK || attitude == NPCATT_RECOVER_GOODS ) &&
+        sees( here, *nearest ) ) {
+        if( nearest->in_sleep_state() ) {
             // Leave sleeping characters alone.
             return npc_undecided;
         }
-        if( rl_dist( pos_abs(), player_character.pos_abs() ) <= 6 ) {
+        if( rl_dist( pos_abs(), nearest->pos_abs() ) <= 6 ) {
             return npc_talk_to_player;    // Close enough to talk to you
         } else {
             if( one_in( 10 ) ) {
@@ -3334,7 +3352,7 @@ npc_action npc::address_player()
         }
     }
 
-    if( attitude == NPCATT_MUG && sees( here, player_character ) ) {
+    if( nearest && attitude == NPCATT_MUG && sees( here, *nearest ) ) {
         if( one_in( 3 ) ) {
             say( chat_snippets().snip_mug_dontmove.translated() );
         }
@@ -3355,8 +3373,8 @@ npc_action npc::address_player()
         return npc_flee;
     }
 
-    if( attitude == NPCATT_LEAD ) {
-        if( rl_dist( pos_abs(), player_character.pos_abs() ) >= 12 || !sees( here, player_character ) ) {
+    if( nearest && attitude == NPCATT_LEAD ) {
+        if( rl_dist( pos_abs(), nearest->pos_abs() ) >= 12 || !sees( here, *nearest ) ) {
             int intense = get_effect_int( effect_catch_up );
             if( intense < 10 ) {
                 say( chat_snippets().snip_keep_up.translated() );
@@ -3630,7 +3648,7 @@ bool npc::is_valid_sleep_candidate( const tripoint_bub_ms &p ) const
     // Only allow allies to sleep in your vehicle
     if( !is_player_ally() ) {
         const optional_vpart_position vp = here.veh_at( p );
-        if( vp && vp->vehicle().is_owned_by( get_player_character() ) ) {
+        if( vp && vp->vehicle().is_owned_by( get_avatar_legacy() ) ) {
             return false;
         }
     }
@@ -3794,7 +3812,7 @@ void npc::move_to( const tripoint_bub_ms &pt, bool no_bashing, std::set<tripoint
         }
     }
 
-    Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
     if( p.z() != pos.z() ) {
         // Z-level move
         // For now just teleport to the destination
@@ -3805,9 +3823,9 @@ void npc::move_to( const tripoint_bub_ms &pt, bool no_bashing, std::set<tripoint
         }
         mod_moves( -get_speed() );
         moved = true;
-    } else if( has_effect( effect_stumbled_into_invisible ) &&
-               here.has_field_at( p, field_fd_last_known ) && !sees( here, player_character ) &&
-               attitude_to( player_character ) == Attitude::HOSTILE ) {
+    } else if( nearest && has_effect( effect_stumbled_into_invisible ) &&
+               here.has_field_at( p, field_fd_last_known ) && !sees( here, *nearest ) &&
+               attitude_to( *nearest ) == Attitude::HOSTILE ) {
         attack_air( p );
         move_pause();
     } else if( here.passable_through( p ) && !here.has_flag( ter_furn_flag::TFLAG_DOOR, p ) ) {
@@ -4013,7 +4031,7 @@ void npc::move_away_from( const tripoint_bub_ms &pt, bool no_bash_atk,
             continue;
         }
 
-        if( p == get_player_character().pos_bub() ) {
+        if( g->any_player_within( p, 0 ) ) {
             continue;
         }
 
@@ -4631,7 +4649,7 @@ bool npc::would_take_that( const item &it, const tripoint_bub_ms &p )
     if( !is_stealing ) {
         return true;
     }
-    Character &player = get_player_character();
+    avatar &player = get_avatar_legacy();
     // Actual numeric relations are only relative to player faction
     if( it.is_owned_by( player ) ) {
         bool would_always_steal = false;
@@ -4694,13 +4712,13 @@ bool npc::find_corpse_to_pulp()
 {
     map &here = get_map();
 
-    Character &player_character = get_player_character();
-    if( is_player_ally() ) {
+    Character *nearest = g->nearest_player( pos_abs() );
+    if( nearest && is_player_ally() ) {
         if( !rules.has_flag( ally_rule::allow_pulp ) ||
-            player_character.in_vehicle || is_hallucination() ) {
+            nearest->in_vehicle || is_hallucination() ) {
             return false;
         }
-        if( rl_dist( pos_bub(), player_character.pos_bub() ) >= mem_combat.engagement_distance ) {
+        if( rl_dist( pos_bub(), nearest->pos_bub() ) >= mem_combat.engagement_distance ) {
             // don't start to pulp corpses if you're already far from the player.
             return false;
         }
@@ -4751,7 +4769,7 @@ bool npc::find_corpse_to_pulp()
 
     if( corpse == nullptr ) {
         // If we're following the player, don't wander off to pulp corpses
-        const tripoint_bub_ms around = is_walking_with() ? player_character.pos_bub( here ) : pos_bub(
+        const tripoint_bub_ms around = is_walking_with() && nearest ? nearest->pos_bub( here ) : pos_bub(
                                            here );
         for( const item_location &location : here.get_active_items_in_radius( around, range,
                 special_item_type::corpse ) ) {
@@ -4770,7 +4788,7 @@ bool npc::find_corpse_to_pulp()
 
     if( corpse != nullptr && corpse != old_target && is_walking_with() ) {
         std::string talktag = chat_snippets().snip_pulp_zombie.translated();
-        parse_tags( talktag, get_player_character(), *this );
+        parse_tags( talktag, get_avatar_legacy(), *this );
         say( string_format( talktag, corpse->tname() ) );
     }
 
@@ -5343,7 +5361,7 @@ static float rate_food( const Character &who, const item &it, int want_nutr,
 
 bool npc::consume_food_from_camp( consume_filter filter )
 {
-    Character &player_character = get_player_character();
+    avatar &player_character = get_avatar_legacy();
     std::optional<basecamp *> potential_bc;
     for( const tripoint_abs_omt &camp_pos : player_character.camps ) {
         if( rl_dist( camp_pos.xy(), pos_abs_omt().xy() ) < 3 ) {
@@ -5485,8 +5503,8 @@ void npc::mug_player( Character &mark )
         return;
     }
 
-    Character &player_character = get_player_character();
-    const bool u_see = player_character.sees( here, *this ) || player_character.sees( here, mark );
+    Character *nearest = g->nearest_player( pos_abs() );
+    const bool u_see = nearest && ( nearest->sees( here, *this ) || nearest->sees( here, mark ) );
     if( mark.cash > 0 ) {
         if( !is_hallucination() ) { // hallucinations can't take items
             cash += mark.cash;
@@ -5618,10 +5636,11 @@ void npc::reach_omt_destination()
         guard_pos = pos_abs();
         goal = no_goal_point;
         if( is_player_ally() ) {
-            Character &player_character = get_player_character();
+            Character *nearest = g->nearest_player( pos_abs() );
             talk_function::assign_guard( *this );
-            if( rl_dist( player_character.pos_bub(), pos_bub() ) > SEEX * 2 ) {
-                if( player_character.cache_has_item_with_flag( flag_TWO_WAY_RADIO, true ) &&
+            if( nearest && rl_dist( nearest->pos_bub(), pos_bub() ) > SEEX * 2 ) {
+                avatar &legacy = get_avatar_legacy();
+                if( legacy.cache_has_item_with_flag( flag_TWO_WAY_RADIO, true ) &&
                     cache_has_item_with_flag( flag_TWO_WAY_RADIO, true ) ) {
                     add_msg_if_player_sees( pos_bub(), m_info, _( "From your two-way radio you hear %s reporting in, "
                                             "'I've arrived, boss!'" ), disp_name() );
@@ -6044,7 +6063,7 @@ bool npc::complain_about( const std::string &issue, const time_duration &dur,
     // Don't wake player up with non-serious complaints
     // Stop complaining while asleep
     const bool do_complain = force || ( rules.has_flag( ally_rule::allow_complain ) &&
-                                        !get_player_character().in_sleep_state() && !in_sleep_state() );
+                                        !get_avatar_legacy().in_sleep_state() && !in_sleep_state() );
 
     if( complain_since( issue, dur ) && do_complain ) {
         say( speech, priority );
@@ -6078,7 +6097,7 @@ bool npc::complain()
         const effect &eff = get_effect( effect_infected, bp );
         int intensity = eff.get_intensity();
         std::string talktag = chat_snippets().snip_wound_infected.translated();
-        parse_tags( talktag, get_player_character(), *this );
+        parse_tags( talktag, get_avatar_legacy(), *this );
         const std::string speech = string_format( talktag, body_part_name( bp ) );
         if( complain_about( infected_string, time_duration::from_hours( 4 - intensity ), speech,
                             intensity >= 3 ) ) {
@@ -6091,7 +6110,7 @@ bool npc::complain()
     if( has_effect( effect_bite ) ) {
         const bodypart_id &bp =  bp_affected( *this, effect_bite );
         std::string talktag = chat_snippets().snip_wound_bite.translated();
-        parse_tags( talktag, get_player_character(), *this );
+        parse_tags( talktag, get_avatar_legacy(), *this );
         const std::string speech = string_format( talktag, body_part_name( bp ) );
         if( complain_about( bite_string, 1_hours, speech ) ) {
             return true;
@@ -6142,12 +6161,12 @@ bool npc::complain()
         time_duration often;
         if( get_effect( effect_bleed, bp ).get_intensity() < 10 ) {
             std::string talktag = chat_snippets().snip_bleeding.translated();
-            parse_tags( talktag, get_player_character(), *this );
+            parse_tags( talktag, get_avatar_legacy(), *this );
             speech = string_format( talktag, body_part_name( bp ) );
             often = 5_minutes;
         } else {
             std::string talktag = chat_snippets().snip_bleeding_badly.translated();
-            parse_tags( talktag, get_player_character(), *this );
+            parse_tags( talktag, get_avatar_legacy(), *this );
             speech = string_format( talktag, body_part_name( bp ) );
             often = 1_minutes;
         }
@@ -6658,7 +6677,7 @@ std::vector<npc::need_candidate> npc::find_food_candidates()
     // Real consumption in consume_food_from_camp has stricter thresholds
     // (hunger, stomach room, calorie balance). This is intentional: the
     // candidate exists for predicate reporting, not for sticky planning.
-    const Character &pc = get_player_character();
+    const avatar &pc = get_avatar_legacy();
     for( const tripoint_abs_omt &camp_pos : pc.camps ) {
         if( rl_dist( camp_pos.xy(), pos_abs_omt().xy() ) < 3 ) {
             std::optional<basecamp *> bcp = overmap_buffer.find_camp( camp_pos.xy() );
@@ -6709,7 +6728,7 @@ std::vector<npc::need_candidate> npc::find_water_candidates()
     }
 
     // Camp water: same optimistic-availability pattern as camp food above.
-    const Character &pc = get_player_character();
+    const avatar &pc = get_avatar_legacy();
     for( const tripoint_abs_omt &camp_pos : pc.camps ) {
         if( rl_dist( camp_pos.xy(), pos_abs_omt().xy() ) < 3 ) {
             std::optional<basecamp *> bcp = overmap_buffer.find_camp( camp_pos.xy() );
@@ -7279,13 +7298,13 @@ std::vector<npc::need_candidate> npc::find_sleep_candidates()
         } );
     }
 
-    const Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
 
     std::vector<tripoint_bub_ms> search_positions;
-    if( is_walking_with() && player_character.in_vehicle &&
-        player_character.in_sleep_state() ) {
+    if( nearest && is_walking_with() && nearest->in_vehicle &&
+        nearest->in_sleep_state() ) {
         const optional_vpart_position player_part_pos =
-            here.veh_at( player_character.pos_bub() );
+            here.veh_at( nearest->pos_bub() );
         if( player_part_pos ) {
             vehicle *player_vehicle = &player_part_pos->vehicle();
             for( const vpart_reference &part :
@@ -7384,7 +7403,7 @@ npc::need_result npc::execute_go_to_sleep()
     }
 
     const tripoint_bub_ms target_bub = here.get_bub( plan.target );
-    const Character &player_character = get_player_character();
+    Character *nearest = g->nearest_player( pos_abs() );
 
     // At target: perform the sleep action.
     if( pos_bub() == target_bub ) {
@@ -7395,7 +7414,7 @@ npc::need_result npc::execute_go_to_sleep()
         }
         activate_bionic_by_id( bio_soporific );
         if( !is_avatar() && can_sleep() ) {
-            if( !player_character.in_sleep_state() ) {
+            if( !nearest || !nearest->in_sleep_state() ) {
                 add_msg_if_player_sees( *this, _( "%s lies down to sleep." ),
                                         get_name() );
             }
@@ -7404,7 +7423,7 @@ npc::need_result npc::execute_go_to_sleep()
             plan.no_progress_turns = 0;
             return need_result::progressed;
         } else {
-            if( !player_character.in_sleep_state() ) {
+            if( !nearest || !nearest->in_sleep_state() ) {
                 add_msg_if_player_sees( *this, _( "%s lies down to sleep." ),
                                         get_name() );
             }
