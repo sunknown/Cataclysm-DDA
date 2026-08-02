@@ -62,6 +62,12 @@ TEST_CASE( "second_slot_is_a_distinct_avatar", "[hotseat]" )
 
     g->set_active_slot( 0 );
     CHECK( &get_avatar() == &first );
+
+    // Clean up for subsequent tests — every sibling test in this file does
+    // this; this one didn't, and the leaked second slot (a bare
+    // default-constructed avatar with an unset ID) broke an unrelated
+    // crafting test later in the ordered suite.
+    game_test_helper::reset_player_slots();
 }
 
 TEST_CASE( "second_slot_has_own_map_memory", "[hotseat]" )

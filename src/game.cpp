@@ -10852,17 +10852,13 @@ std::vector<Character *> game::get_characters_if( const std::function<bool( cons
         &pred )
 {
     std::vector<Character *> result;
-    // Scoped to the active/local avatar only, not every hotseat slot.
-    // avatar::is_ally()/npc::is_ally() (avatar.cpp, npc.cpp) assume any
-    // Character that isn't `*this` and isn't p.is_avatar() must be an npc,
-    // and dynamic_cast<npc &> it unconditionally; a second live avatar slot
-    // breaks that assumption and throws std::bad_cast. Predicates built on
-    // this function (e.g. Character::get_crafting_group()) call is_ally()
-    // internally, so widening this loop to all slots is unsafe until that
-    // assumption is fixed at its source.
-    avatar &a = get_avatar_legacy();
-    if( pred( a ) ) {
-        result.push_back( &a );
+    // Every hotseat player slot is a live Character; a caller filtering by
+    // predicate (e.g. crafting-group membership) needs to see all of them,
+    // not just the currently active one.
+    for( avatar *slot : g->get_players() ) {
+        if( pred( *slot ) ) {
+            result.push_back( slot );
+        }
     }
     for( npc &guy : all_npcs() ) {
         if( pred( guy ) ) {
