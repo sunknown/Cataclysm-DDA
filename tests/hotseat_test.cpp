@@ -165,3 +165,31 @@ TEST_CASE( "single_player_build_sees_only_slot_zero", "[hotseat]" )
     // Restore g for subsequent tests.
     game_test_helper::reset_player_slots();
 }
+
+#if defined(MULTIPLAYER)
+#include "debug_menu.h"
+#include "mp/mp_mode.h"
+
+TEST_CASE( "hotseat_debug_toggle_creates_slot_and_enables_mode", "[hotseat]" )
+{
+    game_test_helper::reset_player_slots();
+    mp_mode_set_active( false );
+
+    debug_menu::toggle_hotseat( "" );
+    CHECK( g->player_slot_count() == 2 );
+    CHECK( mp_mode_active() );
+
+    // Toggling again while already active must not create a third slot.
+    debug_menu::toggle_hotseat( "" );
+    CHECK( g->player_slot_count() == 2 );
+    CHECK_FALSE( mp_mode_active() );
+
+    // Re-enabling after a disable must not create a third slot either.
+    debug_menu::toggle_hotseat( "" );
+    CHECK( g->player_slot_count() == 2 );
+    CHECK( mp_mode_active() );
+
+    mp_mode_set_active( false );
+    game_test_helper::reset_player_slots();
+}
+#endif

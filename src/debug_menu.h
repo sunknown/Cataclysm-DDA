@@ -70,6 +70,15 @@ bool is_debug_character();
 void prompt_map_reveal( const std::optional<tripoint_abs_omt> &p = std::nullopt );
 void map_reveal( int reveal_level_int, const std::optional<tripoint_abs_omt> &p = std::nullopt );
 
+#if defined(MULTIPLAYER)
+// Creates the second hotseat player slot (once per session, from a saved
+// character template if template_name names one, or bare if empty) and
+// enables hotseat mode. If hotseat mode is already active, disables it
+// instead and template_name is ignored. Safe to call repeatedly: a second
+// slot is never created more than once per session.
+void toggle_hotseat( const std::string &template_name );
+#endif
+
 /* Merges iterable elements into std::string with
  * @param delimiter between them
  * @param f is callable that is called to transform each value

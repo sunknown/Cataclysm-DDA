@@ -112,6 +112,8 @@
 #include "overmap_ui.h"
 #include "overmapbuffer.h"
 #include "path_info.h"
+#include "mp/mp_mode.h"
+#include "player_difficulty.h"
 #include "pathfinding.h"
 #include "pimpl.h"
 #include "point.h"
@@ -1954,6 +1956,31 @@ static void control_npc_menu()
 {
     get_avatar().control_npc_menu( true );
 }
+
+#if defined(MULTIPLAYER)
+void toggle_hotseat( const std::string &template_name )
+{
+    if( mp_mode_active() ) {
+        mp_mode_set_active( false );
+        add_msg( m_info, _( "Hotseat co-op disabled." ) );
+        return;
+    }
+
+    if( g->player_slot_count() == 1 ) {
+        avatar &second = g->add_player_slot();
+        if( !template_name.empty() ) {
+            pool_type pool;
+            if( !second.load_template( template_name, pool ) ) {
+                popup( _( "Could not load template \"%s\"; slot 2 stays a bare avatar." ),
+                       template_name );
+            }
+        }
+    }
+
+    mp_mode_set_active( true );
+    add_msg( m_good, _( "Hotseat co-op enabled." ) );
+}
+#endif
 
 static void character_edit_stats_menu( Character &you )
 {
