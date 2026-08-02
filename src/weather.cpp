@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "avatar.h"
 #include "body_part_set.h"
 #include "bodypart.h"
 #include "calendar.h"
@@ -106,39 +107,45 @@ weather_type_id get_bad_weather()
  */
 void glare( const weather_type_id &w )
 {
-    Character &player_character = get_player_character();//todo npcs, also
-    //General prerequisites for glare
-    if( g->is_sheltered( player_character.pos_bub() ) ||
-        player_character.in_sleep_state() ||
-        player_character.worn_with_flag( json_flag_SUN_GLASSES ) ||
-        player_character.has_flag( json_flag_GLARE_RESIST ) ||
-        player_character.is_blind() ) {
-        return;
-    }
-
-    time_duration dur = 0_turns;
-    const efftype_id *effect = nullptr;
-    season_type season = season_of_year( calendar::turn );
-    if( season == WINTER &&
-        incident_sun_irradiance( w, calendar::turn ) > irradiance::moderate ) {
-        // Winter snow glare happens at lower irradiance
-        effect = &effect_snow_glare;
-        dur = player_character.has_effect( *effect ) ? 10_turns : 20_turns;
-    } else if( incident_sun_irradiance( w, calendar::turn ) > irradiance::high ) {
-        effect = &effect_glare;
-        dur = player_character.has_effect( *effect ) ? 10_turns : 20_turns;
-    }
-
-    //apply final glare effect
-    if( dur > 0_turns && effect != nullptr ) {
-        //enhance/reduce by some traits
-        if( player_character.has_flag( json_flag_HIGH_GLARE ) ) {
-            dur = dur * 2;
+    //todo npcs, also
+    // Sun exposure is per-avatar-instance (position, sleep state, worn
+    // items, traits), so every hotseat slot is checked independently rather
+    // than just the active one.
+    for( avatar *pc : g->get_players() ) {
+        Character &player_character = *pc;
+        //General prerequisites for glare
+        if( g->is_sheltered( player_character.pos_bub() ) ||
+            player_character.in_sleep_state() ||
+            player_character.worn_with_flag( json_flag_SUN_GLASSES ) ||
+            player_character.has_flag( json_flag_GLARE_RESIST ) ||
+            player_character.is_blind() ) {
+            continue;
         }
-        // Glare in all your eyes
-        for( bodypart_id &bp : player_character.get_all_body_parts_of_type(
-                 bp_type::sensor ) ) {
-            player_character.add_effect( *effect, dur, bp );
+
+        time_duration dur = 0_turns;
+        const efftype_id *effect = nullptr;
+        season_type season = season_of_year( calendar::turn );
+        if( season == WINTER &&
+            incident_sun_irradiance( w, calendar::turn ) > irradiance::moderate ) {
+            // Winter snow glare happens at lower irradiance
+            effect = &effect_snow_glare;
+            dur = player_character.has_effect( *effect ) ? 10_turns : 20_turns;
+        } else if( incident_sun_irradiance( w, calendar::turn ) > irradiance::high ) {
+            effect = &effect_glare;
+            dur = player_character.has_effect( *effect ) ? 10_turns : 20_turns;
+        }
+
+        //apply final glare effect
+        if( dur > 0_turns && effect != nullptr ) {
+            //enhance/reduce by some traits
+            if( player_character.has_flag( json_flag_HIGH_GLARE ) ) {
+                dur = dur * 2;
+            }
+            // Glare in all your eyes
+            for( bodypart_id &bp : player_character.get_all_body_parts_of_type(
+                     bp_type::sensor ) ) {
+                player_character.add_effect( *effect, dur, bp );
+            }
         }
     }
 }
@@ -424,7 +431,10 @@ void wet_character( Character &target, int amount )
 
 void weather_sound( const translation &sound_message, std::string_view sound_effect )
 {
-    Character &player_character = get_player_character();
+    // add_msg()/sfx playback are single, global side effects (not per-avatar
+    // state), so this stays scoped to the active/local avatar rather than
+    // looping over every slot and risking a doubled message and sound.
+    Character &player_character = get_avatar_legacy();
     map &here = get_map();
     if( !player_character.has_effect( effect_sleep ) && !player_character.is_deaf() ) {
         if( here.get_abs_sub().z() >= 0 ) {
@@ -460,7 +470,6 @@ void handle_weather_effects( const weather_type_id &w )
 {
     //Possible TODO, make npc/monsters affected
     map &here = get_map();
-    Character &target = get_player_character();
     if( w->rains && w->precip != precip_class::none ) {
         fill_water_collectors( precip_mm_per_hour( w->precip ) );
         int wetness = 0;
@@ -479,8 +488,14 @@ void handle_weather_effects( const weather_type_id &w )
         // Coarse correction to get us back to previously intended soaking rate.
         // Precipitation is vertical - only roofs/floors block it, not walls.
         // is_roofed() walks upward through all z-levels for a complete check.
-        if( calendar::once_every( 6_seconds ) && !here.is_roofed( target.pos_bub() ) ) {
-            wet_character( target, wetness );
+        if( calendar::once_every( 6_seconds ) ) {
+            // Each hotseat slot is drenched independently, based on its own
+            // roofed status, since being rained on is per-avatar-instance.
+            for( avatar *pc : g->get_players() ) {
+                if( !here.is_roofed( pc->pos_bub() ) ) {
+                    wet_character( *pc, wetness );
+                }
+            }
         }
     }
     glare( w );
@@ -1034,7 +1049,10 @@ void weather_manager::on_game_start()
 
 void weather_manager::update_weather()
 {
-    Character &player_character = get_player_character();
+    // Weather is a single global state (not per-avatar), so it needs one
+    // reference location; the active/local avatar is the existing, stable
+    // choice rather than an arbitrary "nearest" pick.
+    Character &player_character = get_avatar_legacy();
     weather_changed = false;
     if( weather_id == WEATHER_NULL || calendar::turn >= nextweather ) {
         w_point &w = *weather_precise;
@@ -1124,14 +1142,17 @@ void weather_manager::update_snow_depth()
         return;
     }
 
-    // Ensure the player's current OMT is tracked, seeded from nearest neighbor
-    const tripoint_abs_omt player_omt = ground_level_omt(
-                                            get_player_character().pos_abs_omt() );
-    if( snow_depth_map.find( player_omt ) == snow_depth_map.end() ) {
-        omt_snow_state seeded;
-        seeded.depth_mm = get_snow_depth_mm( player_omt );
-        seeded.last_update = calendar::turn;
-        snow_depth_map[player_omt] = seeded;
+    // Ensure every hotseat player's current OMT is tracked, seeded from
+    // nearest neighbor -- both avatars can be in different OMTs, so both
+    // need their own seed, not just the active slot's.
+    for( avatar *pc : g->get_players() ) {
+        const tripoint_abs_omt player_omt = ground_level_omt( pc->pos_abs_omt() );
+        if( snow_depth_map.find( player_omt ) == snow_depth_map.end() ) {
+            omt_snow_state seeded;
+            seeded.depth_mm = get_snow_depth_mm( player_omt );
+            seeded.last_update = calendar::turn;
+            snow_depth_map[player_omt] = seeded;
+        }
     }
 
     const bool is_snowing = weather_id->precip != precip_class::none && !weather_id->rains;
