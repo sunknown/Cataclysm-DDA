@@ -309,6 +309,9 @@ std::string enum_to_string<debug_menu::debug_menu_index>( debug_menu::debug_menu
         case debug_menu::debug_menu_index::VEHICLE_EFFECTS: return "VEHICLE_EFFECTS";
         case debug_menu::debug_menu_index::WISHPROFICIENCY: return "WISHPROFICIENCY";
         case debug_menu::debug_menu_index::RELOAD_GPU_SHADERS: return "RELOAD_GPU_SHADERS";
+#if defined(MULTIPLAYER)
+        case debug_menu::debug_menu_index::TOGGLE_HOTSEAT: return "TOGGLE_HOTSEAT";
+#endif
         // *INDENT-ON*
         case debug_menu::debug_menu_index::last:
             break;
@@ -629,6 +632,9 @@ static int player_uilist()
         { uilist_entry( debug_menu_index::BLEED_SELF, true, 'b', _( "Bleed self" ) ) },
         { uilist_entry( debug_menu_index::SET_AUTOMOVE, true, 'a', _( "Set auto move route" ) ) },
         { uilist_entry( debug_menu_index::CONTROL_NPC, true, 'x', _( "Control NPC follower" ) ) },
+#if defined(MULTIPLAYER)
+        { uilist_entry( debug_menu_index::TOGGLE_HOTSEAT, true, 'H', _( "Toggle hotseat co-op" ) ) },
+#endif
         { uilist_entry( debug_menu_index::IMPORT_FOLLOWER, true, 'i', _( "Import follower" ) ) },
         { uilist_entry( debug_menu_index::EXPORT_FOLLOWER, true, 'e', _( "Export follower" ) ) },
         { uilist_entry( debug_menu_index::EXPORT_SELF, true, 'E', _( "Export self" ) ) },
@@ -1961,6 +1967,7 @@ static void control_npc_menu()
 void toggle_hotseat( const std::string &template_name )
 {
     if( mp_mode_active() ) {
+        g->set_active_slot( 0 );
         mp_mode_set_active( false );
         add_msg( m_info, _( "Hotseat co-op disabled." ) );
         return;
@@ -1979,6 +1986,36 @@ void toggle_hotseat( const std::string &template_name )
 
     mp_mode_set_active( true );
     add_msg( m_good, _( "Hotseat co-op enabled." ) );
+}
+
+static void toggle_hotseat_menu()
+{
+    if( mp_mode_active() || g->player_slot_count() > 1 ) {
+        toggle_hotseat( "" );
+        return;
+    }
+
+    std::vector<std::string> templates;
+    for( std::string path : get_files_from_path( ".template", PATH_INFO::templatedir(), false,
+            true ) ) {
+        path.erase( path.find( ".template" ), std::string::npos );
+        path.erase( 0, path.find_last_of( "\\/" ) + 1 );
+        templates.push_back( path );
+    }
+    std::sort( templates.begin(), templates.end(), localized_compare );
+
+    uilist smenu;
+    smenu.text = _( "Start slot 2 as:" );
+    smenu.addentry( 0, true, MENU_AUTOASSIGN, _( "Bare avatar (no gear)" ) );
+    for( size_t i = 0; i < templates.size(); ++i ) {
+        smenu.addentry( static_cast<int>( i ) + 1, true, MENU_AUTOASSIGN, templates[i] );
+    }
+    smenu.query();
+
+    if( smenu.ret < 0 ) {
+        return;
+    }
+    toggle_hotseat( smenu.ret == 0 ? "" : templates[smenu.ret - 1] );
 }
 #endif
 
@@ -4261,6 +4298,14 @@ const std::vector<debug_action_entry> &all_actions()
                 control_npc_menu();
             }
         },
+#if defined(MULTIPLAYER)
+        {
+            debug_menu_index::TOGGLE_HOTSEAT, translate_marker( "Toggle hotseat co-op" ), "hotseat multiplayer coop toggle", "Player", []()
+            {
+                toggle_hotseat_menu();
+            }
+        },
+#endif
         {
             debug_menu_index::EDIT_MONSTER, translate_marker( "Edit monster" ), "monster edit", "Player", []()
             {
