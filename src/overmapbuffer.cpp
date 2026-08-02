@@ -12,6 +12,7 @@
 #include <tuple>
 #include <type_traits>
 
+#include "avatar.h"
 #include "basecamp.h"
 #include "calendar.h"
 #include "cata_assert.h"
@@ -717,7 +718,12 @@ void overmapbuffer::process_mongroups()
 {
     // arbitrary radius to include nearby overmaps (aside from the current one)
     const int radius = MAPSIZE * 2;
-    const tripoint_abs_sm center = get_player_character().pos_abs_sm();
+    // Mongroup decay/despawn is shared overmap state, not per-avatar-owned
+    // data, and widening it to scan near every hotseat slot risks double
+    // processing (and, less certainly, RNG-order/test-count drift) that
+    // hasn't been verified safe here, so this stays scoped to the
+    // active/local avatar like the rest of this file's sites.
+    const tripoint_abs_sm center = get_avatar_legacy().pos_abs_sm();
     for( overmap *&om : get_overmaps_near( center, radius ) ) {
         om->process_mongroups();
     }
@@ -727,7 +733,9 @@ void overmapbuffer::move_hordes()
 {
     // arbitrary radius to include nearby overmaps (aside from the current one)
     const int radius = MAPSIZE * 2;
-    const tripoint_abs_sm center = get_player_character().pos_abs_sm();
+    // See the comment in process_mongroups(): hordes are shared overmap
+    // state, so this intentionally stays scoped to the active/local avatar.
+    const tripoint_abs_sm center = get_avatar_legacy().pos_abs_sm();
     for( overmap *&om : get_overmaps_near( center, radius ) ) {
         om->move_hordes();
     }
@@ -1630,7 +1638,12 @@ shared_ptr_fast<npc> overmapbuffer::remove_npc( const character_id &id )
 
 std::vector<shared_ptr_fast<npc>> overmapbuffer::get_npcs_near_player( int radius )
 {
-    return get_npcs_near( get_player_character().pos_abs_sm(), radius );
+    // Many callers outside this migration batch (do_turn.cpp, mission.cpp,
+    // overmap_ui.cpp, etc.) still assume this returns NPCs near a single
+    // reference player; widening it to a union across hotseat slots would
+    // change their behavior without those call sites being reviewed for it,
+    // so this intentionally stays scoped to the active/local avatar.
+    return get_npcs_near( get_avatar_legacy().pos_abs_sm(), radius );
 }
 
 std::vector<overmap *> overmapbuffer::get_overmaps_near( const tripoint_abs_sm &location,
@@ -1722,7 +1735,10 @@ static radio_tower_reference create_radio_tower_reference( const overmap &om, ra
 
 radio_tower_reference overmapbuffer::find_radio_station( const int frequency )
 {
-    const tripoint_abs_sm center = get_player_character().pos_abs_sm();
+    // Radio reception callers (iuse.cpp) are outside this migration batch
+    // and assume a single reference listener, so this stays scoped to the
+    // active/local avatar rather than widening.
+    const tripoint_abs_sm center = get_avatar_legacy().pos_abs_sm();
     for( overmap *&om : get_overmaps_near( center, RADIO_MAX_STRENGTH ) ) {
         for( radio_tower &tower : om->radios ) {
             const radio_tower_reference rref = create_radio_tower_reference( *om, tower, center );
@@ -1737,7 +1753,9 @@ radio_tower_reference overmapbuffer::find_radio_station( const int frequency )
 std::vector<radio_tower_reference> overmapbuffer::find_all_radio_stations()
 {
     std::vector<radio_tower_reference> result;
-    const tripoint_abs_sm center = get_player_character().pos_abs_sm();
+    // See the comment in find_radio_station(): stays scoped to the
+    // active/local avatar rather than widening.
+    const tripoint_abs_sm center = get_avatar_legacy().pos_abs_sm();
     // perceived signal strength is distance (in submaps) - signal strength, so towers
     // further than RADIO_MAX_STRENGTH submaps away can never be received at all.
     const int radius = RADIO_MAX_STRENGTH;
