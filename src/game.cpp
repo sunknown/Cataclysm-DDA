@@ -972,7 +972,7 @@ bool game::start_game()
         }
     }
     if( scen->has_flag( "BORDERED" ) ) {
-        const point_abs_omt p_player = get_player_character().pos_abs_omt().xy();
+        const point_abs_omt p_player = get_avatar_legacy().pos_abs_omt().xy();
         point_abs_om om;
         point_om_omt omt;
         std::tie( om, omt ) = project_remain<coords::om>( p_player );
@@ -1015,7 +1015,7 @@ bool game::start_game()
         }
     }
     for( item *&e : u.inv_dump() ) {
-        e->set_owner( get_player_character() );
+        e->set_owner( get_avatar_legacy() );
     }
     // Now that we're done handling coordinates, ensure the player's submap is in the center of the map
     update_map( u );
@@ -1257,7 +1257,7 @@ void game::on_witness_theft( const item &target )
 {
     const map &here = get_map();
 
-    Character &p = get_player_character();
+    Character &p = get_avatar_legacy();
     std::vector<npc *> witnesses;
     for( npc &elem : g->all_npcs() ) {
         if( rl_dist( elem.pos_bub(), p.pos_bub() ) < MAX_VIEW_DISTANCE &&
@@ -1638,7 +1638,6 @@ static int maptile_field_intensity( maptile &mt, field_type_id fld )
 units::temperature_delta get_heat_radiation( const tripoint_bub_ms &location )
 {
     units::temperature_delta temp_mod = units::from_kelvin_delta( 0 );
-    Character &player_character = get_player_character();
     map &here = get_map();
     // Convert it to an int id once, instead of 139 times per turn
     const field_type_id fd_fire_int = fd_fire.id();
@@ -1657,9 +1656,11 @@ units::temperature_delta get_heat_radiation( const tripoint_bub_ms &location )
             // No heat source here
             continue;
         }
-        if( player_character.pos_bub() == location ) {
+        // Any player standing exactly here is, by definition, at `location`,
+        // so the fine-grained trace below can use `location` directly.
+        if( g->any_player_within( location, 0 ) ) {
             bool heat_can_spread = true;
-            for( const tripoint_bub_ms &p : line_to( player_character.pos_bub(), dest ) ) {
+            for( const tripoint_bub_ms &p : line_to( location, dest ) ) {
                 if( !here.has_flag( ter_furn_flag::TFLAG_PERMEABLE, p ) && here.impassable( p ) ) {
                     heat_can_spread = false;
                     break;
@@ -1681,7 +1682,6 @@ units::temperature_delta get_heat_radiation( const tripoint_bub_ms &location )
 int get_best_fire( const tripoint_bub_ms &location )
 {
     int best_fire = 0;
-    Character &player_character = get_player_character();
     map &here = get_map();
     // Convert it to an int id once, instead of 139 times per turn
     const field_type_id fd_fire_int = fd_fire.id();
@@ -1700,7 +1700,7 @@ int get_best_fire( const tripoint_bub_ms &location )
             // No heat source here
             continue;
         }
-        if( player_character.pos_bub() == location ) {
+        if( g->any_player_within( location, 0 ) ) {
             if( !here.clear_path( dest, location, -1, 1, 100 ) ) {
                 continue;
             }
@@ -1849,7 +1849,10 @@ void game::validate_camps()
 
 std::set<character_id> game::get_follower_list()
 {
-    return get_avatar().get_followers();
+    // follower_ids is tracked per-avatar-instance, so this only reports the
+    // currently active hotseat slot's followers, not every player's; there is
+    // no established toolkit helper to merge follower sets across slots.
+    return get_avatar_legacy().get_followers();
 }
 
 static hint_rating rate_action_change_side( const avatar &you, const item &it )
@@ -1910,7 +1913,7 @@ static hint_rating rate_action_view_recipe( avatar &you, const item &it )
 
 static void view_recipe_crafting_menu( const item &it )
 {
-    avatar &you = get_avatar();
+    avatar &you = get_avatar_legacy();
     std::string itname;
     if( it.is_craft() ) {
         recipe_id id = it.get_making().ident();
@@ -2299,7 +2302,7 @@ int game::inventory_item_menu( item_location locThisItem,
                         avatar_action::eat( u, locThisItem );
                     } else {
                         uistate.open_menu = [locThisItem = locThisItem]() {
-                            avatar_action::eat_or_use( get_avatar(),
+                            avatar_action::eat_or_use( get_avatar_legacy(),
                                                        game_menus::inv::consume( std::string(), locThisItem ) );
                         };
                     }
@@ -2915,7 +2918,7 @@ void game::bury_screen() const
     end_screen_data new_instance;
     new_instance.draw_end_screen_ui();
 
-    sfx::do_player_death_hurt( get_player_character(), true );
+    sfx::do_player_death_hurt( get_avatar_legacy(), true );
     sfx::fade_audio_group( sfx::group::weather, 2000 );
     sfx::fade_audio_group( sfx::group::time_of_day, 2000 );
     sfx::fade_audio_group( sfx::group::context_themes, 2000 );
@@ -3062,7 +3065,7 @@ namespace
 {
 struct npc_dist_to_player {
     const tripoint_abs_omt ppos{};
-    npc_dist_to_player() : ppos( get_player_character().pos_abs_omt() ) { }
+    npc_dist_to_player() : ppos( get_avatar_legacy().pos_abs_omt() ) { }
     // Operator overload required to leverage sort API.
     bool operator()( const shared_ptr_fast<npc> &a,
                      const shared_ptr_fast<npc> &b ) const {
@@ -3929,7 +3932,7 @@ void game::mon_info_update( )
                                    critter.get_dest() == u.pos_abs() );
             }
             if( need_processing ) {
-                if( index < 8 && critter.sees( here, get_player_character() ) ) {
+                if( index < 8 && critter.sees( here, get_avatar_legacy() ) ) {
                     dangerous[index] = true;
                 }
 
@@ -4061,7 +4064,12 @@ void game::cleanup_dead()
     if( npc_is_dead ) {
         for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {
             if( ( *it )->is_dead() ) {
-                get_avatar().get_mon_visible().remove_npc( ( *it ).get() );
+                // Every hotseat slot keeps its own monster_visible_info cache,
+                // so the dead npc pointer must be purged from all of them, not
+                // just the currently active slot.
+                for( avatar *slot : g->get_players() ) {
+                    slot->get_mon_visible().remove_npc( ( *it ).get() );
+                }
                 remove_npc_follower( ( *it )->getID() );
                 overmap_buffer.remove_npc( ( *it )->getID() );
                 it = critter_tracker->active_npc.erase( it );
@@ -4363,7 +4371,7 @@ void game::use_computer( const tripoint_bub_ms &p )
     if( used->eocs.empty() ) {
         computer_session( *used ).use();
     } else {
-        dialogue d( get_talker_for( get_avatar() ), get_talker_for( used ) );
+        dialogue d( get_talker_for( get_avatar_legacy() ), get_talker_for( used ) );
         for( const effect_on_condition_id &eoc : used->eocs ) {
             eoc->activate( d );
         }
@@ -4764,7 +4772,11 @@ bool game::spawn_hallucination( const tripoint_bub_ms &p )
     // If there's 'spawns' exist for player's current location, then
     // spawn random hallucination monster from 'spawns'-dependent monster group (90% chance)
     // or a completely random hallucination monster (10% chance)
-    const oter_id &terrain_type = overmap_buffer.ter( get_player_character().pos_abs_omt() );
+    // The player nearest to the spawn point governs which spawn table applies;
+    // in single-player this is always the sole avatar, matching prior behavior.
+    Character *nearest = g->nearest_player( here.get_abs( p ) );
+    const oter_id &terrain_type = overmap_buffer.ter( nearest ? nearest->pos_abs_omt() :
+                                  project_to<coords::omt>( here.get_abs( p ) ) );
     const overmap_static_spawns &spawns = terrain_type->get_static_spawns();
     if( !spawns.group.is_null() && !one_in( 9 ) ) {
         hallu = MonsterGroupManager::GetRandomMonsterFromGroup( spawns.group );
@@ -5095,7 +5107,7 @@ void game::save_cyborg( item *cyborg, const tripoint_bub_ms &couch_pos, Characte
     int chance_of_success = bionic_success_chance( true, -1, difficulty, installer );
     int success = chance_of_success - rng( 1, 100 );
 
-    if( !get_avatar().query_yn(
+    if( !get_avatar_legacy().query_yn(
             _( "WARNING: %i percent chance of SEVERE damage to all body parts!  Continue anyway?" ),
             100 - static_cast<int>( chance_of_success ) ) ) {
         return;
@@ -5568,7 +5580,7 @@ std::string game::get_fire_fuel_string( const tripoint_bub_ms &examp ) const
             }
             time_duration fire_age = fire->get_field_age();
             // half-life inclusion
-            int mod = 5 - get_player_character().get_skill_level( skill_survival );
+            int mod = 5 - get_avatar_legacy().get_skill_level( skill_survival );
             mod = std::max( mod, 0 );
             if( fire_age >= 0_turns ) {
                 if( mod >= 4 ) { // = survival level 0-1
@@ -5650,7 +5662,7 @@ void game::examine( const tripoint_bub_ms &examp, bool with_pickup )
                     return;
                 }
             } else if( mon->has_flag( mon_flag_CONVERSATION ) && !mon->type->chat_topics.empty() ) {
-                get_avatar().talk_to( get_talker_for( mon ) );
+                get_avatar_legacy().talk_to( get_talker_for( mon ) );
             }
         } else {
             u.cant_do_mounted();
@@ -5677,7 +5689,7 @@ void game::examine( const tripoint_bub_ms &examp, bool with_pickup )
         }
     }
 
-    iexamine::part_con( get_avatar(), examp );
+    iexamine::part_con( get_avatar_legacy(), examp );
     // trap::iexamine will handle the invisible traps.
     here.tr_at( examp ).examine( examp );
 
@@ -5764,7 +5776,7 @@ void game::examine( const tripoint_bub_ms &examp, bool with_pickup )
 bool game::warn_player_maybe_anger_local_faction( bool really_bad_offense,
         bool asking_for_public_goods )
 {
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     std::optional<basecamp *> bcp = overmap_buffer.find_camp(
                                         player_character.pos_abs_omt().xy() );
     if( !bcp ) {
@@ -6423,7 +6435,7 @@ void draw_trail( const tripoint_bub_ms &start, const tripoint_bub_ms &end, const
     map &here = get_map();
 
     std::vector<tripoint_bub_ms> pts;
-    avatar &player_character = get_avatar();
+    avatar &player_character = get_avatar_legacy();
     const tripoint_bub_ms pos = player_character.pos_bub( here );
     tripoint_bub_ms center = pos + player_character.view_offset;
     if( start != end ) {
@@ -6623,7 +6635,7 @@ bool game::take_screenshot() const
 
     // build file name: <map_dir>/screenshots/[<character_name>]_<date>.png
     // NOLINTNEXTLINE(cata-translate-string-literal)
-    const std::string tmp_file_name = string_format( "[%s]_%s.png", get_player_character().get_name(),
+    const std::string tmp_file_name = string_format( "[%s]_%s.png", get_avatar_legacy().get_name(),
                                       timestamp_now() );
 
     std::string file_name = ensure_valid_file_name( tmp_file_name );
@@ -6814,7 +6826,7 @@ static void add_disassemblables( uilist &menu,
                 uncraft_recipe = recipe_dictionary::get_uncraft( it.typeId() );
             }
             menu.addentry_col( menu_index++, true, hotkey, msg,
-                               to_string_clipped( uncraft_recipe.time_to_craft( get_player_character(),
+                               to_string_clipped( uncraft_recipe.time_to_craft( get_avatar_legacy(),
                                                   {}, recipe_time_flag::ignore_proficiencies ) ) );
             hotkey = std::nullopt;
         }
@@ -6984,15 +6996,15 @@ void game::butcher( const std::optional<tripoint_bub_ms> &p )
                 }
 
                 const int time = uncraft_recipe.time_to_craft_moves(
-                                     get_player_character(), {}, recipe_time_flag::ignore_proficiencies );
+                                     get_avatar_legacy(), {}, recipe_time_flag::ignore_proficiencies );
                 time_to_disassemble_once += time * stack.second;
                 if( stack.first->typeId() == itype_disassembly ) {
                     item test( uncraft_recipe.result(), calendar::turn, 1 );
                     time_to_disassemble_recursive += test.get_recursive_disassemble_moves(
-                                                         get_player_character() ) * stack.second;
+                                                         get_avatar_legacy() ) * stack.second;
                 } else {
                     time_to_disassemble_recursive += stack.first->get_recursive_disassemble_moves(
-                                                         get_player_character() ) * stack.second;
+                                                         get_avatar_legacy() ) * stack.second;
                 }
 
             }
@@ -7185,7 +7197,7 @@ void game::reload( item_location &loc, bool prompt, bool empty )
     }
 
     if( !u.has_item( *loc ) && !loc->has_flag( flag_ALLOWS_REMOTE_USE ) ) {
-        if( !avatar_action::check_stealing( get_player_character(), *loc.get_item() ) ) {
+        if( !avatar_action::check_stealing( get_avatar_legacy(), *loc.get_item() ) ) {
             return;
         }
         loc = loc.obtain( u );
@@ -7222,7 +7234,7 @@ namespace
 class reload_selector_preset : public inventory_selector_preset
 {
     public:
-        explicit reload_selector_preset() : you( get_avatar() ) {
+        explicit reload_selector_preset() : you( get_avatar_legacy() ) {
             _pk_type = { pocket_type::CONTAINER, pocket_type::MOD };
         }
         bool is_shown( const item_location &location ) const override {
@@ -9353,7 +9365,7 @@ std::optional<tripoint_bub_ms> game::point_selection_menu( const std::vector<tri
         return pts[0];
     }
 
-    const tripoint_bub_ms upos = get_player_character().pos_bub();
+    const tripoint_bub_ms upos = get_avatar_legacy().pos_bub();
     uilist pmenu;
     pmenu.title = _( "Climb where?" );
     int num = 0;
@@ -9834,7 +9846,7 @@ bool game::travel_to_dimension( dimension_id dimension_destination,
                                 vehicle *veh )
 {
     map &here = get_map();
-    avatar &player = get_avatar();
+    avatar &player = get_avatar_legacy();
     std::vector<npc_ptr> moving_npcs;
     moving_npcs.reserve( npc_travellers.size() );
     if( !npc_travellers.empty() ) {
@@ -10713,7 +10725,7 @@ void game::display_visibility()
             uilist creature_menu;
             int num_creatures = 0;
             creature_menu.addentry( num_creatures++, true, MENU_AUTOASSIGN, "%s", _( "You" ) );
-            locations.emplace_back( get_player_character().pos_bub() ); // add player first.
+            locations.emplace_back( get_avatar_legacy().pos_bub() ); // add player first.
             for( const Creature &critter : g->all_creatures() ) {
                 if( critter.is_avatar() ) {
                     continue;
@@ -10814,7 +10826,10 @@ std::vector<npc *> game::allies()
 {
     return get_npcs_if( [&]( const npc & guy ) {
         if( !guy.is_hallucination() ) {
-            return guy.is_ally( get_player_character() );
+            // npc::is_ally() only tests p.is_avatar() plus the npc's own
+            // state, not the specific avatar's identity, so any player slot
+            // yields the same result here.
+            return guy.is_ally( get_avatar_legacy() );
         } else {
             return false;
         }
@@ -10837,7 +10852,15 @@ std::vector<Character *> game::get_characters_if( const std::function<bool( cons
         &pred )
 {
     std::vector<Character *> result;
-    avatar &a = get_avatar();
+    // Scoped to the active/local avatar only, not every hotseat slot.
+    // avatar::is_ally()/npc::is_ally() (avatar.cpp, npc.cpp) assume any
+    // Character that isn't `*this` and isn't p.is_avatar() must be an npc,
+    // and dynamic_cast<npc &> it unconditionally; a second live avatar slot
+    // breaks that assumption and throws std::bad_cast. Predicates built on
+    // this function (e.g. Character::get_crafting_group()) call is_ally()
+    // internally, so widening this loop to all slots is unsafe until that
+    // assumption is fixed at its source.
+    avatar &a = get_avatar_legacy();
     if( pred( a ) ) {
         result.push_back( &a );
     }
@@ -11143,7 +11166,7 @@ void game::climb_down_menu_gen( const tripoint_bub_ms &examp, uilist &cmenu )
     // NOTE this menu may be merged with the iexamine::ledge menu, manage keys carefully!
 
     map &here = get_map();
-    Character &you = get_player_character();
+    Character &you = get_avatar_legacy();
 
     if( !here.valid_move( you.pos_bub(), examp, false, true ) ) {
         // Can't move horizontally to the ledge
@@ -11244,7 +11267,7 @@ void game::climb_down_using( const tripoint_bub_ms &examp, climbing_aid_id aid_i
     const climbing_aid &aid = aid_id.obj();
 
     map &here = get_map();
-    Character &you = get_player_character();
+    Character &you = get_avatar_legacy();
 
     // If player is grabbed, trapped, or somehow otherwise movement-impeded, first try to break free
     if( !you.move_effects( false ) ) {
@@ -11677,13 +11700,20 @@ void avatar_moves( const tripoint_abs_ms &old_abs_pos, const avatar &u, const ma
         overmap_buffer.add_extra_note( new_abs_omt );
         // if the player has moved omt then might trigger an EOC for that OMT
         if( !past_ter->get_exit_EOC().is_null() ) {
-            dialogue d( get_talker_for( get_avatar() ), nullptr );
+            // NOTE: this function receives the moved avatar as `u` (const
+            // avatar &), which would be the semantically precise talker, but
+            // get_talker_for() requires a non-const avatar& and all current
+            // call sites pass the active hotseat slot anyway; using
+            // get_avatar_legacy() here matches existing behavior without a
+            // signature change to the `u` parameter.
+            dialogue d( get_talker_for( get_avatar_legacy() ), nullptr );
             effect_on_condition_id eoc = cur_ter->get_exit_EOC();
             eoc->activate_activation_only( d, "OMT movement" );
         }
 
         if( !cur_ter->get_entry_EOC().is_null() ) {
-            dialogue d( get_talker_for( get_avatar() ), nullptr );
+            // See NOTE above re: get_avatar_legacy() vs. the `u` parameter.
+            dialogue d( get_talker_for( get_avatar_legacy() ), nullptr );
             effect_on_condition_id eoc = cur_ter->get_entry_EOC();
             eoc->activate_activation_only( d, "OMT movement" );
         }
