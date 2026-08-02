@@ -58,5 +58,15 @@ bool mp_hotseat_do_turn()
     // wait branch is inert (no slot is left with a pending activity or
     // destination). This advances the calendar, simulates monsters/NPCs/fields,
     // and replenishes slot 0's moves exactly as in single player.
-    return g->do_turn();
+    const bool result = g->do_turn();
+
+    // do_turn() only replenishes the active slot (slot 0). Every other slot
+    // needs the same per-character turn processing (move regeneration,
+    // suffering, speed-bonus recalculation) or it permanently runs out of
+    // moves after its first turn and becomes an unplayable spectator.
+    for( size_t i = 1; i < g->player_slot_count(); ++i ) {
+        g->player_at( i ).process_turn();
+    }
+
+    return result;
 }

@@ -176,9 +176,13 @@ TEST_CASE( "hotseat_turn_drains_moves_from_every_slot", "[hotseat]" )
 
     mp_hotseat_do_turn();
 
-    // Slot 1 is never replenished, so its moves are fully drained by the
-    // player phase; both slots' activities consumed one turn of moves.
-    CHECK( b.get_moves() == 0 );
+    // Both slots' activities consumed one turn of moves during the player
+    // phase. The world phase then replenishes every slot's moves via
+    // process_turn() (slot 0 through do_turn()'s usual single-player path,
+    // every other slot explicitly in mp_hotseat_do_turn()) -- so slot 1 ends
+    // the turn with moves available again, the same as slot 0, instead of
+    // staying permanently drained.
+    CHECK( b.get_moves() > 0 );
     CHECK( a.activity.moves_left < 500 );
     CHECK( b.activity.moves_left < 500 );
 }
