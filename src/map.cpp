@@ -467,13 +467,16 @@ void map::memory_cache_ter_set_dirty( const tripoint_bub_ms &p, bool value ) con
 
 void map::memory_clear_vehicle_points( const vehicle &veh ) const
 {
-    avatar &player_character = get_avatar();
     for( const tripoint_abs_ms &p : veh.get_points() ) {
         if( !inbounds( p ) ) {
             continue;
         }
         memory_cache_dec_set_dirty( get_bub( p ), true );
-        player_character.memorize_clear_decoration( p, "vp_" );
+        // Every hotseat slot keeps its own map memory, so a stale decoration
+        // bit must be cleared from all of them, not just the active slot.
+        for( avatar *pc : g->get_players() ) {
+            pc->memorize_clear_decoration( p, "vp_" );
+        }
     }
 }
 
@@ -725,7 +728,11 @@ std::unique_ptr<vehicle> map::detach_vehicle( vehicle *veh )
                 if( inbounds( pt ) ) {
                     memory_cache_dec_set_dirty( get_bub( pt ), true );
                 }
-                get_avatar().memorize_clear_decoration( pt, "vp_" );
+                // Every hotseat slot keeps its own map memory, so the stale
+                // decoration bit must be cleared from all of them.
+                for( avatar *pc : g->get_players() ) {
+                    pc->memorize_clear_decoration( pt, "vp_" );
+                }
             }
             ch.vehicle_list.erase( veh );
             ch.zone_vehicles.erase( veh );
@@ -892,7 +899,6 @@ void map::vehmove()
     VehicleList vehicle_list;
     int minz = zlevels ? -OVERMAP_DEPTH : abs_sub.z();
     int maxz = zlevels ? OVERMAP_HEIGHT : abs_sub.z();
-    const tripoint_abs_ms player_pos = get_player_character().pos_abs();
     for( int zlev = minz; zlev <= maxz; ++zlev ) {
         level_cache *cache_lazy = get_cache_lazy( zlev );
         if( !cache_lazy ) {
@@ -901,7 +907,12 @@ void map::vehmove()
         level_cache &cache = *cache_lazy;
         for( vehicle *veh : cache.vehicle_list ) {
             if( veh->is_following ) {
-                veh->drive_to_local_target( this, player_pos, true );
+                // A following vehicle chases whichever player is closest to
+                // it, not a single hardcoded avatar.
+                Character *nearest = g->nearest_player( veh->pos_abs() );
+                if( nearest ) {
+                    veh->drive_to_local_target( this, nearest->pos_abs(), true );
+                }
             } else if( veh->is_patrolling ) {
                 veh->autopilot_patrol( this );
             }
@@ -1173,7 +1184,7 @@ vehicle *map::move_vehicle( vehicle &veh, const tripoint_rel_ms &dp, const tiler
         }
     }
 
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     const bool seen = sees_veh( player_character, veh, false );
 
     if( can_move || ( vertical && veh.is_falling ) ) {
@@ -1287,11 +1298,10 @@ float map::vehicle_vehicle_collision( vehicle &veh, vehicle &veh2,
     vehicle_part &vp1 = veh.part( c.part );
     vehicle_part &vp2 = veh2.part( c.target_part );
 
-    // Check whether avatar sees the collision, and log a message if so
-    const avatar &you = get_avatar();
+    // Check whether any player sees the collision, and log a message if so
     const tripoint_bub_ms part1_pos = veh.bub_part_pos( *this, vp1 );
     const tripoint_bub_ms part2_pos = veh2.bub_part_pos( *this, vp2 );
-    if( you.sees( *this, part1_pos ) || you.sees( *this, part2_pos ) ) {
+    if( g->any_player_sees( get_abs( part1_pos ) ) || g->any_player_sees( get_abs( part2_pos ) ) ) {
         //~ %1$s: first vehicle name (without "the")
         //~ %2$s: first part name
         //~ %3$s: second vehicle display name (with "the")
@@ -1774,9 +1784,15 @@ bool map::displace_vehicle( vehicle &veh, const tripoint_rel_ms &dp, const bool 
 
     memory_clear_vehicle_points( veh );
 
-    Character &player_character = get_player_character();
-    // Need old coordinates to check for remote control
-    const bool remote = veh.remote_controlled( player_character );
+    // update_map() below relocates the active avatar specifically (see the
+    // comment on game::update_map() vs. game::shift_map_center()), so this
+    // stays scoped to the active/local avatar rather than every slot.
+    Character &player_character = get_avatar_legacy();
+    // Need old coordinates to check for remote control. remote_controlled()
+    // tests distance to a specific Character, so use whichever player slot
+    // is closest to the vehicle for that check specifically.
+    Character *nearest_pc = g->nearest_player( veh.pos_abs() );
+    const bool remote = nearest_pc && veh.remote_controlled( *nearest_pc );
 
     // record every passenger and pet inside
     std::vector<rider_data> riders = veh.get_riders();
@@ -2049,13 +2065,16 @@ bool map::furn_set( const tripoint_bub_ms &p, const furn_id &new_furniture, cons
         }
     }
 
-    avatar &player_character = get_avatar();
-    // If player has grabbed this furniture and it's no longer grabbable, release the grab.
-    if( player_character.get_grab_type() == object_type::FURNITURE &&
-        !furn_reset &&
-        player_character.pos_bub() + player_character.grab_point == p && !new_f.is_movable() ) {
-        add_msg( _( "The %s you were grabbing is destroyed!" ), old_f.name() );
-        player_character.grab( object_type::NONE );
+    // If a player has grabbed this furniture and it's no longer grabbable,
+    // release the grab. Grab state is per-avatar-instance, so every hotseat
+    // slot needs to be checked, not just the active one.
+    for( avatar *pc : g->get_players() ) {
+        if( pc->get_grab_type() == object_type::FURNITURE &&
+            !furn_reset &&
+            pc->pos_bub() + pc->grab_point == p && !new_f.is_movable() ) {
+            add_msg( _( "The %s you were grabbing is destroyed!" ), old_f.name() );
+            pc->grab( object_type::NONE );
+        }
     }
     // If a creature was crushed under a rubble -> free it
     if( old_id == furn_f_rubble && new_target_furniture == furn_str_id::NULL_ID() ) {
@@ -2099,8 +2118,10 @@ bool map::furn_set( const tripoint_bub_ms &p, const furn_id &new_furniture, cons
     invalidate_max_populated_zlev( p.z() );
 
     memory_cache_dec_set_dirty( p, true );
-    if( player_character.sees( *this, p ) ) {
-        player_character.memorize_clear_decoration( get_abs( p ), "f_" );
+    for( avatar *pc : g->get_players() ) {
+        if( pc->sees( *this, p ) ) {
+            pc->memorize_clear_decoration( get_abs( p ), "f_" );
+        }
     }
 
     if( ( old_f.movecost < 0 ) != ( new_f.movecost < 0 ) ) {
@@ -2285,7 +2306,7 @@ uint8_t map::get_known_connections( const tripoint_bub_ms &p,
     const level_cache &ch = access_cache( p.z() );
     uint8_t val = 0;
     std::function<bool( const tripoint_bub_ms & )> is_memorized;
-    avatar &player_character = get_avatar();
+    avatar &player_character = get_avatar_legacy();
 #ifdef TILES
     if( use_tiles ) {
         is_memorized =
@@ -2371,7 +2392,7 @@ uint8_t map::get_known_connections_f( const tripoint_bub_ms &p,
     const level_cache &ch = access_cache( p.z() );
     uint8_t val = 0;
     std::function<bool( const tripoint_bub_ms & )> is_memorized;
-    avatar &player_character = get_avatar();
+    avatar &player_character = get_avatar_legacy();
 #ifdef TILES
     if( use_tiles ) {
         is_memorized = [&]( const tripoint_bub_ms & q ) {
@@ -2596,9 +2617,10 @@ bool map::ter_set( const tripoint_bub_ms &p, const ter_id &new_terrain, bool avo
 
     memory_cache_dec_set_dirty( p, true );
     memory_cache_ter_set_dirty( p, true );
-    avatar &player_character = get_avatar();
-    if( player_character.sees( *this, p ) ) {
-        player_character.memorize_clear_decoration( get_abs( p ), "t_" );
+    for( avatar *pc : g->get_players() ) {
+        if( pc->sees( *this, p ) ) {
+            pc->memorize_clear_decoration( get_abs( p ), "t_" );
+        }
     }
 
     if( ( old_t.movecost == 0 ) != ( new_t.movecost == 0 ) ) {
@@ -4341,8 +4363,11 @@ void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &c
                                 damaged_item_name );
     }
 
-    const bool player_is_driver = veh != nullptr && &get_player_character() == veh->get_driver( *this );
-    const bool player_sees_damage = get_player_character().sees( *this, p );
+    // is_avatar() identifies any player-controlled driver, regardless of
+    // which hotseat slot is currently active.
+    Character *driver = veh != nullptr ? veh->get_driver( *this ) : nullptr;
+    const bool player_is_driver = driver != nullptr && driver->is_avatar();
+    const bool player_sees_damage = g->any_player_sees( get_abs( p ) );
 
     if( !wheel_damage_messages.empty() && ( player_is_driver || player_sees_damage ) ) {
         for( const std::string &msg : wheel_damage_messages ) {
@@ -5095,7 +5120,7 @@ double map::shoot( const tripoint_bub_ms &p, projectile &proj, const bool hit_it
                         destroyed = true;
                     }
                 }
-                if( dam <= 0 && get_player_view().sees( *this,  p ) ) {
+                if( dam <= 0 && g->any_player_sees( get_abs( p ) ) ) {
                     add_msg( _( "The shot is stopped by the %s!" ), data.name() );
                 }
                 // only very flammable furn/ter can be set alight with incendiary rounds
@@ -6956,9 +6981,10 @@ void map::partial_con_remove( const tripoint_bub_ms &p )
 {
     partial_con_remove_impl( p );
     memory_cache_dec_set_dirty( p, true );
-    avatar &player_character = get_avatar();
-    if( player_character.sees( *this, p ) ) {
-        player_character.memorize_clear_decoration( get_abs( p ), "tr_" );
+    for( avatar *pc : g->get_players() ) {
+        if( pc->sees( *this, p ) ) {
+            pc->memorize_clear_decoration( get_abs( p ), "tr_" );
+        }
     }
 }
 
@@ -7018,9 +7044,10 @@ void map::trap_set( const tripoint_bub_ms &p, const trap_id &type )
     }
 
     memory_cache_dec_set_dirty( p, true );
-    avatar &player_character = get_avatar();
-    if( player_character.sees( *this, p ) ) {
-        player_character.memorize_clear_decoration( get_abs( p ), "tr_" );
+    for( avatar *pc : g->get_players() ) {
+        if( pc->sees( *this, p ) ) {
+            pc->memorize_clear_decoration( get_abs( p ), "tr_" );
+        }
     }
     // If there was already a trap here, remove it.
     if( current_submap->get_trap( l ) != tr_null ) {
@@ -7050,11 +7077,12 @@ void map::remove_trap( const tripoint_bub_ms &p )
     if( tid != tr_null ) {
         if( g != nullptr && this == &reality_bubble() ) {
             memory_cache_dec_set_dirty( p, true );
-            avatar &player_character = get_avatar();
-            if( player_character.sees( *this,  p ) ) {
-                player_character.memorize_clear_decoration( get_abs( p ), "tr_" );
+            for( avatar *pc : g->get_players() ) {
+                if( pc->sees( *this,  p ) ) {
+                    pc->memorize_clear_decoration( get_abs( p ), "tr_" );
+                }
+                pc->add_known_trap( p, tr_null.obj() );
             }
-            player_character.add_known_trap( p, tr_null.obj() );
         }
 
         current_submap->set_trap( l, tr_null );
@@ -7318,10 +7346,13 @@ bool map::add_field( const tripoint_bub_ms &p, const field_type_id &type_id, int
     }
 
     if( hit_player ) {
-        Character &player_character = get_player_character();
-        if( g != nullptr && this == &reality_bubble() && p == player_character.pos_bub() ) {
-            //Hit the player with the field if it spawned on top of them.
-            creature_in_field( player_character );
+        if( g != nullptr && this == &reality_bubble() ) {
+            for( avatar *pc : g->get_players() ) {
+                if( p == pc->pos_bub() ) {
+                    //Hit the player with the field if it spawned on top of them.
+                    creature_in_field( *pc );
+                }
+            }
         }
     }
 
@@ -7485,7 +7516,11 @@ void map::add_camp( const tripoint_abs_omt &omt_pos, const std::string &name, bo
 {
     basecamp temp_camp = basecamp( name, omt_pos );
     overmap_buffer.add_camp( temp_camp );
-    get_player_character().camps.insert( omt_pos );
+    // camps is tracked per-avatar-instance (like followers/known camps
+    // elsewhere in the codebase), so this only records against the active
+    // hotseat slot; there's no established toolkit helper to merge known-camp
+    // sets across slots.
+    get_avatar_legacy().camps.insert( omt_pos );
     // Mapgen-spawned camps never need or want to validate, since they'll always be on newly generated OMTs
     if( need_validate ) {
         g->validate_camps();
@@ -7501,7 +7536,7 @@ void map::update_submaps_with_active_items()
 
 void map::update_visibility_cache( const int zlev )
 {
-    Character &player_character = get_player_character();
+    Character &player_character = get_avatar_legacy();
     const tripoint_bub_ms pos = player_character.pos_bub( *this );
 
     if( !visibility_variables_cache.visibility_cache_dirty &&
@@ -7613,7 +7648,7 @@ visibility_type map::get_visibility( const lit_level ll,
 
 static std::optional<char32_t> get_memory_at( const tripoint_bub_ms &p )
 {
-    const memorized_tile &mt = get_avatar().get_memorized_tile( get_map().get_abs( p ) );
+    const memorized_tile &mt = get_avatar_legacy().get_memorized_tile( get_map().get_abs( p ) );
     if( mt.symbol != 0 ) {
         return mt.symbol;
     }
@@ -7649,7 +7684,7 @@ void map::draw( const catacurses::window &w, const tripoint_bub_ms &center )
         std::max( MAPSIZE_X, offs.x() + wnd_w ),
         std::max( MAPSIZE_Y, offs.y() + wnd_h )
     };
-    avatar &player_character = get_avatar();
+    avatar &player_character = get_avatar_legacy();
     player_character.prepare_map_memory_region(
         get_abs( { min_mm_reg, center.z() } ),
         get_abs( { max_mm_reg, center.z() } ) );
@@ -7818,7 +7853,7 @@ bool map::draw_maptile( const catacurses::window &w, const tripoint_bub_ms &p,
         tercol = curr_ter.color();
     }
 
-    avatar &player_character = get_avatar();
+    avatar &player_character = get_avatar_legacy();
     if( curr_furn.id ) {
         sym = curr_furn.symbol();
         tercol = curr_furn.color();
@@ -8055,7 +8090,7 @@ void map::draw_from_above( const catacurses::window &w, const tripoint_bub_ms &p
         sym = determine_wall_corner( p );
     }
 
-    const std::bitset<NUM_VISION_MODES> &u_vision = get_player_character().get_vision_modes();
+    const std::bitset<NUM_VISION_MODES> &u_vision = get_avatar_legacy().get_vision_modes();
     if( u_vision[BOOMERED] ) {
         tercol = c_magenta;
     } else if( u_vision[NV_GOGGLES] ) {
@@ -8745,7 +8780,10 @@ void map::reconcile_item_wakeups()
             }
         }
     };
-    walk_character( get_avatar() );
+    // Every hotseat slot's inventory needs indexing, not just the active one.
+    for( avatar *pc : g->get_players() ) {
+        walk_character( *pc );
+    }
     for( npc &n : g->all_npcs() ) {
         walk_character( n );
     }
@@ -9230,7 +9268,7 @@ void map::rotten_item_spawn( const item &item, const tripoint_bub_ms &pnt )
             add_spawn( monster, rng( comest->rot_spawn.rot_spawn_monster_amount.first,
                                      comest->rot_spawn.rot_spawn_monster_amount.second ), tripoint_bub_ms( pnt ) );
         }
-        if( get_player_view().sees( *this,  pnt ) ) {
+        if( g->any_player_sees( get_abs( pnt ) ) ) {
             if( item.is_seed() ) {
                 add_msg( m_warning, _( "Something has crawled out of the %s plants!" ), item.get_plant_name() );
             } else {
@@ -9777,9 +9815,13 @@ void map::copy_grid( const tripoint_rel_sm &to, const tripoint_rel_sm &from )
 void map::spawn_monsters_submap_group( const tripoint_rel_sm &gp, mongroup &group,
                                        bool ignore_sight )
 {
-    Character &player_character = get_player_character();
-    const int s_range = std::min( HALF_MAPSIZE_X,
-                                  player_character.sight_range( g->light_level( player_character.posz() ) ) );
+    // Player proximity governs the spawn-visibility avoidance below; use
+    // whichever hotseat slot is closest to this submap as the reference,
+    // matching the "target nearest player" idiom used elsewhere in Ф6.
+    const tripoint_bub_ms gp_origin{ SEEX * gp.x(), SEEY * gp.y(), gp.z() };
+    Character *nearest_pc = g->nearest_player( get_abs( gp_origin ) );
+    const int s_range = nearest_pc ? std::min( HALF_MAPSIZE_X,
+                         nearest_pc->sight_range( g->light_level( nearest_pc->posz() ) ) ) : 0;
     int pop = group.population;
     std::vector<tripoint_bub_ms> locations;
     if( !ignore_sight ) {
@@ -9790,7 +9832,7 @@ void map::spawn_monsters_submap_group( const tripoint_rel_sm &gp, mongroup &grou
         }
     }
 
-    if( gp.z() != player_character.posz() ) {
+    if( !nearest_pc || gp.z() != nearest_pc->posz() ) {
         // Note: this is only OK because 3D vision isn't a thing yet. 3D vision is a thing! Is this still OK?
         ignore_sight = true;
     }
@@ -9839,7 +9881,7 @@ void map::spawn_monsters_submap_group( const tripoint_rel_sm &gp, mongroup &grou
                 continue; // solid area, impassable
             }
 
-            if( !ignore_sight && sees( player_character.pos_bub(), fp, s_range ) ) {
+            if( !ignore_sight && nearest_pc && sees( nearest_pc->pos_bub(), fp, s_range ) ) {
                 continue; // monster must spawn outside the viewing range of the player
             }
 
@@ -10588,14 +10630,14 @@ void map::build_map_cache( const int zlev, bool skip_lightmap )
         skew_vision_cache.clear();
         skew_vision_wo_fields_cache.clear();
     }
-    avatar &u = get_avatar();
+    avatar &u = get_avatar_legacy();
     Character::moncam_cache_t mcache = u.get_active_moncams();
     Character::moncam_cache_t diff;
     std::set_symmetric_difference( u.moncam_cache.begin(), u.moncam_cache.end(), mcache.begin(),
                                    mcache.end(), std::inserter( diff, diff.end() ) );
     camera_cache_dirty |= !diff.empty();
     // Initial value is illegal player position.
-    const tripoint_abs_ms p = get_player_character().pos_abs();
+    const tripoint_abs_ms p = u.pos_abs();
     int const sr = u.unimpaired_range();
     static tripoint_abs_ms player_prev_pos;
     static int player_prev_range( 0 );
@@ -10653,7 +10695,11 @@ void map::build_map_cache( const int zlev, bool skip_lightmap )
 
         static std::vector<char_light_state> cached_char_lights;
         std::vector<char_light_state> current_lights;
-        current_lights.push_back( compute( get_player_character() ) );
+        // Every hotseat slot's light state can affect the lightmap, not just
+        // the active viewpoint's.
+        for( avatar *pc : g->get_players() ) {
+            current_lights.push_back( compute( *pc ) );
+        }
         for( const npc &guy : g->all_npcs() ) {
             current_lights.push_back( compute( guy ) );
         }
@@ -11758,7 +11804,7 @@ std::vector<item_location> map::get_haulable_items( const tripoint_bub_ms &pos )
 tripoint_bub_ms drawsq_params::center() const
 {
     if( view_center.raw() == tripoint::min ) {
-        avatar &player_character = get_avatar();
+        avatar &player_character = get_avatar_legacy();
         return player_character.pos_bub() + player_character.view_offset;
     } else {
         return view_center;
