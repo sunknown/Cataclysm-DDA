@@ -2,7 +2,6 @@
 
 #include "avatar.h"
 #include "color.h"
-#include "debug.h"
 #include "game.h"
 #include "map.h"
 #include "messages.h"
@@ -15,12 +14,6 @@ bool mp_hotseat_do_turn()
     // anyone acts, so both stay inside the simulated area, and keep it on the
     // anchor's z-level (slot 0's z, per section 5.7 of the spec).
     const tripoint_abs_ms anchor = mp_bubble_anchor();
-    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-        DebugLog( D_INFO, DC_ALL ) << "[hs4] pre-shift slot " << i << " pos="
-                                    << g->player_at( i ).pos_abs().to_string();
-    }
-    DebugLog( D_INFO, DC_ALL ) << "[hs4] anchor=" << anchor.to_string() << " map_abs_sub="
-                                << get_map().get_abs_sub().to_string();
     g->shift_map_center( anchor );
     if( anchor.z() != get_map().get_abs_sub().z() ) {
         g->shift_map_z( anchor.z() );
@@ -40,12 +33,14 @@ bool mp_hotseat_do_turn()
         // of this iteration.
         g->swap_slot_into_u( i );
         avatar &who = g->player_at( i );
-        if( g->player_slot_count() > 1 ) {
-            add_msg( m_info, _( "Now controlling: %s." ), who.get_name() );
-        }
         while( who.get_moves() > 0 && who.activity ) {
             who.activity.do_turn( who );
         }
+        // Deliberately no "now controlling" message here. Control alternates
+        // every single turn, so any per-turn message buries the log within
+        // seconds of play. The active slot is shown in the sidebar instead --
+        // see display::hotseat_player_text() and the hotseat_player_desc
+        // widget.
         bool warned = false;
         while( who.get_moves() > 0 ) {
             const tripoint_abs_ms pos_before = who.pos_abs();

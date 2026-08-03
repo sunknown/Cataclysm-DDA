@@ -75,6 +75,7 @@ enum class widget_var : int {
     date_text,      // Current date, in terms of day within season
     env_temp_text,  // Environment temperature, if character has thermometer
     faction_territory,  // Name of faction whose base/territory you are at, if any
+    hotseat_player_text, // Which hotseat slot currently holds the keyboard; empty in single player
     mood_text,      // Mood as a text emote, color string
     move_count_mode_text, // Movement counter and mode letter like "50(R)", color string
     overmap_loc_text,// Local overmap position, pseudo latitude/longitude with Z-level

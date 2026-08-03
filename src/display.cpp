@@ -20,6 +20,9 @@
 #include "effect.h"
 #include "faction.h"
 #include "game.h"
+#if defined(MULTIPLAYER)
+#include "mp/mp_mode.h"
+#endif
 #include "game_constants.h"
 #include "map.h"
 #include "mood_face.h"
@@ -1334,6 +1337,23 @@ std::string display::colorized_overmap_text( const avatar &u, const int width, c
 std::string display::overmap_position_text( const tripoint_abs_omt &loc )
 {
     return loc.to_string();
+}
+
+std::string display::hotseat_player_text( const Character &u )
+{
+#if defined(MULTIPLAYER)
+    if( !mp_mode_active() ) {
+        // Single player: nothing to disambiguate, so the widget stays blank
+        // rather than showing a slot number that means nothing.
+        return std::string();
+    }
+    // 1-based to match how the debug menu and the design spec talk about
+    // "slot 2" being the second player.
+    return string_format( _( "P%d: %s" ), g->active_slot() + 1, u.get_name() );
+#else
+    ( void )u;
+    return std::string();
+#endif
 }
 
 std::string display::current_position_text( const tripoint_abs_omt &loc )
