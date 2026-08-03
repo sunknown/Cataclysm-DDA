@@ -152,6 +152,10 @@ void exit_handler( int s )
     const int old_timeout = inp_mngr.get_timeout();
     inp_mngr.reset_timeout();
     if( s != 2 || query_yn( _( "Really Quit?  All unsaved changes will be lost." ) ) ) {
+        // Before anything is torn down: g.reset() and the static destructors
+        // that run after exit() can still raise debugmsgs, and the interactive
+        // prompt is no longer safe to open once imclient is gone.
+        debug_set_shutting_down();
         deinitDebug();
 
         int exit_status = 0;

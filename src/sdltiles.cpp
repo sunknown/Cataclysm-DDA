@@ -6108,6 +6108,11 @@ static void CheckMessages()
         try_sdl_update();
     }
     if( quit ) {
+        // endwin() leaves catacurses::stdscr set, so realDebugmsg's existing
+        // "no UI yet" guard does not cover shutdown. Say so explicitly, or a
+        // debugmsg from a static destructor after exit() will try to open the
+        // interactive prompt against an already-destroyed ImGui client.
+        debug_set_shutting_down();
         catacurses::endwin();
         exit( 0 );
     }

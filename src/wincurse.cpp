@@ -409,6 +409,7 @@ LRESULT CALLBACK ProcessMessages( HWND__ *hWnd, unsigned int Msg,
 
         case WM_DESTROY:
             // A messy exit, but easy way to escape game loop
+            debug_set_shutting_down();
             exit( 0 );
     }
 

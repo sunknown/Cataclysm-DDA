@@ -110,6 +110,14 @@ static bool capturing = false;
 /** сaptured debug messages */
 static std::string captured;
 
+/** Set once the quit path starts tearing the UI down; see debug_set_shutting_down(). */
+static bool shutting_down = false;
+
+void debug_set_shutting_down()
+{
+    shutting_down = true;
+}
+
 #if defined(_WIN32) and defined(LIBBACKTRACE)
 // Get the image base of a module from its PE header
 static uintptr_t get_image_base( const char *const path )
@@ -555,6 +563,14 @@ void realDebugmsg( const char *filename, const char *line, const char *funcname,
     }
 
     if( test_mode ) {
+        return;
+    }
+
+    if( shutting_down ) {
+        // Logged above, which is all we can safely do now. The interactive
+        // prompt below needs the ImGui client and the input manager's event
+        // pump, and the quit path destroys both before static destructors run;
+        // prompting from a destructor at this point segfaults inside ImGui.
         return;
     }
 

@@ -189,6 +189,18 @@ void setupDebug( DebugOutput );
 /** Opposite of setupDebug, shuts the debugging system down. */
 void deinitDebug();
 
+/**
+ * Marks the process as being on its way out, before the UI is torn down.
+ *
+ * A debugmsg raised after this point is still written to the log, but never
+ * opens the interactive error prompt. The prompt needs the ImGui client and the
+ * input manager's event pump, and the quit path destroys both before static
+ * destructors run -- so prompting from a destructor (JsonObject's unvisited
+ * member reporting is the usual culprit) dereferences freed state and crashes.
+ * One-way: nothing clears it.
+ */
+void debug_set_shutting_down();
+
 // Function Declarations                                            {{{1
 // ---------------------------------------------------------------------
 /**
