@@ -443,6 +443,16 @@ class game
         void set_active_slot( size_t index );
         avatar &player_at( size_t index );
         avatar &add_player_slot();
+        /**
+         * Swaps @ref u's content with player_slots[slot_index]'s, and the
+         * matching player_slots[0]/player_slots[slot_index] pointers, so that
+         * `u` (and everything elsewhere in the engine that reads it directly
+         * instead of going through get_avatar()) transparently operates on
+         * that slot. A no-op for slot_index == 0. The operation is its own
+         * inverse: call once before a non-zero slot's turn and once after to
+         * swap back. See src/mp/mp_hotseat_loop.cpp for the caller.
+         */
+        void swap_slot_into_u( size_t slot_index );
         /** Returns a snapshot of every player slot (raw pointers). */
         std::vector<avatar *> get_players();
         /** Returns the alive avatar whose absolute position is closest to @p pos. */

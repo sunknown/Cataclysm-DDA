@@ -159,6 +159,9 @@
 #include "monexamine.h"
 #include "mongroup.h"
 #include "monster.h"
+#if defined(MULTIPLAYER)
+#include "mp/mp_mode.h"
+#endif
 #include "monstergenerator.h"
 #include "move_mode.h"
 #include "mtype.h"
@@ -696,6 +699,20 @@ void game::setup()
     panel_manager::get_manager().init();
 
     m = map();
+
+#if defined(MULTIPLAYER)
+    // A hotseat second slot (and mp_mode_active()) is process-global state,
+    // not tied to the world/save being torn down above. Left alone, a slot
+    // created in a previous game survives into this one with a position
+    // that means nothing on the freshly constructed map, corrupting the new
+    // game as soon as anything (mp_bubble_anchor(), nearest_player(), the
+    // hotseat turn loop) reads it.
+    mp_mode_set_active( false );
+    owned_extra_players.clear();
+    player_slots.clear();
+    player_slots.push_back( &u );
+    active_slot_index = 0;
+#endif
 
     next_npc_id = character_id( 1 );
     next_mission_id = 1;
@@ -3359,14 +3376,16 @@ void game::draw( ui_adaptor &ui )
 
     try_activate_zone_sort_viewport();
 
+    avatar &you = get_avatar();
+
     // Transient view_offset override for zone sort viewport lock.
     // Restored after rendering so save never sees the locked value.
-    const tripoint_rel_ms real_offset = u.view_offset;
-    if( u.zone_sort_viewport.active ) {
-        u.view_offset = here.get_bub( u.zone_sort_viewport.center ) - u.pos_bub( here );
+    const tripoint_rel_ms real_offset = you.view_offset;
+    if( you.zone_sort_viewport.active ) {
+        you.view_offset = here.get_bub( you.zone_sort_viewport.center ) - you.pos_bub( here );
     }
 
-    ter_view_p.z() = ( u.pos_bub() + u.view_offset ).z();
+    ter_view_p.z() = ( you.pos_bub() + you.view_offset ).z();
     here.build_map_cache( ter_view_p.z() );
     here.update_visibility_cache( ter_view_p.z() );
 
@@ -3395,9 +3414,9 @@ void game::draw( ui_adaptor &ui )
     // This allows screen readers to describe the area around the player, making it
     // much easier to play with them
     // (e.g. for blind players)
-    ui.set_cursor( w_terrain, -u.view_offset.xy().raw() + point( POSX, POSY ) );
+    ui.set_cursor( w_terrain, -you.view_offset.xy().raw() + point( POSX, POSY ) );
 
-    u.view_offset = real_offset;
+    you.view_offset = real_offset;
 }
 
 void game::draw_panels( bool force_draw )
@@ -3484,6 +3503,7 @@ void game::draw_pixel_minimap( const catacurses::window &w )
 void game::draw_critter( const Creature &critter, const tripoint_bub_ms &center )
 {
     const map &here = get_map();
+    avatar &you = get_avatar();
 
     const tripoint_bub_ms critter_pos = critter.pos_bub( here );
     const int my = POSY + ( critter_pos.y() - center.y() );
@@ -3493,7 +3513,7 @@ void game::draw_critter( const Creature &critter, const tripoint_bub_ms &center 
     }
     if( critter_pos.z() != center.z() ) {
         if( critter_pos.z() == center.z() - 1 &&
-            ( debug_mode || u.sees( here, critter ) ) &&
+            ( debug_mode || you.sees( here, critter ) ) &&
             here.valid_move( critter_pos, critter_pos + tripoint::above, false, true ) ) {
             // Monster is below
             // TODO: Make this show something more informative than just green 'v'
@@ -3501,22 +3521,22 @@ void game::draw_critter( const Creature &critter, const tripoint_bub_ms &center 
             init_draw_blink_curses( { critter_pos.xy(), center.z() }, "v", c_green_cyan );
         }
         if( critter_pos.z() == center.z() + 1 &&
-            ( debug_mode || u.sees( here, critter ) ) &&
+            ( debug_mode || you.sees( here, critter ) ) &&
             here.valid_move( critter_pos, critter_pos + tripoint::below, false, true ) ) {
             // Monster is above
             init_draw_blink_curses( { critter_pos.xy(), center.z() }, "^", c_green_cyan );
         }
         return;
     }
-    if( u.sees( here, critter ) || &critter == &u ) {
+    if( you.sees( here, critter ) || &critter == &you ) {
         critter.draw( w_terrain, point_bub_ms( center.xy() ), false );
         return;
     }
-    const_dialogue d( get_const_talker_for( u ), get_const_talker_for( critter ) );
-    const enchant_cache::special_vision sees_with_special = u.enchantment_cache->get_vision( d );
+    const_dialogue d( get_const_talker_for( you ), get_const_talker_for( critter ) );
+    const enchant_cache::special_vision sees_with_special = you.enchantment_cache->get_vision( d );
     if( !sees_with_special.is_empty() ) {
         const enchant_cache::special_vision_descriptions special_vis_desc =
-            u.enchantment_cache->get_vision_description_struct( sees_with_special, d );
+            you.enchantment_cache->get_vision_description_struct( sees_with_special, d );
         mvwputch( w_terrain, point( mx, my ), special_vis_desc.color, special_vis_desc.symbol );
     }
 }
@@ -3524,8 +3544,9 @@ void game::draw_critter( const Creature &critter, const tripoint_bub_ms &center 
 bool game::is_in_viewport( const tripoint_bub_ms &p, int margin ) const
 {
     map &here = get_map();
+    avatar &you = get_avatar();
 
-    const tripoint_rel_ms diff( u.pos_bub( here ) + u.view_offset - p );
+    const tripoint_rel_ms diff( you.pos_bub( here ) + you.view_offset - p );
 
     return ( std::abs( diff.x() ) <= getmaxx( w_terrain ) / 2 - margin ) &&
            ( std::abs( diff.y() ) <= getmaxy( w_terrain ) / 2 - margin );
@@ -3534,15 +3555,17 @@ bool game::is_in_viewport( const tripoint_bub_ms &p, int margin ) const
 void game::draw_ter( const bool draw_sounds )
 {
     map &here = get_map();
+    avatar &you = get_avatar();
 
-    draw_ter( u.pos_bub( here ) + u.view_offset, is_looking,
+    draw_ter( you.pos_bub( here ) + you.view_offset, is_looking,
               draw_sounds );
 }
 
 void game::draw_ter( const tripoint_bub_ms &center, const bool looking, const bool draw_sounds )
 {
     map &here = get_map();
-    const tripoint_bub_ms pos = u.pos_bub( );
+    avatar &you = get_avatar();
+    const tripoint_bub_ms pos = you.pos_bub( );
 
     ter_view_p = center;
 
@@ -3557,18 +3580,38 @@ void game::draw_ter( const tripoint_bub_ms &center, const bool looking, const bo
         draw_critter( critter, center );
     }
 
-    if( !destination_preview.empty() && u.view_offset.z() == 0 ) {
+    // Inactive hotseat slots are deliberately not part of all_creatures():
+    // plenty of monster AI / vision code assumes exactly one avatar exists
+    // there. Draw them here instead, purely cosmetic and unconditional (no
+    // fog-of-war/vision check -- you always know where your own other
+    // character is), so a hotseat partner isn't invisible on screen.
+    for( avatar *slot : get_players() ) {
+        if( slot == &you ) {
+            continue;
+        }
+        const tripoint_bub_ms slot_pos = slot->pos_bub( here );
+        if( slot_pos.z() != center.z() ) {
+            continue;
+        }
+        const int my = POSY + ( slot_pos.y() - center.y() );
+        const int mx = POSX + ( slot_pos.x() - center.x() );
+        if( is_valid_in_w_terrain( { mx, my } ) ) {
+            slot->draw( w_terrain, point_bub_ms( center.xy() ), false );
+        }
+    }
+
+    if( !destination_preview.empty() && you.view_offset.z() == 0 ) {
         // Draw auto move preview trail
         const tripoint_bub_ms &final_destination = destination_preview.back();
-        tripoint_bub_ms line_center = pos + u.view_offset;
+        tripoint_bub_ms line_center = pos + you.view_offset;
         draw_line( final_destination, line_center, destination_preview, true );
         // TODO: fix point types
         mvwputch( w_terrain,
-                  final_destination.xy().raw() - u.view_offset.xy().raw() +
+                  final_destination.xy().raw() - you.view_offset.xy().raw() +
                   point( POSX - pos.x(), POSY - pos.y() ), c_white, 'X' );
     }
 
-    if( u.controlling_vehicle && !looking ) {
+    if( you.controlling_vehicle && !looking ) {
         draw_veh_dir_indicator( false );
         draw_veh_dir_indicator( true );
     }
@@ -3577,18 +3620,19 @@ void game::draw_ter( const tripoint_bub_ms &center, const bool looking, const bo
 std::optional<tripoint_rel_ms> game::get_veh_dir_indicator_location( bool next ) const
 {
     map &here = get_map();
+    avatar &you = get_avatar();
 
     if( !get_option<bool>( "VEHICLE_DIR_INDICATOR" ) ) {
         return std::nullopt;
     }
-    const optional_vpart_position vp = here.veh_at( u.pos_bub() );
+    const optional_vpart_position vp = here.veh_at( you.pos_bub() );
     if( !vp ) {
         return std::nullopt;
     }
     vehicle *const veh = &vp->vehicle();
     rl_vec2d face = next ? veh->dir_vec() : veh->face_vec();
     float r = 10.0f;
-    return tripoint_rel_ms( static_cast<int>( r * face.x ), static_cast<int>( r * face.y ), u.posz() );
+    return tripoint_rel_ms( static_cast<int>( r * face.x ), static_cast<int>( r * face.y ), you.posz() );
 }
 
 void game::draw_veh_dir_indicator( bool next )
@@ -3596,7 +3640,8 @@ void game::draw_veh_dir_indicator( bool next )
     if( const std::optional<tripoint_rel_ms> indicator_offset = get_veh_dir_indicator_location(
                 next ) ) {
         nc_color col = next ? c_white : c_dark_gray;
-        mvwputch( w_terrain, indicator_offset->raw().xy() - u.view_offset.xy().raw() + point( POSX, POSY ),
+        mvwputch( w_terrain,
+                  indicator_offset->raw().xy() - get_avatar().view_offset.xy().raw() + point( POSX, POSY ),
                   col,
                   'X' );
     }
@@ -4616,6 +4661,23 @@ avatar &game::add_player_slot()
     owned_extra_players.push_back( std::make_unique<avatar>() );
     player_slots.push_back( owned_extra_players.back().get() );
     return *player_slots.back();
+}
+
+void game::swap_slot_into_u( size_t slot_index )
+{
+    if( slot_index == 0 || slot_index >= player_slots.size() ) {
+        return;
+    }
+    // player_slots[slot_index] == &u means this is the second (undo) call of
+    // a swap-in/swap-out pair: the slot's data currently lives in u, and
+    // player_slots[0] is the object to swap it back out to. Otherwise this is
+    // the first (swap-in) call: player_slots[slot_index] still holds the
+    // slot's own data, unmoved.
+    avatar *other = ( player_slots[slot_index] == &u ) ? player_slots[0] : player_slots[slot_index];
+    avatar temp = std::move( *other );
+    *other = std::move( u );
+    u = std::move( temp );
+    std::swap( player_slots[0], player_slots[slot_index] );
 }
 
 std::vector<avatar *> game::get_players()
@@ -10291,6 +10353,8 @@ void game::shift_map_center( const tripoint_abs_ms &target )
         // Already centred; nothing to shift and no player to relocate.
         return;
     }
+    DebugLog( D_INFO, DC_ALL ) << "[hs4] shift_map_center target=" << target.to_string()
+                                << " shift=" << shift.x() << "," << shift.y();
 
     // this handles loading/unloading submaps that have scrolled on or off the viewport
     // NOLINTNEXTLINE(cata-use-named-point-constants)

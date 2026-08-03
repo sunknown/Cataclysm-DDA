@@ -3727,6 +3727,21 @@ bool cata_tiles::draw_critter_at( const tripoint_bub_ms &p, lit_level ll, int &h
                                       corner, 0, lit_level::LIT, false, height_3d );
     } else if( !invisible[0] || always_visible ) {
         if( pcritter == nullptr ) {
+            // creature_tracker::creature_at() special-cases get_avatar() (the
+            // active hotseat slot) at its own position, since avatars are
+            // never registered in the tracker -- but it doesn't know about
+            // any *other* player slot. Fall back to checking those directly,
+            // purely for rendering: an inactive partner is still physically
+            // there and should be visible, even though they're deliberately
+            // kept out of creature_at()/all_creatures() (see game::draw_ter's
+            // comment) so combat/AI/targeting keep treating exactly one
+            // avatar as controllable.
+            for( avatar *slot : g->get_players() ) {
+                if( slot != &you && slot->pos_bub( here ) == p ) {
+                    draw_entity_with_overlays( *slot, p, ll, height_3d );
+                    return true;
+                }
+            }
             return false;
         }
         const Creature &critter = *pcritter;

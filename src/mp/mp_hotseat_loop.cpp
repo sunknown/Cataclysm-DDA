@@ -2,6 +2,7 @@
 
 #include "avatar.h"
 #include "color.h"
+#include "debug.h"
 #include "game.h"
 #include "map.h"
 #include "messages.h"
@@ -14,6 +15,12 @@ bool mp_hotseat_do_turn()
     // anyone acts, so both stay inside the simulated area, and keep it on the
     // anchor's z-level (slot 0's z, per section 5.7 of the spec).
     const tripoint_abs_ms anchor = mp_bubble_anchor();
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        DebugLog( D_INFO, DC_ALL ) << "[hs4] pre-shift slot " << i << " pos="
+                                    << g->player_at( i ).pos_abs().to_string();
+    }
+    DebugLog( D_INFO, DC_ALL ) << "[hs4] anchor=" << anchor.to_string() << " map_abs_sub="
+                                << get_map().get_abs_sub().to_string();
     g->shift_map_center( anchor );
     if( anchor.z() != get_map().get_abs_sub().z() ) {
         g->shift_map_z( anchor.z() );
@@ -23,15 +30,35 @@ bool mp_hotseat_do_turn()
     // the sequence is reproducible and matches section 5.5 of the design spec.
     for( size_t i = 0; i < g->player_slot_count(); ++i ) {
         g->set_active_slot( i );
+        // A great deal of the engine (movement, combat, crafting, ...) reads
+        // the global `u` directly instead of get_avatar(), a leftover from
+        // single player where there was only ever one avatar to read. Rather
+        // than migrate every one of those call sites, swap the acting slot's
+        // data into u's address for the duration of its turn (a no-op for
+        // slot 0, which already lives there) -- see
+        // game::swap_slot_into_u()'s doc comment. Swapped back at the bottom
+        // of this iteration.
+        g->swap_slot_into_u( i );
         avatar &who = g->player_at( i );
+        if( g->player_slot_count() > 1 ) {
+            add_msg( m_info, _( "Now controlling: %s." ), who.get_name() );
+        }
         while( who.get_moves() > 0 && who.activity ) {
             who.activity.do_turn( who );
         }
         bool warned = false;
         while( who.get_moves() > 0 ) {
             const tripoint_abs_ms pos_before = who.pos_abs();
+            // handle_action() returning false means no game time was spent
+            // (a menu, looking around, keybindings, etc.) -- section 5.5's
+            // reference (do_turn.cpp's single-player loop) does not end the
+            // turn on that, it just asks for another action. Breaking here
+            // ended the slot's turn on the first free action taken, leaving
+            // its moves unspent and letting them accumulate turn after turn.
+            // Quitting/saving still terminates this loop: both explicitly
+            // zero the active avatar's moves before returning.
             if( !g->handle_action() ) {
-                break;
+                continue;
             }
             who.action_taken();
             // Tether (section 5.7 of the design spec): an outward step past the
@@ -50,6 +77,7 @@ bool mp_hotseat_do_turn()
                 warned = true;
             }
         }
+        g->swap_slot_into_u( i );
     }
     g->set_active_slot( 0 );
 
