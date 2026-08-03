@@ -1,13 +1,11 @@
 #include "mp/mp_mode.h"
 
-static bool mp_active = false;
+#include "game.h"
 
 bool mp_mode_active()
 {
-    return mp_active;
-}
-
-void mp_mode_set_active( bool active )
-{
-    mp_active = active;
+    // Derived, not stored -- see the header for why. `g` is null very early in
+    // startup and in unit tests that run before the game object exists, which
+    // is single player by definition.
+    return g && g->player_slot_count() > 1;
 }

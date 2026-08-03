@@ -1967,18 +1967,21 @@ static void control_npc_menu()
 void toggle_hotseat( const std::string &template_name )
 {
     if( mp_mode_active() ) {
-        // Drain the currently-acting slot's moves before handing control
-        // back to slot 0, so mp_hotseat_do_turn()'s enclosing phase loop
-        // (which is still testing the acting slot's move budget) exits
-        // immediately instead of continuing to prompt for input while
-        // spending slot 0's moves under the wrong slot's while() condition.
-        g->player_at( g->active_slot() ).set_moves( 0 );
-        g->set_active_slot( 0 );
+        // Disabling means destroying the extra slots -- mp_mode_active() is
+        // derived from the slot count, so there is no "off with two avatars"
+        // state to fall back to. This permanently deletes those characters;
+        // the interactive entry point (toggle_hotseat_menu) confirms first.
+        g->remove_extra_player_slots();
+        // Drain slot 0's remaining moves so mp_hotseat_do_turn()'s enclosing
+        // phase loop -- which is still testing the acting slot's move budget,
+        // and now reads slot 0 because remove_extra_player_slots() undid any
+        // in-progress swap -- exits immediately instead of continuing to
+        // prompt for input.
+        g->player_at( 0 ).set_moves( 0 );
         // Re-center the view/bubble on slot 0: mp_hotseat_do_turn() may have
         // last centered the reality bubble on the hotseat midpoint, and
         // nothing else re-centers it once hotseat mode turns off.
         g->update_map( g->player_at( 0 ) );
-        mp_mode_set_active( false );
         add_msg( m_info, _( "Hotseat co-op disabled." ) );
         return;
     }
@@ -2013,13 +2016,18 @@ void toggle_hotseat( const std::string &template_name )
         second.setpos( get_map(), g->player_at( 0 ).pos_bub( get_map() ) );
     }
 
-    mp_mode_set_active( true );
+    // Adding the slot above is what enables hotseat: mp_mode_active() is
+    // derived from the slot count.
     add_msg( m_good, _( "Hotseat co-op enabled." ) );
 }
 
 static void toggle_hotseat_menu()
 {
-    if( mp_mode_active() || g->player_slot_count() > 1 ) {
+    if( mp_mode_active() ) {
+        if( !query_yn(
+                _( "Disable hotseat co-op?  This permanently deletes the other character." ) ) ) {
+            return;
+        }
         toggle_hotseat( "" );
         return;
     }

@@ -453,6 +453,19 @@ class game
          * swap back. See src/mp/mp_hotseat_loop.cpp for the caller.
          */
         void swap_slot_into_u( size_t slot_index );
+        /**
+         * Destroys every player slot above index 0, ending hotseat co-op (which
+         * mp_mode_active() derives from the slot count). The extra avatars are
+         * discarded outright, so this permanently deletes those characters.
+         *
+         * Safe to call mid-turn from inside the hotseat loop: a slot whose turn
+         * is in progress has its data swapped into @ref u, so that swap is undone
+         * first and slot 0's data is restored to `u` before the extra avatar
+         * objects are freed. Callers already holding `avatar &` references
+         * obtained during a slot's turn stay valid, because such a reference
+         * always denotes `u`.
+         */
+        void remove_extra_player_slots();
         /** Returns a snapshot of every player slot (raw pointers). */
         std::vector<avatar *> get_players();
         /** Returns the alive avatar whose absolute position is closest to @p pos. */

@@ -1,18 +1,5 @@
 #include "cata_catch.h"
 
-#if defined(MULTIPLAYER)
-#include "mp/mp_mode.h"
-
-TEST_CASE( "mp_mode_defaults_to_inactive", "[hotseat]" )
-{
-    mp_mode_set_active( false );
-    CHECK_FALSE( mp_mode_active() );
-    mp_mode_set_active( true );
-    CHECK( mp_mode_active() );
-    mp_mode_set_active( false );
-}
-#endif
-
 #include "avatar.h"
 #include "game.h"
 
@@ -170,10 +157,47 @@ TEST_CASE( "single_player_build_sees_only_slot_zero", "[hotseat]" )
 #include "debug_menu.h"
 #include "mp/mp_mode.h"
 
+TEST_CASE( "mp_mode_is_derived_from_the_slot_count", "[hotseat]" )
+{
+    game_test_helper::reset_player_slots();
+    CHECK_FALSE( mp_mode_active() );
+
+    g->add_player_slot();
+    CHECK( mp_mode_active() );
+
+    g->remove_extra_player_slots();
+    CHECK( g->player_slot_count() == 1 );
+    CHECK( g->active_slot() == 0 );
+    CHECK_FALSE( mp_mode_active() );
+}
+
+TEST_CASE( "removing_slots_mid_turn_restores_slot_zero_to_u", "[hotseat]" )
+{
+    game_test_helper::reset_player_slots();
+    g->player_at( 0 ).name = "SlotZero";
+    avatar &second = g->add_player_slot();
+    second.name = "SlotOne";
+
+    // Reproduce the state the hotseat loop is in during slot 1's turn: slot 1's
+    // data swapped into u, so `u` is the acting character.
+    g->set_active_slot( 1 );
+    g->swap_slot_into_u( 1 );
+    REQUIRE( get_avatar().name == "SlotOne" );
+
+    // Disabling from inside that turn must give slot 0's data back to u rather
+    // than destroying it along with the extra avatar object.
+    g->remove_extra_player_slots();
+    CHECK( g->player_slot_count() == 1 );
+    CHECK( g->active_slot() == 0 );
+    CHECK( g->player_at( 0 ).name == "SlotZero" );
+    CHECK( get_avatar().name == "SlotZero" );
+    CHECK_FALSE( mp_mode_active() );
+}
+
 TEST_CASE( "hotseat_debug_toggle_creates_slot_and_enables_mode", "[hotseat]" )
 {
     game_test_helper::reset_player_slots();
-    mp_mode_set_active( false );
+    REQUIRE_FALSE( mp_mode_active() );
 
     debug_menu::toggle_hotseat( "" );
     CHECK( g->player_slot_count() == 2 );
@@ -183,17 +207,16 @@ TEST_CASE( "hotseat_debug_toggle_creates_slot_and_enables_mode", "[hotseat]" )
     CHECK( g->player_at( 1 ).getID().is_valid() );
     CHECK( g->player_at( 1 ).pos_abs() == g->player_at( 0 ).pos_abs() );
 
-    // Toggling again while already active must not create a third slot.
+    // Toggling again destroys the extra slot, which is what turns the mode off.
     debug_menu::toggle_hotseat( "" );
-    CHECK( g->player_slot_count() == 2 );
+    CHECK( g->player_slot_count() == 1 );
     CHECK_FALSE( mp_mode_active() );
 
-    // Re-enabling after a disable must not create a third slot either.
+    // Re-enabling builds a fresh slot rather than a third one.
     debug_menu::toggle_hotseat( "" );
     CHECK( g->player_slot_count() == 2 );
     CHECK( mp_mode_active() );
 
-    mp_mode_set_active( false );
     game_test_helper::reset_player_slots();
 }
 #endif

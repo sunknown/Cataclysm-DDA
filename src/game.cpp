@@ -701,13 +701,13 @@ void game::setup()
     m = map();
 
 #if defined(MULTIPLAYER)
-    // A hotseat second slot (and mp_mode_active()) is process-global state,
-    // not tied to the world/save being torn down above. Left alone, a slot
-    // created in a previous game survives into this one with a position
-    // that means nothing on the freshly constructed map, corrupting the new
-    // game as soon as anything (mp_bubble_anchor(), nearest_player(), the
-    // hotseat turn loop) reads it.
-    mp_mode_set_active( false );
+    // A hotseat second slot is process-global state, not tied to the
+    // world/save being torn down above. Left alone, a slot created in a
+    // previous game survives into this one with a position that means nothing
+    // on the freshly constructed map, corrupting the new game as soon as
+    // anything (mp_bubble_anchor(), nearest_player(), the hotseat turn loop)
+    // reads it. Clearing the slots also turns hotseat back off, since
+    // mp_mode_active() is derived from the slot count.
     owned_extra_players.clear();
     player_slots.clear();
     player_slots.push_back( &u );
@@ -4678,6 +4678,28 @@ void game::swap_slot_into_u( size_t slot_index )
     *other = std::move( u );
     u = std::move( temp );
     std::swap( player_slots[0], player_slots[slot_index] );
+}
+
+void game::remove_extra_player_slots()
+{
+    if( player_slots.size() <= 1 ) {
+        return;
+    }
+    // A slot's turn may be in progress with its data swapped into u. Undo that
+    // before freeing anything, or slot 0's data -- which currently lives in one
+    // of the owned_extra_players objects -- would be destroyed along with it,
+    // leaving u holding the character we are about to delete.
+    if( player_slots[0] != &u ) {
+        for( size_t i = 1; i < player_slots.size(); ++i ) {
+            if( player_slots[i] == &u ) {
+                swap_slot_into_u( i );
+                break;
+            }
+        }
+    }
+    player_slots.resize( 1 );
+    owned_extra_players.clear();
+    active_slot_index = 0;
 }
 
 std::vector<avatar *> game::get_players()
@@ -10353,9 +10375,6 @@ void game::shift_map_center( const tripoint_abs_ms &target )
         // Already centred; nothing to shift and no player to relocate.
         return;
     }
-    DebugLog( D_INFO, DC_ALL ) << "[hs4] shift_map_center target=" << target.to_string()
-                                << " shift=" << shift.x() << "," << shift.y();
-
     // this handles loading/unloading submaps that have scrolled on or off the viewport
     // NOLINTNEXTLINE(cata-use-named-point-constants)
     inclusive_rectangle<point_rel_sm> size_1( {-1, -1}, { 1, 1 } );
