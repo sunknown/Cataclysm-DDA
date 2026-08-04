@@ -67,6 +67,11 @@ int mp_socket_local_port( mp_socket_t fd );
 // readability first.
 mp_socket_t mp_socket_accept( mp_socket_t fd );
 
+// The address of the peer on the other end of a connected socket, formatted as
+// "host:port" for the server's log. Returns "unknown" when the address cannot
+// be read or rendered, which is never worth failing a connection over.
+std::string mp_socket_peer_name( mp_socket_t fd );
+
 // Connects the socket to `host:port`. The socket may be non-blocking; a
 // connect that reports "in progress" is waited on here until the handshake
 // finishes. Returns false with `err` set on failure.

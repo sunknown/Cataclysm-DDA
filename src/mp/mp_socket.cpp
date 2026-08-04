@@ -155,6 +155,24 @@ mp_socket_t mp_socket_accept( const mp_socket_t fd )
     return ::accept( fd, nullptr, nullptr );
 }
 
+std::string mp_socket_peer_name( const mp_socket_t fd )
+{
+    sockaddr_storage addr = {};
+    socklen_t len = sizeof( addr );
+    if( ::getpeername( fd, reinterpret_cast<sockaddr *>( &addr ), &len ) != 0 ) {
+        return "unknown";
+    }
+    char host[NI_MAXHOST] = {};
+    char service[NI_MAXSERV] = {};
+    // NUMERICHOST keeps this off the resolver: an operator wants the address
+    // that connected, not a reverse lookup that can block the accept path.
+    if( ::getnameinfo( reinterpret_cast<sockaddr *>( &addr ), len, host, sizeof( host ),
+                       service, sizeof( service ), NI_NUMERICHOST | NI_NUMERICSERV ) != 0 ) {
+        return "unknown";
+    }
+    return std::string( host ) + ":" + service;
+}
+
 bool mp_socket_connect( const mp_socket_t fd, const std::string &host, const int port,
                         std::string &err )
 {

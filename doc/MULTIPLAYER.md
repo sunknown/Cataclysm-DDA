@@ -72,6 +72,26 @@ a connection handshake (protocol version, terminal size, 256-colour support).
 Only after the client is accepted does the game start; you can take as long as
 you like to connect.
 
+The server has no screen of its own -- its curses backend draws into a buffer
+that goes out over the wire -- so the console it was launched from carries a
+session log on stderr instead:
+
+```
+[21:44:03] mp: listening on port 4321 (world: "Hanston", protocol 1)
+[21:44:03] mp: waiting for a client
+[21:44:31] mp: connection from 127.0.0.1:55226; shaking hands
+[21:44:31] mp: client "sunknown" connected from 127.0.0.1:55226 (terminal 180x50, 256 colours, protocol 1)
+[21:45:12] mp: game started in world "Hanston" as "Norman Blair"
+[21:52:03] mp: saving "Norman Blair"
+[21:52:05] mp: saved
+[21:52:10] mp: client disconnected after 7m39s
+[21:52:10] mp: server stopped
+```
+
+Every failure that stops the server says so on the same stream: a port already
+in use, a failed accept, and a rejected handshake with the reason the client was
+turned away.
+
 ### 2. Connect the client
 
 ```sh
@@ -124,11 +144,15 @@ The wire traffic is useful for debugging a session.
   control, 2 for screen) followed by the body (`mp_wrap`/`mp_unwrap`). The TCP
   transport sets `TCP_NODELAY` so key presses are not batched behind screen
   traffic.
-- **The log.** The game writes `debug.log` under the user directory's config
-  dir (`<userdir>/config/debug.log`). The server logs its lifecycle to the
-  `D_MAIN` class: `mp server: waiting for a client on port ...`,
-  `mp server: accepting the client failed`, and
-  `mp server: handshake rejected: ...`. The client logs connection failures and
-  the handshake verdict the same way. Run both sides with the same `--userdir`
-  or with none at all; the `[mp]` server tests use a fresh `--userdir` so a
-  session never writes into a profile you care about.
+- **The console.** The server's session log (above) is the first place to look;
+  it is written to stderr, so `./mpserver-cataclysm-server ... 2>server.log`
+  keeps it, and a service manager captures it with no extra configuration.
+- **The debug log.** The game writes `debug.log` under the user directory's
+  config dir (`<userdir>/config/debug.log`). Every console line is mirrored
+  there through the `D_MAIN` class, but at `D_INFO` level, which the default log
+  filter drops -- so an unconfigured run leaves no `debug.log` at all and the
+  console is what you have. Errors (`mp client: cannot connect ...`, the
+  oversized-terminal refusal) are logged at `D_ERROR`/`D_WARNING` and do reach
+  the file. Run both sides with the same `--userdir` or with none at all; the
+  `[mp]` server tests use a fresh `--userdir` so a session never writes into a
+  profile you care about.

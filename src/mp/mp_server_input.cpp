@@ -11,6 +11,7 @@
 #include "debug.h"
 #include "game_constants.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_server_log.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_transport.h"
 
@@ -190,6 +191,13 @@ bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
     // Accepted: size the screen to what the client can show, then let them in.
     mp_server_set_terminal_size( hello.hello.width, hello.hello.height );
     send_hello_ack( transport, true, std::string() );
+    mp_server_log_mark_connected();
+    mp_server_log( "client \"" + hello.hello.name + "\" connected from " +
+                   transport.peer_description() + " (terminal " +
+                   std::to_string( hello.hello.width ) + "x" +
+                   std::to_string( hello.hello.height ) + ", " +
+                   ( hello.hello.colors_256 ? "256 colours" : "16 colours" ) +
+                   ", protocol " + std::to_string( hello.hello.proto ) + ")" );
     return true;
 }
 

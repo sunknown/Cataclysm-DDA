@@ -28,6 +28,7 @@ class mp_tcp_transport : public mp_transport
         std::optional<std::vector<uint8_t>> recv( int timeout_ms ) override;
         size_t pending_bytes() const override;
         void drop_pending_screen_messages() override;
+        std::string peer_description() const override;
         bool connected() const override;
         void close() override;
 
@@ -39,6 +40,9 @@ class mp_tcp_transport : public mp_transport
         void disconnect();
 
         mp_socket_t fd_ = mp_socket_invalid;
+        // Read once at construction: the socket is still connected then, and
+        // the disconnect log needs the address after it is not.
+        std::string peer_;
         bool connected_ = true;
         mp_frame_reader reader_;
         // Complete framed messages waiting to be written, in send order. Each

@@ -20,6 +20,7 @@
 #include "map.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_server_input.h"
+#include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "output.h"
@@ -150,6 +151,11 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         // the transport. This is the one place the backend learns about the
         // wire, and it is deliberately the mp layer, not game logic.
         if( !mp_server_peer_connected() ) {
+            // The stop itself is announced by exit_handler(), which also covers
+            // the sessions that end without a disconnect.
+            const std::string length = mp_server_log_session_length();
+            mp_server_log( "client disconnected" +
+                           ( length.empty() ? std::string() : " after " + length ) );
             mp_server_request_exit();
         }
         const input_event ev = mp_server_wait_for_input( input_timeout_ms );

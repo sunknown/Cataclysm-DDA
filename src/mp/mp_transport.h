@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 // A bidirectional, ordered, reliable message channel.
@@ -40,6 +41,13 @@ class mp_transport
         // server send that redraw instead. The default does nothing because
         // the abstract transport cannot know how a subclass buffers.
         virtual void drop_pending_screen_messages() {}
+
+        // How the peer should be named in the server's log. The default suits
+        // any transport with no address to speak of (the in-memory loopback);
+        // the TCP transport reports the address that connected.
+        virtual std::string peer_description() const {
+            return "peer";
+        }
 
         virtual bool connected() const = 0;
         virtual void close() = 0;

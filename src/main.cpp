@@ -50,7 +50,10 @@
 #include "mp/mp_mode.h"
 #endif
 #if defined(MP_SERVER)
+#include "avatar.h"
+#include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
+#include "worldfactory.h"
 #endif
 #include "game_constants.h"
 #include "game_ui.h"
@@ -685,6 +688,15 @@ static int run_game( cli_opts &cli )
 
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
         get_event_bus().send<event_type::game_begin>( getVersionString() );
+#if defined(MP_SERVER)
+        // The client drove the menus to get here; this is the first the console
+        // hears of which world and character the session actually landed on.
+        mp_server_log( "game started in world \"" +
+                       ( world_generator->active_world
+                         ? world_generator->active_world->world_name
+                         : std::string( "?" ) ) +
+                       "\" as \"" + get_avatar().get_name() + "\"" );
+#endif
         while( true ) {
             bool done;
 #if defined(MULTIPLAYER)
@@ -696,6 +708,9 @@ static int run_game( cli_opts &cli )
                 break;
             }
         }
+#if defined(MP_SERVER)
+        mp_server_log( "game ended; back at the main menu" );
+#endif
     }
 
     exit_handler( -999 );
@@ -712,6 +727,11 @@ void exit_handler( int s )
         // Before anything is torn down: g.reset() and the static destructors
         // that run after exit() can still raise debugmsgs, and the interactive
         // prompt is no longer safe to open once imclient is gone.
+#if defined(MP_SERVER)
+        // Before deinitDebug(): the log line still has a debug log to mirror
+        // itself into, and stderr is the last thing the operator will see.
+        mp_server_log( "server stopped" );
+#endif
         debug_set_shutting_down();
         deinitDebug();
 

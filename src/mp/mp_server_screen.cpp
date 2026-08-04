@@ -7,6 +7,7 @@
 
 #include "mp/mp_protocol.h"
 #include "mp/mp_screen_codec.h"
+#include "mp/mp_server_log.h"
 #include "mp/mp_transport.h"
 
 // Defined in mp_server_input.cpp; the screen reset drops the input state too.
@@ -109,6 +110,7 @@ void mp_server_reset_for_test()
     g_cursor_visible = false;
     g_cursor_changed = false;
     mp_server_input_reset_for_test();
+    mp_server_log_reset_for_test();
 }
 
 std::shared_ptr<mp_transport> &mp_server_shared_transport()

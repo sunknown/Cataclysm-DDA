@@ -36,6 +36,27 @@ TEST_CASE( "tcp_transport_carries_messages_over_a_real_socket", "[mp]" )
     CHECK( client->recv( 1000 ) == std::vector<uint8_t> { 1 } );
 }
 
+TEST_CASE( "tcp_transport_names_the_peer_that_connected", "[mp]" )
+{
+    // The server's console log identifies its one client by address, so the
+    // accepted side has to know who connected. The name is read at
+    // construction, while the socket is still up, because the disconnect line
+    // is written after it is not.
+    std::string err;
+    std::optional<mp_listener> listener = mp_listener::bind( 0, err );
+    REQUIRE( listener.has_value() );
+    std::shared_ptr<mp_transport> client = mp_tcp_connect( "127.0.0.1", listener->port(), err );
+    REQUIRE( client );
+    std::shared_ptr<mp_transport> server_side = listener->accept( 1000 );
+    REQUIRE( server_side );
+
+    const std::string peer = server_side->peer_description();
+    CHECK( peer.rfind( "127.0.0.1:", 0 ) == 0 );
+
+    server_side->close();
+    CHECK( server_side->peer_description() == peer );
+}
+
 TEST_CASE( "tcp_transport_reassembles_a_large_message", "[mp]" )
 {
     // Two hundred kilobytes is the order of a full redraw of a large terminal;

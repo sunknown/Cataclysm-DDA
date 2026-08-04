@@ -23,7 +23,9 @@ int64_t now_ms()
 } // namespace
 
 mp_tcp_transport::mp_tcp_transport( const mp_socket_t fd )
-    : fd_( fd ), connected_( fd != mp_socket_invalid ) {}
+    : fd_( fd ),
+      peer_( fd == mp_socket_invalid ? "unknown" : mp_socket_peer_name( fd ) ),
+      connected_( fd != mp_socket_invalid ) {}
 
 mp_tcp_transport::~mp_tcp_transport()
 {
@@ -140,6 +142,11 @@ void mp_tcp_transport::drop_pending_screen_messages()
             ++i;
         }
     }
+}
+
+std::string mp_tcp_transport::peer_description() const
+{
+    return peer_;
 }
 
 bool mp_tcp_transport::connected() const

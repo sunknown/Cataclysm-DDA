@@ -67,6 +67,9 @@
 #include "memorial_logger.h"
 #include "messages.h"
 #include "mod_manager.h"
+#if defined(MP_SERVER)
+#include "mp/mp_server_log.h"
+#endif
 #include "options.h"
 #include "output.h"
 #include "overmapbuffer.h"
@@ -742,6 +745,11 @@ bool game::save()
             std::chrono::steady_clock::now() - time_of_last_load );
     std::chrono::seconds total_time_played = time_played_at_last_load + time_since_load;
     events().send<event_type::game_save>( time_since_load, total_time_played );
+#if defined(MP_SERVER)
+    // A save is the one thing the game does that an operator may have to wait
+    // on, and on the server there is no progress bar to watch.
+    mp_server_log( "saving \"" + u.name + "\"" );
+#endif
     try {
         if( !save_player_data() ||
             !save_achievements() ||
@@ -774,6 +782,9 @@ bool game::save()
             // This will allow the window to be closed without a prompt, until do_turn()
             // is called.
             EM_ASM( window.game_unsaved = false; );
+#endif
+#if defined(MP_SERVER)
+            mp_server_log( "saved" );
 #endif
             return true;
         }
