@@ -31,8 +31,9 @@ class mp_frame_reader
         // bytes do not yet contain one.
         std::optional<std::vector<uint8_t>> next();
 
-        // True once a malformed length header was seen. The stream cannot be
-        // resynchronised after that, so the caller must drop the connection.
+        // True once the length header at the head of the buffered stream was
+        // found to be malformed. The stream cannot be resynchronised after
+        // that, so the caller must drop the connection.
         bool failed() const {
             return failed_;
         }
