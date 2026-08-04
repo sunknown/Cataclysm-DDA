@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "debug.h"
 #include "game_constants.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_server_screen.h"
@@ -60,7 +61,18 @@ void dispatch( const mp_control &msg )
             g_input_queue.push_back( msg.event );
             break;
         case mp_control_kind::resize:
-            g_pending_resize = msg.resize;
+            // A size above the cap would make the grid allocation abort the
+            // server (see MP_MAX_TERMINAL_WIDTH/HEIGHT in mp_server_input.h).
+            // Dropping the request is safe: a resize the server cannot honour
+            // just leaves the client on its current terminal size, and a
+            // well-behaved client can ask again with a sane value. This is the
+            // peer-data entry point, so it is the first line of defence; the
+            // curses backend re-checks the same bound in handle_resize() for
+            // any caller that bypasses dispatch (e.g. resize_term).
+            if( msg.resize.width <= MP_MAX_TERMINAL_WIDTH &&
+                msg.resize.height <= MP_MAX_TERMINAL_HEIGHT ) {
+                g_pending_resize = msg.resize;
+            }
             break;
         case mp_control_kind::bye:
             // The peer is leaving. Closing the transport is what makes the
@@ -155,6 +167,22 @@ bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
         reject_reason = "terminal is smaller than the game minimum (" +
                         std::to_string( EVEN_MINIMUM_TERM_WIDTH ) + "x" +
                         std::to_string( EVEN_MINIMUM_TERM_HEIGHT ) + ")";
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+    if( hello.hello.width > MP_MAX_TERMINAL_WIDTH ||
+        hello.hello.height > MP_MAX_TERMINAL_HEIGHT ) {
+        reject_reason = "terminal is larger than the server's maximum (" +
+                        std::to_string( MP_MAX_TERMINAL_WIDTH ) + "x" +
+                        std::to_string( MP_MAX_TERMINAL_HEIGHT ) + "), requested " +
+                        std::to_string( hello.hello.width ) + "x" +
+                        std::to_string( hello.hello.height );
+        // mp_server_main logs the rejection reason too; this line spells out
+        // the requested size for an operator trying to diagnose a weird client.
+        DebugLog( D_WARNING, D_MAIN ) << "mp server: refusing a hello with an "
+                                      << "oversized terminal " << hello.hello.width << "x"
+                                      << hello.hello.height << " (cap " << MP_MAX_TERMINAL_WIDTH
+                                      << "x" << MP_MAX_TERMINAL_HEIGHT << ")";
         send_hello_ack( transport, false, reject_reason );
         return false;
     }

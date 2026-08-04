@@ -95,21 +95,37 @@ void write_event( JsonOut &jo, const input_event &ev )
     jo.member( "edit_refresh", ev.edit_refresh );
 }
 
-void read_event( const JsonObject &obj, input_event &ev )
+bool read_event( const JsonObject &obj, input_event &ev )
 {
-    ev.type = static_cast<input_event_t>( obj.get_int( "etype" ) );
+    // etype and mods are cast straight into scoped enums. Casting an
+    // out-of-range int into an enum is undefined behaviour, and the values come
+    // from the peer, so refuse instead of casting. The bounds mirror the
+    // enumerators of input_event_t (error..mouse) and keymod_t (ctrl..shift) in
+    // input_enums.h; the switch in input_event::long_description() would also
+    // hit its default branch for a value that slips past.
+    const int etype = obj.get_int( "etype" );
+    if( etype < static_cast<int>( input_event_t::error ) ||
+        etype > static_cast<int>( input_event_t::mouse ) ) {
+        return false;
+    }
+    ev.type = static_cast<input_event_t>( etype );
     ev.sequence.clear();
     for( const int key : obj.get_int_array( "seq" ) ) {
         ev.sequence.push_back( key );
     }
     ev.modifiers.clear();
     for( const int mod : obj.get_int_array( "mods" ) ) {
+        if( mod < static_cast<int>( keymod_t::ctrl ) ||
+            mod > static_cast<int>( keymod_t::shift ) ) {
+            return false;
+        }
         ev.modifiers.insert( static_cast<keymod_t>( mod ) );
     }
     ev.mouse_pos = point( obj.get_int( "mx" ), obj.get_int( "my" ) );
     ev.text = obj.get_string( "text" );
     ev.edit = obj.get_string( "edit" );
     ev.edit_refresh = obj.get_bool( "edit_refresh" );
+    return true;
 }
 
 } // namespace
@@ -191,7 +207,9 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 msg.resize.height = obj.get_int( "h" );
                 break;
             case mp_control_kind::input:
-                read_event( obj, msg.event );
+                if( !read_event( obj, msg.event ) ) {
+                    return false;
+                }
                 break;
             case mp_control_kind::cursor:
                 msg.cursor.x = obj.get_int( "x" );

@@ -182,7 +182,14 @@ int projected_window_height()
 
 bool handle_resize( const int w, const int h )
 {
-    if( w < EVEN_MINIMUM_TERM_WIDTH || h < EVEN_MINIMUM_TERM_HEIGHT ) {
+    // The lower bound keeps the grid big enough for the game's windows; the
+    // upper bound keeps the grid small enough to allocate. dispatch() already
+    // drops oversized peer resizes, but handle_resize is also reached directly
+    // via resize_term(), so it re-checks the cap rather than trusting its
+    // callers. Refusing leaves the current terminal in place, which cannot
+    // crash anything.
+    if( w < EVEN_MINIMUM_TERM_WIDTH || h < EVEN_MINIMUM_TERM_HEIGHT ||
+        w > MP_MAX_TERMINAL_WIDTH || h > MP_MAX_TERMINAL_HEIGHT ) {
         return false;
     }
     mp_server_set_terminal_size( w, h );

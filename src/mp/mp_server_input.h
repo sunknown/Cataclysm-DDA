@@ -8,6 +8,17 @@
 
 class mp_transport;
 
+// The largest terminal a peer may declare, in either dimension. The server's
+// screen grid multiplies width by height (mp_screen_grid::resize), so an
+// unbounded peer value would make it try to allocate the product of two 31-bit
+// ints -- roughly 2^62 cells -- and abort on std::bad_alloc before the
+// exception can be caught. Real terminals live far below this cap: 1000x1000
+// cells already exceeds every device the game runs on. The cap exists purely
+// to bound what a hostile or buggy peer can make the server allocate; a client
+// that genuinely needs more room is a non-existent client.
+constexpr int MP_MAX_TERMINAL_WIDTH = 1000;
+constexpr int MP_MAX_TERMINAL_HEIGHT = 1000;
+
 // Performs the connection handshake on a freshly-accepted transport: reads the
 // client's first message (a `hello` control), checks its protocol version and
 // the terminal size it wants, and sends a `hello_ack` verdict either way.
@@ -15,7 +26,8 @@ class mp_transport;
 // Returns true and sizes the screen grid when the client is accepted, in which
 // case `reject_reason` is left empty. Returns false on any refusal -- a silent
 // client, a message that is not a parseable `hello`, a protocol mismatch, or a
-// terminal smaller than the game minimum -- with a human-readable reason in
+// terminal size outside the accepted range (too small to run the game, or too
+// large for the server to allocate) -- with a human-readable reason in
 // `reject_reason` that is also sent to the client in the ack.
 bool mp_server_handshake( mp_transport &transport, std::string &reject_reason );
 

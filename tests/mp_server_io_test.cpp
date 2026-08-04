@@ -214,6 +214,31 @@ TEST_CASE( "server_records_a_resize_request_without_touching_the_grid_itself", "
     CHECK_FALSE( mp_server_take_resize_request( w, h ) );
 }
 
+TEST_CASE( "server_rejects_an_oversized_resize", "[mp]" )
+{
+    // A resize above the cap is dropped at the peer-data entry point, so it is
+    // never recorded and the grid stays at its current size; honouring it would
+    // make the grid allocation abort on std::bad_alloc.
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_control resize;
+    resize.kind = mp_control_kind::resize;
+    resize.resize.width = MP_MAX_TERMINAL_WIDTH + 1;
+    resize.resize.height = MP_MAX_TERMINAL_HEIGHT;
+    send_control( *pair.b, resize );
+
+    mp_server_pump();
+
+    int w = 0;
+    int h = 0;
+    CHECK_FALSE( mp_server_take_resize_request( w, h ) );
+    CHECK( mp_server_grid().width() == 40 );
+    CHECK( mp_server_grid().height() == 10 );
+}
+
 TEST_CASE( "server_sends_the_cursor_position_with_the_screen", "[mp]" )
 {
     mp_server_reset_for_test();
@@ -312,6 +337,40 @@ TEST_CASE( "handshake_refuses_a_terminal_below_the_game_s_minimum", "[mp]" )
     std::string reason;
     CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
     CHECK_THAT( reason, Catch::Contains( "terminal" ) );
+}
+
+TEST_CASE( "handshake_refuses_an_oversized_terminal", "[mp]" )
+{
+    // A peer that claims a terminal above the cap would otherwise make the
+    // server's grid allocation multiply the two dimensions and abort on
+    // std::bad_alloc; the handshake must refuse it like any other bad hello.
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION;
+    hello.hello.name = "serg";
+    hello.hello.width = MP_MAX_TERMINAL_WIDTH + 1;
+    hello.hello.height = MP_MAX_TERMINAL_HEIGHT;
+    send_control( *pair.b, hello );
+
+    std::string reason;
+    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( reason.empty() );
+    CHECK_THAT( reason, Catch::Contains( "terminal" ) );
+
+    // The verdict still reaches the client, exactly like the other refusals.
+    const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 100 );
+    REQUIRE( msg.has_value() );
+    mp_msg_kind kind = mp_msg_kind::screen;
+    std::vector<uint8_t> body;
+    REQUIRE( mp_unwrap( *msg, kind, body ) );
+    REQUIRE( kind == mp_msg_kind::control );
+    mp_control ack;
+    REQUIRE( mp_control_from_json( std::string( body.begin(), body.end() ), ack ) );
+    CHECK( ack.kind == mp_control_kind::hello_ack );
+    CHECK_FALSE( ack.hello_ack.accepted );
 }
 
 TEST_CASE( "handshake_sends_its_verdict_to_the_client_either_way", "[mp]" )
