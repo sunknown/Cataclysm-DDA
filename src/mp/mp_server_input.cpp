@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "game_constants.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_transport.h"
@@ -33,6 +34,20 @@ input_event make_timeout_event()
     input_event ev;
     ev.type = input_event_t::timeout;
     return ev;
+}
+
+// Sends a hello_ack control carrying the handshake verdict to the client. The
+// reason is empty on acceptance; on refusal it repeats the same text the caller
+// reports locally, so the client learns why it was turned away.
+void send_hello_ack( mp_transport &transport, const bool accepted, const std::string &reason )
+{
+    mp_control ack;
+    ack.kind = mp_control_kind::hello_ack;
+    ack.hello_ack.accepted = accepted;
+    ack.hello_ack.reason = reason;
+    const std::string json = mp_control_to_json( ack );
+    transport.send( mp_wrap( mp_msg_kind::control,
+                             std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
 // Handles one parsed control message. Only the kinds the client actually sends
@@ -91,6 +106,64 @@ bool take_queued( input_event &out )
 }
 
 } // namespace
+
+bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
+{
+    reject_reason.clear();
+
+    // The client's first message is the hello; a peer that says nothing within
+    // the budget is refused rather than waited on forever. The verdict is sent
+    // in every case, so the client always learns its fate.
+    const std::optional<std::vector<uint8_t>> msg = transport.recv( 5000 );
+    if( !msg ) {
+        reject_reason = "no hello received within the handshake timeout";
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+
+    // Only a control frame can be a hello; anything else is refused. The parse
+    // goes through mp_control_from_json only, which is the single entry point
+    // for peer bytes (it already ignores unknown fields).
+    mp_msg_kind kind = mp_msg_kind::control;
+    std::vector<uint8_t> body;
+    if( !mp_unwrap( *msg, kind, body ) || kind != mp_msg_kind::control ) {
+        reject_reason = "the first message was not a control message";
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+    mp_control hello;
+    if( !mp_control_from_json( std::string( body.begin(), body.end() ), hello ) ) {
+        reject_reason = "the first message was not a parseable control message";
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+    if( hello.kind != mp_control_kind::hello ) {
+        reject_reason = "expected a hello message, got " +
+                        std::to_string( static_cast<int>( hello.kind ) );
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+    if( hello.hello.proto != MP_PROTOCOL_VERSION ) {
+        reject_reason = "protocol version mismatch: client speaks " +
+                        std::to_string( hello.hello.proto ) + ", server speaks " +
+                        std::to_string( MP_PROTOCOL_VERSION );
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+    if( hello.hello.width < EVEN_MINIMUM_TERM_WIDTH ||
+        hello.hello.height < EVEN_MINIMUM_TERM_HEIGHT ) {
+        reject_reason = "terminal is smaller than the game minimum (" +
+                        std::to_string( EVEN_MINIMUM_TERM_WIDTH ) + "x" +
+                        std::to_string( EVEN_MINIMUM_TERM_HEIGHT ) + ")";
+        send_hello_ack( transport, false, reject_reason );
+        return false;
+    }
+
+    // Accepted: size the screen to what the client can show, then let them in.
+    mp_server_set_terminal_size( hello.hello.width, hello.hello.height );
+    send_hello_ack( transport, true, std::string() );
+    return true;
+}
 
 void mp_server_input_reset_for_test()
 {

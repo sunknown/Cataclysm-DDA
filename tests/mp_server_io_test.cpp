@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "game_constants.h"
 #include "input_enums.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_loopback_transport.h"
@@ -228,5 +229,100 @@ TEST_CASE( "server_survives_a_dropped_transport", "[mp]" )
     mp_server_flush_screen();
     const input_event got = mp_server_wait_for_input( 10 );
     CHECK( got.type == input_event_t::timeout );
+}
+
+TEST_CASE( "handshake_accepts_a_matching_protocol_version", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION;
+    hello.hello.name = "serg";
+    hello.hello.width = 100;
+    hello.hello.height = 30;
+    send_control( *pair.b, hello );
+
+    std::string reason;
+    CHECK( mp_server_handshake( *pair.a, reason ) );
+    CHECK( reason.empty() );
+    CHECK( mp_server_grid().width() == 100 );
+    CHECK( mp_server_grid().height() == 30 );
+}
+
+TEST_CASE( "handshake_refuses_a_protocol_mismatch_with_an_explanation", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION + 1;
+    hello.hello.name = "serg";
+    hello.hello.width = 100;
+    hello.hello.height = 30;
+    send_control( *pair.b, hello );
+
+    std::string reason;
+    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_THAT( reason, Catch::Contains( "protocol" ) );
+}
+
+TEST_CASE( "handshake_refuses_a_terminal_below_the_game_s_minimum", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION;
+    hello.hello.name = "serg";
+    hello.hello.width = EVEN_MINIMUM_TERM_WIDTH - 1;
+    hello.hello.height = EVEN_MINIMUM_TERM_HEIGHT;
+    send_control( *pair.b, hello );
+
+    std::string reason;
+    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_THAT( reason, Catch::Contains( "terminal" ) );
+}
+
+TEST_CASE( "handshake_sends_its_verdict_to_the_client_either_way", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION + 1;
+    hello.hello.name = "serg";
+    hello.hello.width = 100;
+    hello.hello.height = 30;
+    send_control( *pair.b, hello );
+
+    std::string reason;
+    mp_server_handshake( *pair.a, reason );
+
+    const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 100 );
+    REQUIRE( msg.has_value() );
+    mp_msg_kind kind = mp_msg_kind::screen;
+    std::vector<uint8_t> body;
+    REQUIRE( mp_unwrap( *msg, kind, body ) );
+    REQUIRE( kind == mp_msg_kind::control );
+    mp_control ack;
+    REQUIRE( mp_control_from_json( std::string( body.begin(), body.end() ), ack ) );
+    CHECK( ack.kind == mp_control_kind::hello_ack );
+    CHECK_FALSE( ack.hello_ack.accepted );
+    CHECK_FALSE( ack.hello_ack.reason.empty() );
+}
+
+TEST_CASE( "handshake_gives_up_when_the_client_says_nothing", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    std::string reason;
+    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( reason.empty() );
 }
 #endif // MULTIPLAYER

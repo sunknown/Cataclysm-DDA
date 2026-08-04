@@ -48,6 +48,9 @@
 #include "mp/mp_hotseat_loop.h"
 #include "mp/mp_mode.h"
 #endif
+#if defined(MP_SERVER)
+#include "mp/mp_server_main.h"
+#endif
 #include "game_constants.h"
 #include "game_ui.h"
 #include "get_version.h"
@@ -288,6 +291,8 @@ struct cli_opts {
     std::vector<std::string> opts;
     std::string world; /** if set try to load first save in this world on startup */
     bool disable_ascii_art = false;
+    int server_port = 0; /** port to listen on as a multiplayer server; 0 disables */
+    std::string connect_to; /** host:port of a multiplayer server to join */
 };
 
 cli_opts parse_commandline( int argc, const char **argv )
@@ -441,6 +446,29 @@ cli_opts parse_commandline( int argc, const char **argv )
                     result.disable_ascii_art = true;
                     return 0;
                 }
+            },
+            {
+                "--server", "<port>",
+                "Runs this instance as a multiplayer server that streams its screen to one client.",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    // A malformed number leaves the port at zero so the server
+                    // branch does not fire; the game then starts normally and
+                    // the mistake surfaces to the user there.
+                    result.server_port = std::atoi( params[0] );
+                    return 1;
+                }
+            },
+            {
+                "--connect", "<host:port>",
+                "Connects to a multiplayer server and plays as its client.",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.connect_to = params[0];
+                    return 1;
+                }
             }
         }
     };
@@ -579,6 +607,123 @@ bool assure_essential_dirs_exist()
         }
     }
     return true;
+}
+
+// Runs the game proper: everything after the curses interface is up. Both the
+// single-player path and the multiplayer server reach this, so the ~120 lines
+// of startup and the main-menu loop are not duplicated (src/mp/mp_server_main.cpp
+// hands off to it through main()'s MP_SERVER fork).
+static int run_game( cli_opts &cli )
+{
+    set_language_from_options();
+
+    rng_set_engine_seed( cli.seed );
+
+    game_ui::init_ui();
+
+    g = std::make_unique<game>();
+
+    // First load and initialize everything that does not
+    // depend on the mods.
+    try {
+        g->load_static_data();
+        if( cli.verifyexit ) {
+            exit_handler( 0 );
+        }
+        if( cli.check_mods ) {
+            init_colors();
+            const std::vector<mod_id> mods( cli.opts.begin(), cli.opts.end() );
+            exit( g->check_mod_data( mods ) && !debug_has_error_been_observed() ? 0 : 1 );
+        }
+    } catch( const std::exception &err ) {
+        debugmsg( "%s", err.what() );
+        exit_handler( -999 );
+    }
+
+    // Load the colors of ImGui to match the colors set by the user.
+    cataimgui::init_colors();
+
+    // set decimal point for float input widgets
+    // uses system locale, because that's what imgui uses to parse and display floats
+    ImGui::GetPlatformIO().Platform_LocaleDecimalPoint =
+        static_cast<unsigned char>( *localeconv()->decimal_point );
+
+    // Override existing settings from cli  options
+    if( cli.disable_ascii_art ) {
+        get_options().get_option( "ENABLE_ASCII_ART" ).setValue( "false" );
+        get_options().get_option( "ENABLE_ASCII_TITLE" ).setValue( "false" );
+    }
+
+    if( cli.noverify ) {
+        get_options().get_option( "SKIP_VERIFICATION" ).setValue( "true" );
+    }
+
+    // Now we do the actual game.
+
+#if defined(DEBUG_CURSES_CURSOR)
+    catacurses::curs_set( 2 );
+#else
+    // I have no clue what this comment is on about
+    // Any value works well enough for debugging at least
+    catacurses::curs_set( 0 ); // Invisible cursor here, because MAPBUFFER.load() is crash-prone
+#endif
+
+#if !defined(_WIN32)
+    struct sigaction sigIntHandler;
+    sigIntHandler.sa_handler = exit_handler;
+    sigemptyset( &sigIntHandler.sa_mask );
+    sigIntHandler.sa_flags = 0;
+    sigaction( SIGINT, &sigIntHandler, nullptr );
+#endif
+
+    if( !assure_essential_dirs_exist() ) {
+        exit_handler( -999 );
+        return 0;
+    }
+
+#if defined(LOCALIZE)
+    if( get_option<std::string>( "USE_LANG" ).empty() && !SystemLocale::Language().has_value() ) {
+#if defined(TILES)
+        display_buffer_draw_scope draw_scope;
+        if( !display_buffer_scope_is_invalid() ) {
+#endif
+            imclient->new_frame(); // we have to prime the pump, because of reasons
+            imclient->end_frame();
+            const std::string lang = select_language();
+            get_options().get_option( "USE_LANG" ).setValue( lang );
+            set_language_from_options();
+#if defined(TILES)
+        }
+#endif
+    }
+#endif
+    replay_buffered_debugmsg_prompts();
+
+    main_menu::queued_world_to_load = std::move( cli.world );
+
+    while( true ) {
+        main_menu menu;
+        if( !menu.opening_screen() ) {
+            break;
+        }
+
+        shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
+        get_event_bus().send<event_type::game_begin>( getVersionString() );
+        while( true ) {
+            bool done;
+#if defined(MULTIPLAYER)
+            done = mp_mode_active() ? mp_hotseat_do_turn() : g->do_turn();
+#else
+            done = g->do_turn();
+#endif
+            if( done ) {
+                break;
+            }
+        }
+    }
+
+    exit_handler( -999 );
+    return 0;
 }
 
 }  // namespace
@@ -770,6 +915,16 @@ int main( int argc, const char *argv[] )
     get_options().load();
 #endif
 
+#if defined(MP_SERVER)
+    if( cli.server_port > 0 ) {
+        const int server_status = mp_server_main( cli.server_port, cli.world );
+        if( server_status != 0 ) {
+            return server_status;
+        }
+        return run_game( cli );
+    }
+#endif
+
     // in test mode don't initialize curses to avoid escape sequences being inserted into output stream
     if( !test_mode ) {
         try {
@@ -788,113 +943,5 @@ int main( int argc, const char *argv[] )
         get_options().load();
     }
 
-    set_language_from_options();
-
-    rng_set_engine_seed( cli.seed );
-
-    game_ui::init_ui();
-
-    g = std::make_unique<game>();
-
-    // First load and initialize everything that does not
-    // depend on the mods.
-    try {
-        g->load_static_data();
-        if( cli.verifyexit ) {
-            exit_handler( 0 );
-        }
-        if( cli.check_mods ) {
-            init_colors();
-            const std::vector<mod_id> mods( cli.opts.begin(), cli.opts.end() );
-            exit( g->check_mod_data( mods ) && !debug_has_error_been_observed() ? 0 : 1 );
-        }
-    } catch( const std::exception &err ) {
-        debugmsg( "%s", err.what() );
-        exit_handler( -999 );
-    }
-
-    // Load the colors of ImGui to match the colors set by the user.
-    cataimgui::init_colors();
-
-    // set decimal point for float input widgets
-    // uses system locale, because that's what imgui uses to parse and display floats
-    ImGui::GetPlatformIO().Platform_LocaleDecimalPoint =
-        static_cast<unsigned char>( *localeconv()->decimal_point );
-
-    // Override existing settings from cli  options
-    if( cli.disable_ascii_art ) {
-        get_options().get_option( "ENABLE_ASCII_ART" ).setValue( "false" );
-        get_options().get_option( "ENABLE_ASCII_TITLE" ).setValue( "false" );
-    }
-
-    if( cli.noverify ) {
-        get_options().get_option( "SKIP_VERIFICATION" ).setValue( "true" );
-    }
-
-    // Now we do the actual game.
-
-#if defined(DEBUG_CURSES_CURSOR)
-    catacurses::curs_set( 2 );
-#else
-    // I have no clue what this comment is on about
-    // Any value works well enough for debugging at least
-    catacurses::curs_set( 0 ); // Invisible cursor here, because MAPBUFFER.load() is crash-prone
-#endif
-
-#if !defined(_WIN32)
-    struct sigaction sigIntHandler;
-    sigIntHandler.sa_handler = exit_handler;
-    sigemptyset( &sigIntHandler.sa_mask );
-    sigIntHandler.sa_flags = 0;
-    sigaction( SIGINT, &sigIntHandler, nullptr );
-#endif
-
-    if( !assure_essential_dirs_exist() ) {
-        exit_handler( -999 );
-        return 0;
-    }
-
-#if defined(LOCALIZE)
-    if( get_option<std::string>( "USE_LANG" ).empty() && !SystemLocale::Language().has_value() ) {
-#if defined(TILES)
-        display_buffer_draw_scope draw_scope;
-        if( !display_buffer_scope_is_invalid() ) {
-#endif
-            imclient->new_frame(); // we have to prime the pump, because of reasons
-            imclient->end_frame();
-            const std::string lang = select_language();
-            get_options().get_option( "USE_LANG" ).setValue( lang );
-            set_language_from_options();
-#if defined(TILES)
-        }
-#endif
-    }
-#endif
-    replay_buffered_debugmsg_prompts();
-
-    main_menu::queued_world_to_load = std::move( cli.world );
-
-    while( true ) {
-        main_menu menu;
-        if( !menu.opening_screen() ) {
-            break;
-        }
-
-        shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
-        get_event_bus().send<event_type::game_begin>( getVersionString() );
-        while( true ) {
-            bool done;
-#if defined(MULTIPLAYER)
-            done = mp_mode_active() ? mp_hotseat_do_turn() : g->do_turn();
-#else
-            done = g->do_turn();
-#endif
-            if( done ) {
-                break;
-            }
-        }
-    }
-
-    exit_handler( -999 );
-    return 0;
+    return run_game( cli );
 }
