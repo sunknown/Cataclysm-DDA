@@ -1,0 +1,134 @@
+# Multiplayer
+
+This document covers the first version of networked multiplayer: a dedicated
+server binary that streams its text screen to one thin client over TCP, and the
+client that connects to it. This is a technology preview -- see
+[Limitations](#limitations-of-this-first-version) before you plan a session.
+
+## Overview
+
+The server is a special build of the game (`MP_SERVER=1`). It links an
+in-memory curses backend and renders everything -- menus, the map, IMGUI
+screens -- into a text grid. One client connects over TCP, sends its terminal
+size, and the server starts streaming the grid to it. The client is the normal
+game binary in a special mode: it forwards your keystrokes to the server and
+paints whatever screen the server sends. The server runs the game logic; the
+client is a thin remote viewport.
+
+Because the server is a full game build, everything you can do in single-player
+(create a character, move, fight, craft, read, sleep) is available -- but only
+one client connects, and only the server's own keybindings are in effect.
+
+## Building
+
+### Server
+
+```sh
+make -j$(nproc) CCACHE=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
+```
+
+This produces `mpserver-cataclysm-server`. `MP_SERVER` implies `MULTIPLAYER` and
+sets a server-specific target name (Makefile, `TARGET_NAME = cataclysm-server`),
+so the build never collides with a normal client build. The server links the
+in-memory curses backend and IMGUI's text backend; it does not link SDL or
+ncurses.
+
+To also build the server test binary (the `[mp]` tests, used by CI), add
+`TESTS=1`:
+
+```sh
+make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
+# -> tests/mpserver-cata_test
+```
+
+### Client
+
+Build the normal game (the curses build is sufficient):
+
+```sh
+make -j$(nproc) CCACHE=1
+# -> cataclysm
+```
+
+## Running a session
+
+### 1. Start the server
+
+```sh
+./mpserver-cataclysm-server --server <port> --world <name> --userdir <path>
+```
+
+- `--server <port>` -- run this instance as a multiplayer server that streams
+  its screen to one client (main.cpp, `--server` handler).
+- `--world <name>` -- load this world. If omitted, the server opens the
+  world-selection menu, which is streamed to the client, so you can pick a
+  world from the client side.
+- `--userdir <path>` -- keep the server's config, saves, and log under this
+  directory instead of your normal single-player profile. Recommended, so the
+  server does not share options or savegames with your client.
+
+The server binds a TCP listener on `<port>`, waits for one client, and performs
+a connection handshake (protocol version, terminal size, 256-colour support).
+Only after the client is accepted does the game start; you can take as long as
+you like to connect.
+
+### 2. Connect the client
+
+```sh
+./cataclysm --connect <host:port>
+```
+
+- `--connect <host:port>` -- connect to a multiplayer server and play as its
+  client (main.cpp, `--connect` handler).
+
+The client needs a terminal of at least 80x24. On connect it announces its
+terminal size; the server streams at that size. Resizing the client's terminal
+renegotiates the grid.
+
+When the client disconnects, the server shuts down cleanly (it does not keep
+running and it does not keep the world open for a second player).
+
+## Limitations of this first version
+
+- **One player.** The server accepts exactly one client (`mp_listener::accept`)
+  and ends the session when that client disconnects. There is no rejoin, no
+  reconnect, and no spectator mode.
+- **The server's keyboard layout is the one that counts.** The client sends
+  raw input events (key presses, mouse position, modifiers); the server feeds
+  them through its own keybinding configuration. If you want a different layout,
+  change the server's keybindings. The client's keymap is not consulted.
+- **No sound.** The server renders to a text grid and streams that grid; audio is
+  not transmitted and the client does not synthesise it.
+- **No tileset map.** The streamed picture is the server's text grid. Tile
+  graphics are never sent; the client renders text cells and colours.
+- **Text only.** The picture is a grid of characters with per-cell colour
+  indices. Mouse events are forwarded, but there is no pixel-perfect or
+  hardware-accelerated rendering.
+
+## Debugging
+
+The wire traffic is useful for debugging a session.
+
+- **Control messages are JSON.** The hello, resize, input, cursor, and bye
+  messages are serialised as readable JSON (`mp_control_to_json`, mp_protocol).
+  Screen frames are the compact binary of `mp_screen_codec`, because that is
+  the hot path.
+- **Peer JSON is parsed leniently.** Incoming control messages call
+  `obj.allow_omitted_members()` before reading fields (mp_protocol.cpp), so a
+  peer that adds a field does not trip the "unvisited member" debug message.
+  The whole parse is wrapped in a `try`/`catch( const JsonError & )`, so a
+  malformed or unknown message is dropped rather than raised. The `proto` field
+  in the client's hello exists so a later protocol version can add fields and
+  an older peer can skip what it does not recognise.
+- **Frames.** Every payload is framed with one kind byte (`mp_msg_kind`: 1 for
+  control, 2 for screen) followed by the body (`mp_wrap`/`mp_unwrap`). The TCP
+  transport sets `TCP_NODELAY` so key presses are not batched behind screen
+  traffic.
+- **The log.** The game writes `debug.log` under the user directory's config
+  dir (`<userdir>/config/debug.log`). The server logs its lifecycle to the
+  `D_MAIN` class: `mp server: waiting for a client on port ...`,
+  `mp server: accepting the client failed`, and
+  `mp server: handshake rejected: ...`. The client logs connection failures and
+  the handshake verdict the same way. Run both sides with the same `--userdir`
+  or with none at all; the `[mp]` server tests use a fresh `--userdir` so a
+  session never writes into a profile you care about.

@@ -371,6 +371,73 @@ jobs:
         path: tests/cata_test*
         if-no-files-found: ignore
         retention-days: 9
+
+  mp-server:
+    # Watchdog for the multiplayer server build. Single-player never exercises
+    # the MP_SERVER path, so without this job the server test binary and the
+    # server's [mp] tests would rot unnoticed.
+    name: MP Server build and tests
+    needs: [ skip-duplicates-code, skip-duplicates-data ]
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.skip-duplicates-code.outputs.should_skip_code != 'true' || needs.skip-duplicates-data.outputs.should_skip_data != 'true')) }}
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Maximize build space (ubuntu)
+      uses: AdityaGarg8/remove-unwanted-software@8831c82abf29b34eb2caac48d5f999ecfc0d8eef # v4.1
+      with:
+        remove-android: true
+    - name: checkout repository
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      with:
+        persist-credentials: false
+    - name: install dependencies (ubuntu)
+      run: |
+          sudo apt-get update
+          sudo apt-get install libncursesw5-dev ccache gettext
+    - name: install recent ccache on ubuntu
+      run: |
+          ccache --version
+          sudo apt-get remove --purge -y ccache
+          curl -sL https://github.com/ccache/ccache/releases/download/v4.10.2/ccache-4.10.2-linux-x86_64.tar.xz | sudo tar Jxvf - --strip-components 1 -C /usr/bin ccache-4.10.2-linux-x86_64/ccache
+          ccache --version
+    - name: prepare
+      run: bash ./build-scripts/requirements.sh
+    - name: Get ccache vars
+      id: get-vars
+      run: |
+        echo "datetime=$(/bin/date -u "+%Y%m%d%H%M")" >> $GITHUB_OUTPUT
+        echo "datetime-seconds=$(/bin/date +%s)" >> $GITHUB_OUTPUT
+        echo "ccache-path=~/.cache/ccache" >> $GITHUB_OUTPUT
+      shell: bash
+    - name: ccache cache files
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.get-vars.outputs.ccache-path }}
+        key: ccache-${{ github.ref_name }}-mp-server--${{ steps.get-vars.outputs.datetime }}
+        restore-keys: |
+          ccache-master-mp-server--
+    - name: Build MP server
+      run: make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
+    - name: post-build ccache manipulation
+      if: ${{ !failure() }}
+      run: |
+        ccache --show-stats --verbose
+        NOW=`/bin/date +%s`
+        DELTA=$(( $NOW - ${{ steps.get-vars.outputs.datetime-seconds }} ))
+        ccache --evict-older-than ${DELTA}s
+        ccache --show-stats --verbose
+        ccache -M 5G
+        ccache -c
+        ccache --show-stats --verbose
+    - name: run mp tests
+      run: tests/mpserver-cata_test "[mp]" --user-dir=mp_test_user_dir --error-format=github-action
+    - name: upload artifacts if failed
+      if: failure()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: mpserver-cata_test
+        path: tests/mpserver-cata_test*
+        if-no-files-found: ignore
+        retention-days: 9
   #emscripten:
   #  needs: [ skip-duplicates-code, varied_builds ]
   #  uses: ./.github/workflows/emscripten.yml
