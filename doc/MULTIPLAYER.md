@@ -43,12 +43,19 @@ make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
 
 ### Client
 
-Build the normal game (the curses build is sufficient):
+The client is the normal game built with `MULTIPLAYER=1` (the curses build is
+sufficient):
 
 ```sh
-make -j$(nproc) CCACHE=1
+make -j$(nproc) CCACHE=1 MULTIPLAYER=1
 # -> cataclysm
 ```
+
+`MULTIPLAYER` is **not** on by default, and it is what compiles `--connect` in.
+A plain `make` produces a binary that still accepts `--connect` on the command
+line but refuses to run with it, because the client code is not in the build.
+If you already have a plain build sitting at `./cataclysm`, this rebuilds it in
+place -- quit any running copy first, or the link fails with "Text file busy".
 
 ## Running a session
 

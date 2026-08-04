@@ -951,6 +951,26 @@ int main( int argc, const char *argv[] )
     get_options().load();
 #endif
 
+    // --server and --connect are always accepted by the argument parser, but
+    // the code behind them is compiled in only for the builds that carry it.
+    // Say so and stop: silently starting an ordinary single-player game instead
+    // looks exactly like a multiplayer session that refuses to connect, and the
+    // mistake is impossible to spot from the outside.
+#if !defined(MP_SERVER)
+    if( cli.server_port > 0 ) {
+        std::cerr << "This build has no multiplayer server: rebuild with MP_SERVER=1 "
+                  "to use --server." << std::endl;
+        return 1;
+    }
+#endif
+#if !defined(MULTIPLAYER)
+    if( !cli.connect_to.empty() ) {
+        std::cerr << "This build has no multiplayer client: rebuild with MULTIPLAYER=1 "
+                  "to use --connect." << std::endl;
+        return 1;
+    }
+#endif
+
 #if defined(MP_SERVER)
     if( cli.server_port > 0 && mp_server_main( cli.server_port, cli.world ) != 0 ) {
         return 1;
