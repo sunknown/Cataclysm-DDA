@@ -70,6 +70,13 @@ void catacurses::init_interface()
     // is already sized; the game's root window must match it exactly.
     catacurses::stdscr = catacurses::newwin( mp_server_grid().height(), mp_server_grid().width(),
                           point::zero );
+
+    // The game's shared startup (run_game) drives ImGui from the first frame,
+    // so the client owning the ImGui context must exist before that.  Mirror the
+    // TUI backend (ncurses_def.cpp) minus its terminal-only calls: create the
+    // imgui client, then initialize the color table, which needs that client.
+    imclient = std::make_unique<cataimgui::client>();
+    init_colors();
 }
 
 void catacurses::endwin()
