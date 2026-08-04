@@ -10,7 +10,7 @@
 #include "output.h"
 #include "point.h"
 
-TEST_CASE( "drawing a curses window reaches the server grid", "[mp]" )
+TEST_CASE( "drawing_a_curses_window_reaches_the_server_grid", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
@@ -23,7 +23,7 @@ TEST_CASE( "drawing a curses window reaches the server grid", "[mp]" )
     CHECK( mp_server_grid().at( 6, 1 ).ch == "o" );
 }
 
-TEST_CASE( "a window redraw with no change dirties nothing", "[mp]" )
+TEST_CASE( "a_window_redraw_with_no_change_dirties_nothing", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
@@ -39,7 +39,7 @@ TEST_CASE( "a window redraw with no change dirties nothing", "[mp]" )
     CHECK_FALSE( mp_server_grid().any_dirty() );
 }
 
-TEST_CASE( "terminal size comes from the grid", "[mp]" )
+TEST_CASE( "terminal_size_comes_from_the_grid", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 96, 30 );

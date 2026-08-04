@@ -48,14 +48,14 @@ static std::vector<uint8_t> single_glyph_payload( const std::vector<uint8_t> &gl
     return payload;
 }
 
-TEST_CASE( "mp_screen_grid starts fully dirty", "[mp]" )
+TEST_CASE( "mp_screen_grid_starts_fully_dirty", "[mp]" )
 {
     // A freshly created grid has never been sent, so every row must go out.
     mp_screen_grid grid( 4, 3 );
     CHECK( grid.dirty_rows() == std::vector<int> { 0, 1, 2 } );
 }
 
-TEST_CASE( "mp_screen_grid marks only changed rows dirty", "[mp]" )
+TEST_CASE( "mp_screen_grid_marks_only_changed_rows_dirty", "[mp]" )
 {
     mp_screen_grid grid( 4, 3 );
     grid.clear_dirty();
@@ -65,7 +65,7 @@ TEST_CASE( "mp_screen_grid marks only changed rows dirty", "[mp]" )
     CHECK( grid.dirty_rows() == std::vector<int> { 1 } );
 }
 
-TEST_CASE( "mp_screen_grid ignores a write that changes nothing", "[mp]" )
+TEST_CASE( "mp_screen_grid_ignores_a_write_that_changes_nothing", "[mp]" )
 {
     // Redrawing the same content is extremely common in this game; if it
     // dirtied rows we would resend the whole screen on every keystroke.
@@ -77,7 +77,7 @@ TEST_CASE( "mp_screen_grid ignores a write that changes nothing", "[mp]" )
     CHECK_FALSE( grid.any_dirty() );
 }
 
-TEST_CASE( "mp_screen codec transfers dirty rows only", "[mp]" )
+TEST_CASE( "mp_screen_codec_transfers_dirty_rows_only", "[mp]" )
 {
     mp_screen_grid source( 8, 4 );
     mp_screen_grid target( 8, 4 );
@@ -96,7 +96,7 @@ TEST_CASE( "mp_screen codec transfers dirty rows only", "[mp]" )
     CHECK( target.at( 0, 0 ) == mp_cell() );
 }
 
-TEST_CASE( "mp_screen codec round trips a full screen of varied content", "[mp]" )
+TEST_CASE( "mp_screen_codec_round_trips_a_full_screen_of_varied_content", "[mp]" )
 {
     mp_screen_grid source( 20, 6 );
     for( int y = 0; y < source.height(); ++y ) {
@@ -117,7 +117,7 @@ TEST_CASE( "mp_screen codec round trips a full screen of varied content", "[mp]"
     }
 }
 
-TEST_CASE( "mp_screen codec compresses runs of identical cells", "[mp]" )
+TEST_CASE( "mp_screen_codec_compresses_runs_of_identical_cells", "[mp]" )
 {
     // A blank 80x24 screen is 1920 identical cells; run-length encoding must
     // turn that into a handful of bytes, not two kilobytes.
@@ -126,14 +126,14 @@ TEST_CASE( "mp_screen codec compresses runs of identical cells", "[mp]" )
     CHECK( payload.size() < 400 );
 }
 
-TEST_CASE( "mp_screen_apply rejects a payload for a different screen size", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_payload_for_a_different_screen_size", "[mp]" )
 {
     mp_screen_grid source( 8, 4 );
     mp_screen_grid target( 10, 4 );
     CHECK_FALSE( mp_screen_apply( target, mp_screen_encode( source ) ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a truncated payload", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_truncated_payload", "[mp]" )
 {
     mp_screen_grid source( 8, 4 );
     std::vector<uint8_t> payload = mp_screen_encode( source );
@@ -143,7 +143,7 @@ TEST_CASE( "mp_screen_apply rejects a truncated payload", "[mp]" )
     CHECK_FALSE( mp_screen_apply( target, payload ) );
 }
 
-TEST_CASE( "mp_screen codec pins the wire format exactly", "[mp]" )
+TEST_CASE( "mp_screen_codec_pins_the_wire_format_exactly", "[mp]" )
 {
     // Every other test round trips through both the encoder and the decoder
     // together, so a matched drift in both -- swapped fg/bg, run_count and
@@ -170,7 +170,7 @@ TEST_CASE( "mp_screen codec pins the wire format exactly", "[mp]" )
     CHECK( mp_screen_encode( grid ) == expected );
 }
 
-TEST_CASE( "mp_screen_apply decodes a hand-built payload matching the pinned format", "[mp]" )
+TEST_CASE( "mp_screen_apply_decodes_a_hand-built_payload_matching_the_pinned_format", "[mp]" )
 {
     // The mirror image of the previous test: a payload built by hand (not
     // via mp_screen_encode) must decode exactly as the format comment says.
@@ -192,7 +192,7 @@ TEST_CASE( "mp_screen_apply decodes a hand-built payload matching the pinned for
     CHECK( target.at( 2, 0 ) == mp_cell() );
 }
 
-TEST_CASE( "mp_screen codec round trips a double-width continuation cell", "[mp]" )
+TEST_CASE( "mp_screen_codec_round_trips_a_double-width_continuation_cell", "[mp]" )
 {
     // glyph_len == 0 (the empty glyph, marking a continuation cell) is the
     // one length the wire format calls out specially, but the general round
@@ -210,7 +210,7 @@ TEST_CASE( "mp_screen codec round trips a double-width continuation cell", "[mp]
     }
 }
 
-TEST_CASE( "mp_screen_apply rejects a run with a non-positive repeat", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_run_with_a_non-positive_repeat", "[mp]" )
 {
     // Two runs, repeat=0 then repeat=3, so the row still totals width=3 if
     // the repeat<=0 check were the only thing standing in the way: a single
@@ -236,7 +236,7 @@ TEST_CASE( "mp_screen_apply rejects a run with a non-positive repeat", "[mp]" )
 // below rejects it regardless of whether the overshoot check itself ran.
 // Deleting the overshoot check does not change this test's outcome, and
 // that is by design -- see the comment beside the check in the source.
-TEST_CASE( "mp_screen_apply rejects a run that overflows the row width", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_run_that_overflows_the_row_width", "[mp]" )
 {
     const std::vector<uint8_t> payload = {
         0x00, 0x03, 0x00, 0x02, 0x00, 0x01,
@@ -248,7 +248,7 @@ TEST_CASE( "mp_screen_apply rejects a run that overflows the row width", "[mp]" 
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a row whose runs fall short of the row width", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_row_whose_runs_fall_short_of_the_row_width", "[mp]" )
 {
     const std::vector<uint8_t> payload = {
         0x00, 0x03, 0x00, 0x02, 0x00, 0x01,
@@ -260,7 +260,7 @@ TEST_CASE( "mp_screen_apply rejects a row whose runs fall short of the row width
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects an out-of-range row index", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_an_out-of-range_row_index", "[mp]" )
 {
     // Row 5 gets a complete body (run_count=1, repeat=3 filling the width-3
     // row) rather than an empty one: with an empty body, a payload with the
@@ -280,7 +280,7 @@ TEST_CASE( "mp_screen_apply rejects an out-of-range row index", "[mp]" )
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a duplicate row index", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_duplicate_row_index", "[mp]" )
 {
     // A legitimate encoder never emits the same row twice; this is the
     // amplification vector the decoder must not tolerate (see the
@@ -302,7 +302,7 @@ TEST_CASE( "mp_screen_apply rejects a duplicate row index", "[mp]" )
 // check is an early exit, not an independent guard. Deleting it does not
 // change this test's outcome, and that is by design -- see the comment
 // beside the check in the source.
-TEST_CASE( "mp_screen_apply rejects a row_count larger than the grid height", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_row_count_larger_than_the_grid_height", "[mp]" )
 {
     const std::vector<uint8_t> payload = {
         0x00, 0x03, 0x00, 0x02, 0x00, 0x03  // row_count=3 on a height-2 grid
@@ -312,7 +312,7 @@ TEST_CASE( "mp_screen_apply rejects a row_count larger than the grid height", "[
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a glyph_len that overruns the payload", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_glyph_len_that_overruns_the_payload", "[mp]" )
 {
     // On a 1x1 grid, repeat=1 always totals the row width -- see
     // single_glyph_payload()'s comment -- so what rejects this payload is
@@ -328,7 +328,7 @@ TEST_CASE( "mp_screen_apply rejects a glyph_len that overruns the payload", "[mp
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a glyph longer than the byte cap", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_glyph_longer_than_the_byte_cap", "[mp]" )
 {
     // glyph_max_bytes (mp_screen_codec.cpp) is 32; 33 well-formed ASCII
     // bytes are supplied in full, so what rejects this is solely the length
@@ -339,7 +339,7 @@ TEST_CASE( "mp_screen_apply rejects a glyph longer than the byte cap", "[mp]" )
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a malformed UTF-8 lead byte", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_a_malformed_UTF-8_lead_byte", "[mp]" )
 {
     // 0x80 is a bare continuation byte (10xxxxxx); it can never legally
     // start a UTF-8 sequence.
@@ -349,7 +349,7 @@ TEST_CASE( "mp_screen_apply rejects a malformed UTF-8 lead byte", "[mp]" )
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects UTF-8 that a lead-byte-length check alone would miss", "[mp]" )
+TEST_CASE( "mp_screen_apply_rejects_UTF-8_that_a_lead-byte-length_check_alone_would_miss", "[mp]" )
 {
     // A check that only matches the leading 1-bits of the first byte (e.g.
     // "starts with 1110" means "3 bytes follow") accepts far more than
@@ -373,7 +373,7 @@ TEST_CASE( "mp_screen_apply rejects UTF-8 that a lead-byte-length check alone wo
     }
 }
 
-TEST_CASE( "mp_screen codec round trips a base character with a combining mark", "[mp]" )
+TEST_CASE( "mp_screen_codec_round_trips_a_base_character_with_a_combining_mark", "[mp]" )
 {
     // cata_cursesport::fill() (src/cursesport.cpp) deliberately packs
     // zero-width combining marks into the same cursecell::ch as their base

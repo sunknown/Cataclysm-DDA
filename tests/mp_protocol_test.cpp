@@ -7,7 +7,7 @@
 #include "input_enums.h"
 #include "mp/mp_protocol.h"
 
-TEST_CASE( "mp_wrap tags a body with its kind", "[mp]" )
+TEST_CASE( "mp_wrap_tags_a_body_with_its_kind", "[mp]" )
 {
     const std::vector<uint8_t> body = { 1, 2, 3 };
     const std::vector<uint8_t> wrapped = mp_wrap( mp_msg_kind::screen, body );
@@ -19,21 +19,21 @@ TEST_CASE( "mp_wrap tags a body with its kind", "[mp]" )
     CHECK( got == body );
 }
 
-TEST_CASE( "mp_unwrap rejects an empty payload", "[mp]" )
+TEST_CASE( "mp_unwrap_rejects_an_empty_payload", "[mp]" )
 {
     mp_msg_kind kind = mp_msg_kind::control;
     std::vector<uint8_t> got;
     CHECK_FALSE( mp_unwrap( {}, kind, got ) );
 }
 
-TEST_CASE( "mp_unwrap rejects an unknown kind byte", "[mp]" )
+TEST_CASE( "mp_unwrap_rejects_an_unknown_kind_byte", "[mp]" )
 {
     mp_msg_kind kind = mp_msg_kind::control;
     std::vector<uint8_t> got;
     CHECK_FALSE( mp_unwrap( { 99, 1, 2 }, kind, got ) );
 }
 
-TEST_CASE( "mp_control round trips a hello", "[mp]" )
+TEST_CASE( "mp_control_round_trips_a_hello", "[mp]" )
 {
     mp_control sent;
     sent.kind = mp_control_kind::hello;
@@ -53,7 +53,7 @@ TEST_CASE( "mp_control round trips a hello", "[mp]" )
     CHECK( got.hello.colors_256 );
 }
 
-TEST_CASE( "mp_control round trips a rejection with its reason", "[mp]" )
+TEST_CASE( "mp_control_round_trips_a_rejection_with_its_reason", "[mp]" )
 {
     mp_control sent;
     sent.kind = mp_control_kind::hello_ack;
@@ -67,7 +67,7 @@ TEST_CASE( "mp_control round trips a rejection with its reason", "[mp]" )
     CHECK( got.hello_ack.reason == sent.hello_ack.reason );
 }
 
-TEST_CASE( "mp_control round trips a keyboard input event", "[mp]" )
+TEST_CASE( "mp_control_round_trips_a_keyboard_input_event", "[mp]" )
 {
     mp_control sent;
     sent.kind = mp_control_kind::input;
@@ -88,7 +88,7 @@ TEST_CASE( "mp_control round trips a keyboard input event", "[mp]" )
     CHECK_FALSE( got.event.edit_refresh );
 }
 
-TEST_CASE( "mp_control round trips a mouse input event", "[mp]" )
+TEST_CASE( "mp_control_round_trips_a_mouse_input_event", "[mp]" )
 {
     mp_control sent;
     sent.kind = mp_control_kind::input;
@@ -102,7 +102,7 @@ TEST_CASE( "mp_control round trips a mouse input event", "[mp]" )
     CHECK( got.event.mouse_pos == point( 37, 11 ) );
 }
 
-TEST_CASE( "mp_control round trips a resize and a cursor", "[mp]" )
+TEST_CASE( "mp_control_round_trips_a_resize_and_a_cursor", "[mp]" )
 {
     mp_control resize;
     resize.kind = mp_control_kind::resize;
@@ -127,7 +127,7 @@ TEST_CASE( "mp_control round trips a resize and a cursor", "[mp]" )
     CHECK( got_cursor.cursor.visible );
 }
 
-TEST_CASE( "mp_control_from_json rejects malformed input", "[mp]" )
+TEST_CASE( "mp_control_from_json_rejects_malformed_input", "[mp]" )
 {
     mp_control got;
     CHECK_FALSE( mp_control_from_json( "not json at all", got ) );

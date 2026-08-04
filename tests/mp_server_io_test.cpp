@@ -30,7 +30,7 @@ static void send_control( mp_transport &t, const mp_control &msg )
     t.send( mp_wrap( mp_msg_kind::control, std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
-TEST_CASE( "server blits a row into the screen grid", "[mp]" )
+TEST_CASE( "server_blits_a_row_into_the_screen_grid", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
@@ -42,7 +42,7 @@ TEST_CASE( "server blits a row into the screen grid", "[mp]" )
     CHECK( mp_server_grid().at( 7, 1 ).ch == " " );
 }
 
-TEST_CASE( "server sends nothing when nothing changed", "[mp]" )
+TEST_CASE( "server_sends_nothing_when_nothing_changed", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -56,7 +56,7 @@ TEST_CASE( "server sends nothing when nothing changed", "[mp]" )
     CHECK_FALSE( pair.b->recv( 0 ).has_value() );
 }
 
-TEST_CASE( "server sends a delta far smaller than a full screen", "[mp]" )
+TEST_CASE( "server_sends_a_delta_far_smaller_than_a_full_screen", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -74,7 +74,7 @@ TEST_CASE( "server sends a delta far smaller than a full screen", "[mp]" )
     CHECK( delta->size() < full->size() / 4 );
 }
 
-TEST_CASE( "a client can reconstruct the server screen from the wire", "[mp]" )
+TEST_CASE( "a_client_can_reconstruct_the_server_screen_from_the_wire", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -101,7 +101,7 @@ TEST_CASE( "a client can reconstruct the server screen from the wire", "[mp]" )
     }
 }
 
-TEST_CASE( "server returns a queued keystroke", "[mp]" )
+TEST_CASE( "server_returns_a_queued_keystroke", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -119,7 +119,7 @@ TEST_CASE( "server returns a queued keystroke", "[mp]" )
     CHECK( got.sequence == std::vector<int> { 'y' } );
 }
 
-TEST_CASE( "server flushes the screen before blocking for input", "[mp]" )
+TEST_CASE( "server_flushes_the_screen_before_blocking_for_input", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -149,7 +149,7 @@ TEST_CASE( "server flushes the screen before blocking for input", "[mp]" )
     CHECK( saw_screen );
 }
 
-TEST_CASE( "server returns a timeout event when no input arrives", "[mp]" )
+TEST_CASE( "server_returns_a_timeout_event_when_no_input_arrives", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -160,7 +160,7 @@ TEST_CASE( "server returns a timeout event when no input arrives", "[mp]" )
     CHECK( got.type == input_event_t::timeout );
 }
 
-TEST_CASE( "server records a resize request without touching the grid itself", "[mp]" )
+TEST_CASE( "server_records_a_resize_request_without_touching_the_grid_itself", "[mp]" )
 {
     // The grid is rebuilt by the curses backend, which must also rebuild the
     // game's windows; the module only records what the client asked for.
@@ -186,7 +186,7 @@ TEST_CASE( "server records a resize request without touching the grid itself", "
     CHECK_FALSE( mp_server_take_resize_request( w, h ) );
 }
 
-TEST_CASE( "server sends the cursor position with the screen", "[mp]" )
+TEST_CASE( "server_sends_the_cursor_position_with_the_screen", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
@@ -216,7 +216,7 @@ TEST_CASE( "server sends the cursor position with the screen", "[mp]" )
     CHECK( saw_cursor );
 }
 
-TEST_CASE( "server survives a dropped transport", "[mp]" )
+TEST_CASE( "server_survives_a_dropped_transport", "[mp]" )
 {
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();

@@ -24,7 +24,7 @@ static std::vector<uint8_t> header_for( uint32_t len )
     };
 }
 
-TEST_CASE( "mp_frame round trips a single payload", "[mp]" )
+TEST_CASE( "mp_frame_round_trips_a_single_payload", "[mp]" )
 {
     const std::vector<uint8_t> payload = bytes( "hello" );
     const std::vector<uint8_t> frame = mp_frame_encode( payload );
@@ -38,7 +38,7 @@ TEST_CASE( "mp_frame round trips a single payload", "[mp]" )
     CHECK_FALSE( reader.next().has_value() );
 }
 
-TEST_CASE( "mp_frame reassembles a payload split across feeds", "[mp]" )
+TEST_CASE( "mp_frame_reassembles_a_payload_split_across_feeds", "[mp]" )
 {
     // A byte-at-a-time feed is the worst case a socket can hand us: the reader
     // must yield nothing until the very last byte of the frame arrives.
@@ -57,7 +57,7 @@ TEST_CASE( "mp_frame reassembles a payload split across feeds", "[mp]" )
     CHECK( *got == payload );
 }
 
-TEST_CASE( "mp_frame yields several payloads from one feed", "[mp]" )
+TEST_CASE( "mp_frame_yields_several_payloads_from_one_feed", "[mp]" )
 {
     std::vector<uint8_t> stream = mp_frame_encode( bytes( "one" ) );
     const std::vector<uint8_t> second = mp_frame_encode( bytes( "two" ) );
@@ -71,7 +71,7 @@ TEST_CASE( "mp_frame yields several payloads from one feed", "[mp]" )
     CHECK_FALSE( reader.next().has_value() );
 }
 
-TEST_CASE( "mp_frame rejects an oversized length header", "[mp]" )
+TEST_CASE( "mp_frame_rejects_an_oversized_length_header", "[mp]" )
 {
     // A hostile or corrupt peer must not be able to make us allocate freely.
     std::vector<uint8_t> frame = { 0xFF, 0xFF, 0xFF, 0xFF };
@@ -83,7 +83,7 @@ TEST_CASE( "mp_frame rejects an oversized length header", "[mp]" )
     CHECK_FALSE( reader.next().has_value() );
 }
 
-TEST_CASE( "mp_frame accepts an empty payload", "[mp]" )
+TEST_CASE( "mp_frame_accepts_an_empty_payload", "[mp]" )
 {
     const std::vector<uint8_t> frame = mp_frame_encode( {} );
     mp_frame_reader reader;
@@ -94,7 +94,7 @@ TEST_CASE( "mp_frame accepts an empty payload", "[mp]" )
     CHECK( got->empty() );
 }
 
-TEST_CASE( "mp_frame uses a big-endian length header", "[mp]" )
+TEST_CASE( "mp_frame_uses_a_big-endian_length_header", "[mp]" )
 {
     // Byte order is a contract with whatever is on the other end of the
     // socket; round-tripping through our own encoder and decoder together
@@ -114,7 +114,7 @@ TEST_CASE( "mp_frame uses a big-endian length header", "[mp]" )
     CHECK( reader.next() == bytes( "foo" ) );
 }
 
-TEST_CASE( "mp_frame accepts a length header exactly at the limit", "[mp]" )
+TEST_CASE( "mp_frame_accepts_a_length_header_exactly_at_the_limit", "[mp]" )
 {
     // The body is deliberately not supplied: this only probes the header
     // check, which must accept MP_MAX_FRAME_BYTES itself (a strict ">" bound,
@@ -128,7 +128,7 @@ TEST_CASE( "mp_frame accepts a length header exactly at the limit", "[mp]" )
     CHECK_FALSE( reader.next().has_value() );
 }
 
-TEST_CASE( "mp_frame rejects a length header one past the limit", "[mp]" )
+TEST_CASE( "mp_frame_rejects_a_length_header_one_past_the_limit", "[mp]" )
 {
     const std::vector<uint8_t> frame = header_for( static_cast<uint32_t>( MP_MAX_FRAME_BYTES ) + 1 );
 
@@ -139,7 +139,7 @@ TEST_CASE( "mp_frame rejects a length header one past the limit", "[mp]" )
     CHECK_FALSE( reader.next().has_value() );
 }
 
-TEST_CASE( "mp_frame catches a bad header once next() reaches it", "[mp]" )
+TEST_CASE( "mp_frame_catches_a_bad_header_once_next___reaches_it", "[mp]" )
 {
     // feed()'s eager check only looks at the header currently at the head of
     // the buffer. A malformed header arriving behind an earlier valid frame

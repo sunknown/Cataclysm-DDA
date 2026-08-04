@@ -8,7 +8,7 @@
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_transport.h"
 
-TEST_CASE( "loopback transport delivers messages both ways", "[mp]" )
+TEST_CASE( "loopback_transport_delivers_messages_both_ways", "[mp]" )
 {
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -23,7 +23,7 @@ TEST_CASE( "loopback transport delivers messages both ways", "[mp]" )
     CHECK( *at_a == std::vector<uint8_t> { 9 } );
 }
 
-TEST_CASE( "loopback transport preserves message order", "[mp]" )
+TEST_CASE( "loopback_transport_preserves_message_order", "[mp]" )
 {
     mp_loopback_pair pair = mp_make_loopback_pair();
     pair.a->send( { 1 } );
@@ -36,7 +36,7 @@ TEST_CASE( "loopback transport preserves message order", "[mp]" )
     CHECK_FALSE( pair.b->recv( 0 ).has_value() );
 }
 
-TEST_CASE( "loopback transport reports a closed peer", "[mp]" )
+TEST_CASE( "loopback_transport_reports_a_closed_peer", "[mp]" )
 {
     mp_loopback_pair pair = mp_make_loopback_pair();
     REQUIRE( pair.a->connected() );
@@ -44,7 +44,7 @@ TEST_CASE( "loopback transport reports a closed peer", "[mp]" )
     CHECK_FALSE( pair.a->connected() );
 }
 
-TEST_CASE( "loopback transport honours simulated latency", "[mp]" )
+TEST_CASE( "loopback_transport_honours_simulated_latency", "[mp]" )
 {
     // 20 ms each way. A message sent now must not be readable immediately,
     // and must be readable when we are willing to wait long enough.
