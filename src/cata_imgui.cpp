@@ -18,6 +18,8 @@
 #include "point.h"
 #include "ui_manager.h"
 #include "input_context.h"
+#include "mp/mp_imgui_server.h"
+#include "mp/mp_server_screen.h"
 
 static ImGuiKey cata_key_to_imgui( int cata_key );
 
@@ -28,6 +30,7 @@ static ImGuiKey cata_key_to_imgui( int cata_key );
 #pragma GCC diagnostic pop
 #include <imtui/imtui-impl-ncurses.h>
 #include <imtui/imtui-impl-text.h>
+#include <imtui/imtui.h>
 
 #include "color_loader.h"
 
@@ -102,7 +105,18 @@ cataimgui::client::client()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 
+#if defined(MP_SERVER)
+    // The ncurses Init allocates the shared Imtui data (which owns the TScreen)
+    // and reads the terminal size from stdscr; the server has no stdscr, so
+    // allocate the Imtui data and size the display from the server grid.
+    if( ImGui::GetIO().BackendPlatformUserData == nullptr ) {
+        ImGui::GetIO().BackendPlatformUserData = new ImTui::ImplImtui_Data();
+    }
+    ImGui::GetIO().DisplaySize = ImVec2( mp_server_grid().width(),
+                                         mp_server_grid().height() );
+#else
     ImTui_ImplNcurses_Init();
+#endif
     ImTui_ImplText_Init();
     ImGuiIO &io = ImGui::GetIO();
 
@@ -116,7 +130,12 @@ cataimgui::client::client()
 
 cataimgui::client::~client()
 {
+#if defined(MP_SERVER)
+    // The server allocates no ncurses state; ImTui_ImplText_Shutdown below
+    // frees the Imtui data this client owns.
+#else
     ImTui_ImplNcurses_Shutdown();
+#endif
     ImTui_ImplText_Shutdown();
     // DestroyContext runs the internal Shutdown and frees the context;
     // calling ImGui::Shutdown alone leaks the context created in the
@@ -130,7 +149,15 @@ void cataimgui::client::new_frame( int display_buffer_w, int display_buffer_h )
     // pixel dims.
     ( void )display_buffer_w;
     ( void )display_buffer_h;
+#if defined(MP_SERVER)
+    // The ncurses backend refreshes DisplaySize from the terminal every frame;
+    // on the server the grid is the terminal, so mirror that so a client
+    // resize is picked up by the imgui layout.
+    ImGui::GetIO().DisplaySize = ImVec2( mp_server_grid().width(),
+                                         mp_server_grid().height() );
+#else
     ImTui_ImplNcurses_NewFrame( imtui_events );
+#endif
     imtui_events.clear();
     ImTui_ImplText_NewFrame();
 
@@ -154,7 +181,13 @@ void cataimgui::client::end_frame()
     ImGui::Render();
 
     ImTui_ImplText_RenderDrawData( ImGui::GetDrawData() );
+#if defined(MP_SERVER)
+    // The third blitter: put the TScreen the text backend just filled into the
+    // server screen grid instead of a curses terminal.
+    mp_imgui_draw_screen();
+#else
     ImTui_ImplNcurses_DrawScreen();
+#endif
     ImGuiIO &io = ImGui::GetIO();
     for( const int &code : cata_input_trail ) {
         io.AddKeyEvent( cata_key_to_imgui( code ), false );
@@ -164,13 +197,24 @@ void cataimgui::client::end_frame()
 
 void cataimgui::client::upload_color_pair( int p, int f, int b )
 {
+#if defined(MP_SERVER)
+    // The server allocates no ncurses palette: colours travel to the client as
+    // indices, so there is nothing to register here. The game-side init_pair
+    // below still runs so the imgui side computes the same colours.
+#else
     ImTui_ImplNcurses_UploadColorPair( p, static_cast<short>( f ), static_cast<short>( b ) );
+#endif
     cataimgui::init_pair( p, f, b );
 }
 
 void cataimgui::client::set_alloced_pair_count( short count )
 {
+#if defined(MP_SERVER)
+    // No ncurses palette on the server; see upload_color_pair().
+    ( void )count;
+#else
     ImTui_ImplNcurses_SetAllocedPairCount( count );
+#endif
 }
 
 #pragma GCC diagnostic push
@@ -867,7 +911,7 @@ void cataimgui::draw_colored_text( const std::string &original_text,
     if( chars_per_line == 0 ) {
         chars_per_line = SIZE_MAX;
     }
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
     size_t char_width = size_t( ImGui::CalcTextSize( " " ).x );
     chars_per_line /= char_width;
 #endif
@@ -992,7 +1036,7 @@ bool cataimgui::window::is_bounds_changed()
 
 size_t cataimgui::window::get_text_width( std::string_view text )
 {
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
     return ImGui::CalcTextSize( text.data(), text.data() + text.size() ).x;
 #else
     return utf8_width( text );
@@ -1001,7 +1045,7 @@ size_t cataimgui::window::get_text_width( std::string_view text )
 
 size_t cataimgui::window::get_text_height( const char *text )
 {
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
     return ImGui::CalcTextSize( "0" ).y * strlen( text );
 #else
     return utf8_width( text );
@@ -1010,7 +1054,7 @@ size_t cataimgui::window::get_text_height( const char *text )
 
 size_t cataimgui::window::str_width_to_pixels( size_t len )
 {
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
     return ImGui::CalcTextSize( "0" ).x * len;
 #else
     return len;
@@ -1019,7 +1063,7 @@ size_t cataimgui::window::str_width_to_pixels( size_t len )
 
 size_t cataimgui::window::str_height_to_pixels( size_t len )
 {
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
     return ImGui::CalcTextSize( "0" ).y * len;
 #else
     return len;
@@ -1028,7 +1072,14 @@ size_t cataimgui::window::str_height_to_pixels( size_t len )
 
 size_t cataimgui::get_string_width( const std::string_view str )
 {
+#if defined(MP_SERVER)
+    // The server lays out in character cells, so report the display-cell width
+    // like the other TUI paths; CalcTextSize in the 1px imtui font would give
+    // a byte count for multi-byte glyphs, which is wrong here.
+    return utf8_width( str );
+#else
     return str.size() * ImGui::CalcTextSize( " " ).x;
+#endif
 }
 
 size_t cataimgui::get_string_height( const std::string_view str, const float wrap_width )
@@ -1038,7 +1089,7 @@ size_t cataimgui::get_string_height( const std::string_view str, const float wra
     if( chars_per_line == 0 ) {
         chars_per_line = SIZE_MAX;
     }
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
     size_t char_width = size_t( ImGui::CalcTextSize( " " ).x );
     chars_per_line /= char_width;
 #endif
