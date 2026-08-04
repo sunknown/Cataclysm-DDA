@@ -21,7 +21,7 @@
 
 static ImGuiKey cata_key_to_imgui( int cata_key );
 
-#ifdef TUI
+#if defined(TUI) || defined(MP_SERVER)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #include <curses.h>

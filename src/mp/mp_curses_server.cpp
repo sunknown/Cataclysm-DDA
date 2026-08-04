@@ -1,0 +1,215 @@
+#if defined(MP_SERVER)
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "cata_utility.h"
+#include "coordinates.h"
+#include "cuboid_rectangle.h"
+#include "cursesdef.h"
+#include "cursesport.h"
+#include "cata_imgui.h"
+#include "game_constants.h"
+#include "game_ui.h"
+#include "input.h"
+#include "input_context.h"
+#include "map.h"
+#include "mp/mp_cell.h"
+#include "mp/mp_server_input.h"
+#include "mp/mp_server_screen.h"
+#include "output.h"
+#include "point.h"
+
+// The fourth curses backend. Instead of a terminal it drives the composite
+// screen of mp_server_screen; instead of a keyboard it reads the player's
+// transport through mp_server_input.
+
+namespace
+{
+int input_timeout_ms = -1;
+} // namespace
+
+// The imgui client the game drives (declared in ui_manager.h). The ncurses
+// backend defines it too; that file is excluded from the server build, so this
+// is the one the link resolves.
+std::unique_ptr<cataimgui::client> imclient;
+
+void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
+{
+    cata_cursesport::WINDOW *const win = win_.get<cata_cursesport::WINDOW>();
+    if( win == nullptr ) {
+        return;
+    }
+    std::vector<mp_cell> row;
+    for( int j = 0; j < win->height; ++j ) {
+        if( !win->line[j].touched ) {
+            continue;
+        }
+        win->line[j].touched = false;
+        row.clear();
+        row.reserve( win->width );
+        for( int i = 0; i < win->width; ++i ) {
+            const cata_cursesport::cursecell &cell = win->line[j].chars[i];
+            mp_cell out;
+            // An empty glyph is the second column of a double-width character;
+            // it is carried through as-is so the client renders it the same way.
+            out.ch = cell.ch;
+            out.fg = static_cast<uint8_t>( cell.FG );
+            out.bg = static_cast<uint8_t>( cell.BG );
+            row.push_back( out );
+        }
+        mp_server_blit_row( win->pos.x, win->pos.y + j, row );
+    }
+}
+
+void catacurses::init_interface()
+{
+    // The client told us its terminal size during the handshake, so the grid
+    // is already sized; the game's root window must match it exactly.
+    catacurses::stdscr = catacurses::newwin( mp_server_grid().height(), mp_server_grid().width(),
+                          point::zero );
+}
+
+void catacurses::endwin()
+{
+    // Nothing to tear down: the screen is a buffer, and the transport is owned
+    // by mp_server_main.
+}
+
+bool catacurses::supports_256_colors()
+{
+    // Colours travel as indices and the client maps them; the server never
+    // renders, so it never needs to know what a terminal can show.
+    return true;
+}
+
+input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
+{
+    int w = 0;
+    int h = 0;
+    if( mp_server_take_resize_request( w, h ) ) {
+        handle_resize( w, h );
+    }
+    return mp_server_wait_for_input( input_timeout_ms );
+}
+
+void input_manager::pump_events()
+{
+    mp_server_pump();
+}
+
+void input_manager::set_timeout( const int delay )
+{
+    // Mirrors the ncurses backend: a negative delay means "block".
+    input_timeout_ms = delay;
+    input_timeout = delay;
+}
+
+int get_terminal_width()
+{
+    return mp_server_grid().width();
+}
+
+int get_terminal_height()
+{
+    return mp_server_grid().height();
+}
+
+int projected_window_width()
+{
+    return mp_server_grid().width();
+}
+
+int projected_window_height()
+{
+    return mp_server_grid().height();
+}
+
+bool handle_resize( const int w, const int h )
+{
+    if( w < EVEN_MINIMUM_TERM_WIDTH || h < EVEN_MINIMUM_TERM_HEIGHT ) {
+        return false;
+    }
+    mp_server_set_terminal_size( w, h );
+    catacurses::stdscr = catacurses::newwin( h, w, point::zero );
+    game_ui::init_ui();
+    return true;
+}
+
+void resize_term( const int cell_w, const int cell_h )
+{
+    // ncurses resizes the real terminal; on the server the equivalent is to
+    // resize the grid, which is what the client's resize request would trigger.
+    handle_resize( cell_w, cell_h );
+}
+
+void refresh_display()
+{
+    // Deliberately empty: the screen goes out when the game blocks for input,
+    // not on every refresh. See mp_server_screen.h.
+}
+
+void drain_renderer_recovery()
+{
+    // There is no renderer to recover on a graphics-less server.
+}
+
+void refresh_mouse_config()
+{
+    // Mouse config lives on the client; the server never owns a mouse.
+}
+
+int get_scaling_factor()
+{
+    // The server has no font to scale; cells map one-to-one to the client.
+    return 1;
+}
+
+bool is_draw_tiles_mode()
+{
+    // The server never draws tiles; the client renders the cell grid.
+    return false;
+}
+
+bool gamepad_available()
+{
+    // Input devices belong to the client; the server never polls one.
+    return false;
+}
+
+void set_title( const std::string & )
+{
+    // The window title is the client terminal's business, not the server's.
+}
+
+// Mirrors the ncurses/TUI implementation in input_context.cpp: the mouse
+// position recorded by the input loop is turned into map coordinates the same
+// way, so clicks work for the connected client.
+std::optional<tripoint_bub_ms> input_context::get_coordinates( const catacurses::window
+        &capture_win, const point &offset, const bool center_cursor ) const
+{
+    if( !coordinate_input_received ) {
+        return std::nullopt;
+    }
+    const point view_size( getmaxx( capture_win ), getmaxy( capture_win ) );
+    const point win_min( getbegx( capture_win ), getbegy( capture_win ) );
+    const half_open_rectangle<point> win_bounds( win_min, win_min + view_size );
+    if( !win_bounds.contains( coordinate ) ) {
+        return std::nullopt;
+    }
+
+    point p = coordinate + offset;
+    // If no offset is specified, account for the window location
+    if( offset == point::zero ) {
+        p -= win_min;
+    }
+    // Some windows (notably the overmap) want 0,0 to be the center of the screen
+    if( center_cursor ) {
+        p -= view_size / 2;
+    }
+    return tripoint_bub_ms( p.x, p.y, get_map().get_abs_sub().z() );
+}
+
+#endif // MP_SERVER

@@ -2,7 +2,11 @@
 #ifndef CATA_SRC_CURSESPORT_H
 #define CATA_SRC_CURSESPORT_H
 
-#if defined(IMTUI) || !(defined(TILES) || defined(WIN32))
+// MP_SERVER wants the in-memory curses of cursesport.cpp -- windows that are
+// plain cell buffers -- rather than a terminal, so it must not take the TUI
+// path even though it defines IMTUI to render imgui through imtui's text
+// backend. See docs/superpowers/specs/2026-08-04-cdda-p2p-coop-design.md 5.1.
+#if !defined(MP_SERVER) && (defined(IMTUI) || !(defined(TILES) || defined(WIN32)))
 #   define TUI
 #endif
 

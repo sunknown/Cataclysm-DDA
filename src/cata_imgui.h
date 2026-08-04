@@ -13,11 +13,15 @@ class nc_color;
 struct input_event;
 using ImGuiInputTextFlags = int;
 
-#if defined(IMTUI) || !(defined(WIN32) || defined(TILES))
+// MP_SERVER wants the in-memory curses of cursesport.cpp and renders imgui
+// through imtui's text backend, so it must not take the TUI path even though
+// it defines IMTUI. Mirror cursesport.h; the cata_imgui.cpp imtui-vs-SDL fork
+// keys on MP_SERVER itself.
+#if !defined(MP_SERVER) && (defined(IMTUI) || !(defined(WIN32) || defined(TILES)))
 #   define TUI
 #endif
 
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
 #include "sdl_geometry.h"
 #include "sdl_wrappers.h"
 #include "color_loader.h"
@@ -71,7 +75,7 @@ constexpr int min_screen_res_y = 384;
 class client
 {
         std::vector<int> cata_input_trail;
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
         // Backend-active latches for the platform (SDL2/SDL3) and
         // renderer (SDLRenderer2/3) ImGui backends. Guard the wrappers
         // so partial teardown + retry is idempotent.
@@ -79,7 +83,7 @@ class client
         bool renderer_backend_active_ = false;
 #endif
     public:
-#ifdef TUI
+#if defined(TUI) || defined(MP_SERVER)
         client();
 #else
         client( const SDL_Renderer_Ptr &sdl_renderer, const SDL_Window_Ptr &sdl_window,
@@ -101,7 +105,7 @@ class client
         void abort_frame();
         void process_input( void *input, int display_buffer_w = 0, int display_buffer_h = 0 );
         void process_cata_input( const input_event &event );
-#ifdef TUI
+#if defined(TUI) || defined(MP_SERVER)
         void upload_color_pair( int p, int f, int b );
         void set_alloced_pair_count( short count );
 #else
@@ -134,7 +138,7 @@ class client
         static void clear_text_focus();
 };
 
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
 // Pick the ImGui DisplaySize for a frame: the explicit display-buffer dims when
 // both are positive, else the renderer's output dims. Keeps the terminal-buffer
 // sizing contract when the idle-null target leaves the output reading the window.
@@ -154,7 +158,7 @@ void set_scroll( scroll &s );
 void draw_colored_text( const std::string &original_text, const nc_color &color,
                         float wrap_width = 0.0F, bool *is_selected = nullptr,
                         bool *is_focused = nullptr, bool *is_hovered = nullptr );
-#ifndef TUI
+#if !defined(TUI) && !defined(MP_SERVER)
 bool clear_pending();
 #endif
 void draw_colored_text( const std::string &original_text, nc_color &color,
@@ -209,7 +213,7 @@ class window
         void hide_if_hidden() const;
 };
 
-#ifdef TUI
+#if defined(TUI) || defined(MP_SERVER)
 void init_pair( int p, int f, int b );
 void load_colors();
 #endif

@@ -156,6 +156,16 @@ ifeq ($(NATIVE), emscripten)
   TILES_TARGET_NAME = $(TARGET_NAME)-tiles.js
 endif
 
+ifeq ($(MP_SERVER), 1)
+  # The server links the in-memory curses of cursesport.cpp plus the backend in
+  # src/mp/mp_curses_server.cpp, and renders imgui through imtui's text backend.
+  # It implies MULTIPLAYER and never links SDL or ncurses. This block must stay
+  # above the TARGET assignment below, which bakes TARGET_NAME in.
+  MULTIPLAYER = 1
+  DEFINES += -DMP_SERVER -DIMTUI
+  TARGET_NAME = cataclysm-server
+endif
+
 TARGET = $(BUILD_PREFIX)$(TARGET_NAME)
 TILESTARGET = $(BUILD_PREFIX)$(TILES_TARGET_NAME)
 ifeq ($(TILES), 1)
@@ -1277,6 +1287,15 @@ $(PCH_P): $(PCH_H)
 
 $(BUILD_PREFIX)$(TARGET_NAME).a: $(OBJS)
 	$(AR) rcs $(AR_FLAGS) $(BUILD_PREFIX)$(TARGET_NAME).a $(filter-out $(ODIR)/main.o $(ODIR)/messages.o,$(OBJS))
+
+ifeq ($(MP_SERVER), 1)
+# The tests sub-make hardcodes $(BUILD_PREFIX)cataclysm.a (tests/Makefile);
+# renaming TARGET_NAME renames the archive too, so mirror it under the name
+# the tests link against. Kept out of the early MP_SERVER block so it does not
+# become the default goal.
+$(BUILD_PREFIX)cataclysm.a: $(BUILD_PREFIX)$(TARGET_NAME).a
+	cp -f $< $@
+endif
 
 .PHONY: version prefix
 version:
