@@ -20,6 +20,7 @@
 #include "map.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_server_input.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "output.h"
 #include "point.h"
@@ -135,6 +136,14 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
     int h = 0;
     if( mp_server_take_resize_request( w, h ) ) {
         handle_resize( w, h );
+    }
+    // When the only peer is gone there is nobody to wait for, and returning a
+    // timeout forever just makes the game spin in its input loops. End the
+    // session through the entry point instead; the game itself never sees the
+    // transport. This is the one place the backend learns about the wire, and
+    // it is deliberately the mp layer, not game logic.
+    if( !mp_server_peer_connected() ) {
+        mp_server_request_exit();
     }
     return mp_server_wait_for_input( input_timeout_ms );
 }

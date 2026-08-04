@@ -144,6 +144,11 @@ int start_logger( const char *app_name )
 
 #endif //__ANDROID__
 
+// The game's clean shutdown, installed as the SIGINT handler below and called
+// directly at the end of run_game. Declared here so the mp server's exit hook
+// (defined after the anonymous namespace) can use it too.
+void exit_handler( int s );
+
 namespace
 {
 
@@ -151,36 +156,6 @@ namespace
 // Used only if AttachConsole() works
 FILE *CONOUT;
 #endif
-void exit_handler( int s )
-{
-    const int old_timeout = inp_mngr.get_timeout();
-    inp_mngr.reset_timeout();
-    if( s != 2 || query_yn( _( "Really Quit?  All unsaved changes will be lost." ) ) ) {
-        // Before anything is torn down: g.reset() and the static destructors
-        // that run after exit() can still raise debugmsgs, and the interactive
-        // prompt is no longer safe to open once imclient is gone.
-        debug_set_shutting_down();
-        deinitDebug();
-
-        int exit_status = 0;
-        g.reset();
-
-        catacurses::endwin();
-
-#if defined(__ANDROID__)
-        // Avoid capturing SIGABRT on exit on Android in crash report
-        // Can be removed once the SIGABRT on exit problem is fixed
-        signal( SIGABRT, SIG_DFL );
-#endif
-
-        imclient.reset();
-        exit( exit_status );
-    }
-    inp_mngr.set_timeout( old_timeout );
-    ui_manager::redraw_invalidated();
-    catacurses::doupdate();
-}
-
 struct arg_handler {
     //! Handler function to be invoked when this argument is encountered. The handler will be
     //! called with the number of parameters after the flag was encountered, along with the array
@@ -728,6 +703,46 @@ static int run_game( cli_opts &cli )
 }
 
 }  // namespace
+
+void exit_handler( int s )
+{
+    const int old_timeout = inp_mngr.get_timeout();
+    inp_mngr.reset_timeout();
+    if( s != 2 || query_yn( _( "Really Quit?  All unsaved changes will be lost." ) ) ) {
+        // Before anything is torn down: g.reset() and the static destructors
+        // that run after exit() can still raise debugmsgs, and the interactive
+        // prompt is no longer safe to open once imclient is gone.
+        debug_set_shutting_down();
+        deinitDebug();
+
+        int exit_status = 0;
+        g.reset();
+
+        catacurses::endwin();
+
+#if defined(__ANDROID__)
+        // Avoid capturing SIGABRT on exit on Android in crash report
+        // Can be removed once the SIGABRT on exit problem is fixed
+        signal( SIGABRT, SIG_DFL );
+#endif
+
+        imclient.reset();
+        exit( exit_status );
+    }
+    inp_mngr.set_timeout( old_timeout );
+    ui_manager::redraw_invalidated();
+    catacurses::doupdate();
+}
+
+#if defined(MP_SERVER)
+void mp_server_request_exit()
+{
+    // The connected client is gone. Run the same clean shutdown the rest of
+    // the game uses; the mp backend calls this from the input path, so the
+    // game logic itself never learns about the transport.
+    exit_handler( 0 );
+}
+#endif
 
 #if defined(EMSCRIPTEN)
 EM_ASYNC_JS( void, mount_idbfs, (), {

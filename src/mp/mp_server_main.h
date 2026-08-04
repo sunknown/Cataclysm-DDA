@@ -16,4 +16,11 @@
 // after this returns successfully.
 int mp_server_main( int port, const std::string &world_name );
 
+// Ends the server session cleanly. Called by the mp curses backend when the
+// connected client is gone, so the game does not spin on timeout events from a
+// dead transport. Defined in main.cpp, which owns the game's exit path; this
+// declaration lets the mp layer (which must not know the game's internals)
+// ask the entry to tear the whole process down.
+void mp_server_request_exit();
+
 #endif // CATA_SRC_MP_MP_SERVER_MAIN_H

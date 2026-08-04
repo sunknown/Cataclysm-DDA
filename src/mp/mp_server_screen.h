@@ -21,6 +21,11 @@ mp_screen_grid &mp_server_grid();
 void mp_server_set_terminal_size( int width, int height );
 void mp_server_set_transport( std::shared_ptr<mp_transport> transport );
 
+// True while the connected client is still present. False when no transport
+// was ever attached or the peer closed it; the curses backend uses this to end
+// the session instead of feeding the game an endless stream of timeout events.
+bool mp_server_peer_connected();
+
 // Writes `cells` starting at (x0, y). Cells past the right edge are dropped,
 // matching curses clipping.
 void mp_server_blit_row( int x0, int y, const std::vector<mp_cell> &cells );

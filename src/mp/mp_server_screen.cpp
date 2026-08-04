@@ -46,6 +46,11 @@ void mp_server_set_transport( std::shared_ptr<mp_transport> transport )
     g_transport = std::move( transport );
 }
 
+bool mp_server_peer_connected()
+{
+    return g_transport && g_transport->connected();
+}
+
 void mp_server_blit_row( const int x0, const int y, const std::vector<mp_cell> &cells )
 {
     for( size_t i = 0; i < cells.size(); ++i ) {
