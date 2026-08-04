@@ -1,8 +1,10 @@
 #if defined(MP_SERVER)
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cata_utility.h"
@@ -36,6 +38,41 @@ int input_timeout_ms = -1;
 // is the one the link resolves.
 std::unique_ptr<cataimgui::client> imclient;
 
+namespace
+{
+// The in-memory curses stores the line-drawing glyphs as single bytes from a
+// private code page (output.h's LINE_*_C constants, 0xa0-0xaa). They are not
+// valid UTF-8, so a window border would make the screen codec reject the whole
+// frame on the client. Translate them to the box-drawing characters they stand
+// for before they reach the grid. Everything else (empty continuation cells,
+// ordinary text) passes through unchanged.
+std::string mp_translate_line_glyph( const std::string &ch )
+{
+    if( ch.size() != 1 ) {
+        return ch;
+    }
+    static constexpr std::array<std::string_view, 11> glyphs = { {
+            "\xE2\x94\x82", // U+2502 │ LINE_XOXO_C 0xa0
+            "\xE2\x94\x80", // U+2500 ─ LINE_OXOX_C 0xa1
+            "\xE2\x94\x94", // U+2514 └ LINE_XXOO_C 0xa2
+            "\xE2\x94\x8C", // U+250C ┌ LINE_OXXO_C 0xa3
+            "\xE2\x94\x90", // U+2510 ┐ LINE_OOXX_C 0xa4
+            "\xE2\x94\x98", // U+2518 ┘ LINE_XOOX_C 0xa5
+            "\xE2\x94\x9C", // U+251C ├ LINE_XXXO_C 0xa6
+            "\xE2\x94\xB4", // U+2534 ┴ LINE_XXOX_C 0xa7
+            "\xE2\x94\xA4", // U+2524 ┤ LINE_XOXX_C 0xa8
+            "\xE2\x94\xAC", // U+252C ┬ LINE_OXXX_C 0xa9
+            "\xE2\x94\xBC", // U+253C ┼ LINE_XXXX_C 0xaa
+        }
+    };
+    const unsigned char b = static_cast<unsigned char>( ch[0] );
+    if( b >= 0xa0 && b <= 0xaa ) {
+        return std::string( glyphs[b - 0xa0] );
+    }
+    return ch;
+}
+} // namespace
+
 void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
 {
     cata_cursesport::WINDOW *const win = win_.get<cata_cursesport::WINDOW>();
@@ -55,7 +92,7 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
             mp_cell out;
             // An empty glyph is the second column of a double-width character;
             // it is carried through as-is so the client renders it the same way.
-            out.ch = cell.ch;
+            out.ch = mp_translate_line_glyph( cell.ch );
             out.fg = static_cast<uint8_t>( cell.FG );
             out.bg = static_cast<uint8_t>( cell.BG );
             row.push_back( out );

@@ -66,6 +66,17 @@ void mp_imgui_draw_screen()
         row.clear();
         for( int x = 0; x < screen.nx && x < grid_width; ++x ) {
             const ImTui::TCell &cell = screen.data[y * screen.nx + x];
+            if( cell.ch == 0 ) {
+                // The text renderer writes only the cells an imgui window
+                // touched; everything else stays at zero from the per-frame
+                // clear. Carrying the current grid cell through leaves the
+                // curses content underneath intact, the same layering the TUI
+                // backend gets by drawing its imgui windows on top of the
+                // game's curses windows. Writing the identical value is also
+                // what keeps an untouched row from being marked dirty.
+                row.push_back( mp_server_grid().at( x, y ) );
+                continue;
+            }
             mp_cell out;
             out.ch = utf32_to_utf8( cell.ch );
             out.fg = cell.fg;
