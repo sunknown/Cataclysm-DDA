@@ -916,17 +916,14 @@ int main( int argc, const char *argv[] )
 #endif
 
 #if defined(MP_SERVER)
-    if( cli.server_port > 0 ) {
-        const int server_status = mp_server_main( cli.server_port, cli.world );
-        if( server_status != 0 ) {
-            return server_status;
-        }
-        return run_game( cli );
+    if( cli.server_port > 0 && mp_server_main( cli.server_port, cli.world ) != 0 ) {
+        return 1;
     }
 #endif
 
-    // in test mode don't initialize curses to avoid escape sequences being inserted into output stream
-    if( !test_mode ) {
+    // in test mode don't initialize curses to avoid escape sequences being inserted into output stream,
+    // except for a multiplayer server, whose curses backend is a buffer that needs setup either way
+    if( !test_mode || cli.server_port > 0 ) {
         try {
             // set minimum FULL_SCREEN sizes
             FULL_SCREEN_WIDTH = EVEN_MINIMUM_TERM_WIDTH;

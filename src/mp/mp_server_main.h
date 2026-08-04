@@ -5,8 +5,10 @@
 #include <string>
 
 // Binds a TCP listener on `port`, waits for one client, performs the
-// connection handshake, attaches the client's transport to the server modules,
-// and initializes the curses interface sized to the client's terminal.
+// connection handshake, and attaches the client's transport to the server
+// modules. The handshake sizes the screen grid to the client's terminal; the
+// caller (main()) then initializes the curses interface, which the mp curses
+// backend builds from that grid.
 //
 // Returns 0 when the server is ready for the game to start; a nonzero status
 // means the server could not start and the game must not run. The world the
