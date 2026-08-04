@@ -68,11 +68,19 @@ class loopback_transport : public mp_transport
         }
 
         void close() override {
-            {
-                std::lock_guard<std::mutex> lock( outgoing_->mutex );
-                outgoing_->closed = true;
-            }
-            std::lock_guard<std::mutex> lock( incoming_->mutex );
+            // Both channels are locked in a single canonical acquisition.
+            // Locking them one at a time would let two threads close the two
+            // ends of a pair concurrently and deadlock: a's outgoing channel
+            // is b's incoming (and vice versa), so a->close() and b->close()
+            // would acquire the two channels in opposite orders and could
+            // interleave. std::lock takes both without imposing any order, so
+            // concurrent closes can never block on each other. The unique_locks
+            // are deferred so std::lock acquires them, and their destructors
+            // release both channels again when this function returns.
+            std::unique_lock<std::mutex> lock_out( outgoing_->mutex, std::defer_lock );
+            std::unique_lock<std::mutex> lock_in( incoming_->mutex, std::defer_lock );
+            std::lock( lock_out, lock_in );
+            outgoing_->closed = true;
             incoming_->closed = true;
         }
 
