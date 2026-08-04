@@ -15,6 +15,15 @@ void mp_server_input_reset_for_test();
 namespace
 {
 
+// A client that stops draining its socket leaves screen updates piling up in
+// the transport's outbound buffer. Past this many undelivered bytes the
+// history is not worth replaying -- screen state is idempotent, so the server
+// drops the queued updates and sends one full redraw of the current screen
+// instead, letting the client converge instead of lagging behind forever.
+// Kept here rather than in the header because only this translation unit uses
+// it.
+constexpr size_t MP_SCREEN_BACKLOG_BYTES = 512u * 1024u;
+
 // Process-wide state: the game is single-threaded around these calls, and the
 // curses backend these modules serve is itself a set of free functions. The
 // default size is arbitrary -- the game resizes the grid when a client
@@ -75,6 +84,13 @@ void mp_server_flush_screen()
 {
     if( !g_transport ) {
         return;
+    }
+    if( g_transport->pending_bytes() > MP_SCREEN_BACKLOG_BYTES ) {
+        // The peer is not keeping up. Throw away the queued screen history
+        // and mark the whole grid dirty so the send below becomes a single
+        // full redraw; control messages survive the drop untouched.
+        g_transport->drop_pending_screen_messages();
+        g_grid.mark_all_dirty();
     }
     if( g_grid.any_dirty() ) {
         g_transport->send( mp_wrap( mp_msg_kind::screen, mp_screen_encode( g_grid ) ) );

@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "mp/mp_protocol.h"
+
 namespace
 {
 
@@ -104,6 +106,51 @@ std::optional<std::vector<uint8_t>> mp_tcp_transport::recv( const int timeout_ms
         // No complete frame yet: loop to wait for the rest of it.
     }
     return std::nullopt;
+}
+
+size_t mp_tcp_transport::pending_bytes() const
+{
+    return outbound_.size();
+}
+
+void mp_tcp_transport::drop_pending_screen_messages()
+{
+    // outbound_ is a stream of concatenated frames, each [4-byte big-endian
+    // length][body] with body[0] being the mp_msg_kind (see mp_frame_encode
+    // and mp_wrap). Walk it, keep every complete control frame, drop every
+    // complete screen frame, and leave any partial trailing frame alone --
+    // a frame is only dropped whole, so the framing is never corrupted.
+    std::vector<uint8_t> kept;
+    kept.reserve( outbound_.size() );
+    size_t pos = 0;
+    while( pos < outbound_.size() ) {
+        if( pos + 4 > outbound_.size() ) {
+            // Fewer than the four length bytes remain: too short to classify,
+            // and not a complete frame, so send it as-is.
+            kept.insert( kept.end(), outbound_.begin() + pos, outbound_.end() );
+            break;
+        }
+        const uint32_t len = ( static_cast<uint32_t>( outbound_[pos] ) << 24 ) |
+                             ( static_cast<uint32_t>( outbound_[pos + 1] ) << 16 ) |
+                             ( static_cast<uint32_t>( outbound_[pos + 2] ) << 8 ) |
+                             static_cast<uint32_t>( outbound_[pos + 3] );
+        const size_t frame_end = pos + 4 + len;
+        if( frame_end > outbound_.size() ) {
+            // The body is incomplete: this can only be the tail of the buffer
+            // (the front is always a frame boundary because send() appends
+            // whole frames and flush_outbound erases only fully-sent bytes),
+            // so keep the rest untouched rather than guess at its kind.
+            kept.insert( kept.end(), outbound_.begin() + pos, outbound_.end() );
+            break;
+        }
+        const bool is_screen = len > 0 &&
+                               outbound_[pos + 4] == static_cast<uint8_t>( mp_msg_kind::screen );
+        if( !is_screen ) {
+            kept.insert( kept.end(), outbound_.begin() + pos, outbound_.begin() + frame_end );
+        }
+        pos = frame_end;
+    }
+    outbound_ = std::move( kept );
 }
 
 bool mp_tcp_transport::connected() const

@@ -24,6 +24,23 @@ class mp_transport
         // blocks until a message arrives or the peer goes away.
         virtual std::optional<std::vector<uint8_t>> recv( int timeout_ms ) = 0;
 
+        // How many payload bytes are queued but not yet delivered to the peer.
+        // A slow peer makes this grow without bound; the server uses it to
+        // decide when the backlog needs collapsing (see
+        // drop_pending_screen_messages). The default of 0 lets a transport
+        // opt out of backpressure entirely.
+        virtual size_t pending_bytes() const {
+            return 0;
+        }
+
+        // Drops every queued message that carries a screen update, leaving
+        // control messages untouched. Screen state is idempotent, so a client
+        // that fell behind is better served by one full redraw than by
+        // replaying the whole stale history; dropping here is what lets the
+        // server send that redraw instead. The default does nothing because
+        // the abstract transport cannot know how a subclass buffers.
+        virtual void drop_pending_screen_messages() {}
+
         virtual bool connected() const = 0;
         virtual void close() = 0;
 };

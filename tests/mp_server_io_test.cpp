@@ -31,6 +31,33 @@ static void send_control( mp_transport &t, const mp_control &msg )
     t.send( mp_wrap( mp_msg_kind::control, std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
+// One row of 80 distinct printable ASCII glyphs. Every cell differs from its
+// neighbours, so the dirty-row codec cannot run-length-encode the row into a
+// few bytes -- each cell becomes its own run, which makes a full 80x24 redraw
+// land around 11 KB instead of a few hundred bytes. The backpressure tests
+// need that bulk so the undelivered backlog can cross MP_SCREEN_BACKLOG_BYTES
+// (512 KB) within a few dozen flushes.
+static std::vector<mp_cell> pattern_row( const int row, const int seed )
+{
+    std::vector<mp_cell> cells;
+    cells.reserve( 80 );
+    for( int x = 0; x < 80; ++x ) {
+        mp_cell cell;
+        cell.ch = std::string( 1, static_cast<char>( '!' + ( x + 3 * row + seed ) % 94 ) );
+        cells.push_back( cell );
+    }
+    return cells;
+}
+
+// Marks every row of the server's grid dirty with incompressible content, so
+// the next flush encodes and sends a full redraw.
+static void blit_full_screen( const int seed )
+{
+    for( int y = 0; y < 24; ++y ) {
+        mp_server_blit_row( 0, y, pattern_row( y, seed ) );
+    }
+}
+
 TEST_CASE( "server_blits_a_row_into_the_screen_grid", "[mp]" )
 {
     mp_server_reset_for_test();
@@ -324,5 +351,68 @@ TEST_CASE( "handshake_gives_up_when_the_client_says_nothing", "[mp]" )
     std::string reason;
     CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
     CHECK_FALSE( reason.empty() );
+}
+
+TEST_CASE( "a_backlogged_client_gets_one_full_redraw_instead_of_a_history", "[mp]" )
+{
+    // A loopback peer that never reads simulates a client that stopped
+    // draining its socket. Each iteration blits a full screen of
+    // incompressible glyphs and flushes once, so every flush queues an ~11 KB
+    // screen message. After a few dozen flushes the undelivered backlog
+    // crosses MP_SCREEN_BACKLOG_BYTES and the server must collapse the queued
+    // history into a single full redraw instead of replaying every stale
+    // frame -- which is why far fewer than 400 screen messages survive.
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 80, 24 );
+    mp_server_set_transport( pair.a );
+
+    for( int i = 0; i < 400; ++i ) {
+        blit_full_screen( i );
+        mp_server_flush_screen();
+    }
+
+    int screen_messages = 0;
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        screen_messages += kind == mp_msg_kind::screen ? 1 : 0;
+    }
+    CHECK( screen_messages < 400 );
+}
+
+TEST_CASE( "the_coalesced_redraw_still_describes_the_whole_screen", "[mp]" )
+{
+    // Dropping queued screen history is only safe because the screen is
+    // idempotent: the client can lose intermediate frames and still converge
+    // to the current state, as long as every dropped run is followed by a
+    // full redraw. Applying every screen message the client actually receives
+    // must therefore reproduce the server's final grid cell for cell.
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 80, 24 );
+    mp_server_set_transport( pair.a );
+
+    for( int i = 0; i < 400; ++i ) {
+        blit_full_screen( i );
+        mp_server_flush_screen();
+    }
+
+    mp_screen_grid client( 80, 24 );
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        if( kind == mp_msg_kind::screen ) {
+            REQUIRE( mp_screen_apply( client, body ) );
+        }
+    }
+
+    for( int y = 0; y < 24; ++y ) {
+        for( int x = 0; x < 80; ++x ) {
+            REQUIRE( client.at( x, y ) == mp_server_grid().at( x, y ) );
+        }
+    }
 }
 #endif // MULTIPLAYER

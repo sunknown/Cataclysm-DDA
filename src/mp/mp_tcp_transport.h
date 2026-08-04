@@ -25,6 +25,8 @@ class mp_tcp_transport : public mp_transport
 
         void send( std::vector<uint8_t> payload ) override;
         std::optional<std::vector<uint8_t>> recv( int timeout_ms ) override;
+        size_t pending_bytes() const override;
+        void drop_pending_screen_messages() override;
         bool connected() const override;
         void close() override;
 
