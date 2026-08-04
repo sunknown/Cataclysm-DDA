@@ -157,6 +157,16 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
     try {
         JsonValue value = json_loader::from_string( text );
         JsonObject obj = value.get_object();
+        // Unknown fields are ignored rather than reported. Without this, the
+        // JsonObject destructor calls report_unvisited() and fires a debugmsg
+        // for every member this function did not read (src/json.cpp), which a
+        // peer could trigger at will by adding one field -- on the server that
+        // is a debug error prompt raised by remote input, which the input
+        // module's contract (mp_server_input.cpp) forbids. It would also
+        // freeze the wire format: `proto` exists so a later version can add
+        // fields, and an older peer must skip what it does not recognise
+        // instead of complaining about it.
+        obj.allow_omitted_members();
         if( !obj.has_string( "t" ) ) {
             return false;
         }

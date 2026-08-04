@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "debug.h"
 #include "input_enums.h"
 #include "mp/mp_protocol.h"
 
@@ -132,5 +133,39 @@ TEST_CASE( "mp_control_from_json_rejects_malformed_input", "[mp]" )
     mp_control got;
     CHECK_FALSE( mp_control_from_json( "not json at all", got ) );
     CHECK_FALSE( mp_control_from_json( "{\"t\":\"nonsense\"}", got ) );
+}
+
+TEST_CASE( "mp_control_round_trips_a_bye_with_its_reason", "[mp]" )
+{
+    mp_control sent;
+    sent.kind = mp_control_kind::bye;
+    sent.bye_reason = "client quit";
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::bye );
+    CHECK( got.bye_reason == "client quit" );
+}
+
+TEST_CASE( "mp_control_from_json_ignores_a_field_it_does_not_know", "[mp]" )
+{
+    // A peer one version ahead may add fields this build has never heard of.
+    // Those must be skipped silently: JsonObject reports every member that
+    // went unread as a debugmsg when it is destroyed, so without
+    // allow_omitted_members() a peer could raise a debug error prompt on the
+    // server just by adding a field. Round-tripping our own writer can never
+    // catch this -- the writer and reader visit the same members by
+    // construction -- so the payload here is hand-built with an extra one.
+    mp_control got;
+    bool parsed = false;
+    const std::string dmsg = capture_debugmsg_during( [&got, &parsed]() {
+        parsed = mp_control_from_json(
+                     R"({"t":"bye","reason":"client quit","field_from_the_future":7})", got );
+    } );
+
+    CHECK( dmsg.empty() );
+    REQUIRE( parsed );
+    CHECK( got.kind == mp_control_kind::bye );
+    CHECK( got.bye_reason == "client quit" );
 }
 #endif // MULTIPLAYER
