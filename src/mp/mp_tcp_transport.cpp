@@ -37,8 +37,7 @@ void mp_tcp_transport::send( std::vector<uint8_t> payload )
         // transport's early return on a closed channel.
         return;
     }
-    std::vector<uint8_t> frame = mp_frame_encode( payload );
-    outbound_.insert( outbound_.end(), frame.begin(), frame.end() );
+    outbound_.emplace_back( mp_frame_encode( payload ) );
     flush_outbound();
 }
 
@@ -110,47 +109,37 @@ std::optional<std::vector<uint8_t>> mp_tcp_transport::recv( const int timeout_ms
 
 size_t mp_tcp_transport::pending_bytes() const
 {
-    return outbound_.size();
+    size_t total = 0;
+    for( const std::vector<uint8_t> &frame : outbound_ ) {
+        total += frame.size();
+    }
+    if( !outbound_.empty() ) {
+        // The front frame's already-sent prefix is no longer undelivered.
+        total -= std::min( outbound_head_sent_, outbound_.front().size() );
+    }
+    return total;
 }
 
 void mp_tcp_transport::drop_pending_screen_messages()
 {
-    // outbound_ is a stream of concatenated frames, each [4-byte big-endian
-    // length][body] with body[0] being the mp_msg_kind (see mp_frame_encode
-    // and mp_wrap). Walk it, keep every complete control frame, drop every
-    // complete screen frame, and leave any partial trailing frame alone --
-    // a frame is only dropped whole, so the framing is never corrupted.
-    std::vector<uint8_t> kept;
-    kept.reserve( outbound_.size() );
-    size_t pos = 0;
-    while( pos < outbound_.size() ) {
-        if( pos + 4 > outbound_.size() ) {
-            // Fewer than the four length bytes remain: too short to classify,
-            // and not a complete frame, so send it as-is.
-            kept.insert( kept.end(), outbound_.begin() + pos, outbound_.end() );
-            break;
+    // outbound_ holds whole frames, so dropping one cannot corrupt framing:
+    // the head frame may be partially sent -- its length header and the start
+    // of its body are already on the wire, so it must always survive, even a
+    // screen frame. Every frame after it is a whole frame: screen updates are
+    // dropped, control messages are kept, and the survivors stay whole.
+    size_t i = ( !outbound_.empty() && outbound_head_sent_ > 0 ) ? 1 : 0;
+    while( i < outbound_.size() ) {
+        const std::vector<uint8_t> &frame = outbound_[i];
+        // body[0] is the mp_msg_kind (see mp_wrap); a frame with no body
+        // cannot be a screen update.
+        const bool is_screen = frame.size() > 4 &&
+                               frame[4] == static_cast<uint8_t>( mp_msg_kind::screen );
+        if( is_screen ) {
+            outbound_.erase( outbound_.begin() + i );
+        } else {
+            ++i;
         }
-        const uint32_t len = ( static_cast<uint32_t>( outbound_[pos] ) << 24 ) |
-                             ( static_cast<uint32_t>( outbound_[pos + 1] ) << 16 ) |
-                             ( static_cast<uint32_t>( outbound_[pos + 2] ) << 8 ) |
-                             static_cast<uint32_t>( outbound_[pos + 3] );
-        const size_t frame_end = pos + 4 + len;
-        if( frame_end > outbound_.size() ) {
-            // The body is incomplete: this can only be the tail of the buffer
-            // (the front is always a frame boundary because send() appends
-            // whole frames and flush_outbound erases only fully-sent bytes),
-            // so keep the rest untouched rather than guess at its kind.
-            kept.insert( kept.end(), outbound_.begin() + pos, outbound_.end() );
-            break;
-        }
-        const bool is_screen = len > 0 &&
-                               outbound_[pos + 4] == static_cast<uint8_t>( mp_msg_kind::screen );
-        if( !is_screen ) {
-            kept.insert( kept.end(), outbound_.begin() + pos, outbound_.begin() + frame_end );
-        }
-        pos = frame_end;
     }
-    outbound_ = std::move( kept );
 }
 
 bool mp_tcp_transport::connected() const
@@ -167,6 +156,7 @@ void mp_tcp_transport::close()
     mp_socket_close( fd_ );
     fd_ = mp_socket_invalid;
     outbound_.clear();
+    outbound_head_sent_ = 0;
     // reader_ is left alone on purpose: connected() is already false, so no
     // caller can observe its buffered bytes again.
 }
@@ -174,10 +164,17 @@ void mp_tcp_transport::close()
 void mp_tcp_transport::flush_outbound()
 {
     while( connected_ && !outbound_.empty() ) {
-        const int n = mp_socket_send( fd_, outbound_.data(),
-                                      static_cast<int>( outbound_.size() ) );
+        const std::vector<uint8_t> &front = outbound_.front();
+        const size_t remaining = front.size() - outbound_head_sent_;
+        const int n = mp_socket_send( fd_, front.data() + outbound_head_sent_,
+                                      static_cast<int>( remaining ) );
         if( n > 0 ) {
-            outbound_.erase( outbound_.begin(), outbound_.begin() + n );
+            outbound_head_sent_ += static_cast<size_t>( n );
+            if( outbound_head_sent_ == front.size() ) {
+                // The front frame is fully written; move on to the next one.
+                outbound_.pop_front();
+                outbound_head_sent_ = 0;
+            }
             continue;
         }
         if( n < 0 ) {
@@ -200,6 +197,7 @@ void mp_tcp_transport::disconnect()
     mp_socket_close( fd_ );
     fd_ = mp_socket_invalid;
     outbound_.clear();
+    outbound_head_sent_ = 0;
 }
 
 std::optional<mp_listener> mp_listener::bind( const int port, std::string &err )
