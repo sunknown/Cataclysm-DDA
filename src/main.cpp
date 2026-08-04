@@ -45,6 +45,7 @@
 #include "filesystem.h"
 #include "game.h"
 #if defined(MULTIPLAYER)
+#include "mp/mp_client_main.h"
 #include "mp/mp_hotseat_loop.h"
 #include "mp/mp_mode.h"
 #endif
@@ -918,6 +919,12 @@ int main( int argc, const char *argv[] )
 #if defined(MP_SERVER)
     if( cli.server_port > 0 && mp_server_main( cli.server_port, cli.world ) != 0 ) {
         return 1;
+    }
+#endif
+
+#if defined(MULTIPLAYER)
+    if( !cli.connect_to.empty() ) {
+        return mp_client_main( cli.connect_to );
     }
 #endif
 
