@@ -43,6 +43,13 @@ bool mp_socket_set_nonblocking( mp_socket_t fd );
 // rather than being held back to coalesce. Returns false on failure.
 bool mp_socket_set_nodelay( mp_socket_t fd );
 
+// Ensures sends on `fd` never raise SIGPIPE. On Linux this is already handled
+// per send by the MSG_NOSIGNAL flag in mp_socket_send and there is nothing to
+// set up; on the BSDs (macOS) it sets SO_NOSIGPIPE on the socket once; Windows
+// never raises SIGPIPE at all. Returns false on failure where the platform
+// needs a setsockopt call.
+bool mp_socket_set_nosigpipe( mp_socket_t fd );
+
 // Binds the socket to all local interfaces on `port`; port 0 asks the OS for a
 // free one. Returns false with `err` set on failure.
 bool mp_socket_bind( mp_socket_t fd, int port, std::string &err );

@@ -232,7 +232,12 @@ std::shared_ptr<mp_transport> mp_listener::accept( const int timeout_ms )
     if( accepted == mp_socket_invalid ) {
         return nullptr;
     }
-    if( !mp_socket_set_nonblocking( accepted ) || !mp_socket_set_nodelay( accepted ) ) {
+    // Everything is set on the accepted socket explicitly rather than trusted
+    // to be inherited from the listening socket: non-blocking, no Nagle, and
+    // SIGPIPE suppression (the latter is a per-send flag on Linux, but on macOS
+    // it is SO_NOSIGPIPE and the brief mandates it on both ends).
+    if( !mp_socket_set_nonblocking( accepted ) || !mp_socket_set_nodelay( accepted )
+        || !mp_socket_set_nosigpipe( accepted ) ) {
         mp_socket_close( accepted );
         return nullptr;
     }

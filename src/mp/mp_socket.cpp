@@ -42,23 +42,21 @@ bool mp_socket_would_block()
 #endif
 }
 
-// Suppresses SIGPIPE for sends on `fd`. Linux does it per send with
-// MSG_NOSIGNAL (see mp_socket_send); the BSDs disable the signal once at setup
-// with SO_NOSIGPIPE; Windows never raises SIGPIPE at all.
-void mp_socket_suppress_sigpipe( const mp_socket_t fd )
+} // namespace
+
+bool mp_socket_set_nosigpipe( const mp_socket_t fd )
 {
 #if defined(__APPLE__) || defined(__MACH__)
     const int one = 1;
-    ::setsockopt( fd, SOL_SOCKET, SO_NOSIGPIPE,
-                  reinterpret_cast<const char *>( &one ), sizeof( one ) );
+    return ::setsockopt( fd, SOL_SOCKET, SO_NOSIGPIPE,
+                         reinterpret_cast<const char *>( &one ), sizeof( one ) ) == 0;
 #else
     // Linux suppresses SIGPIPE per send via MSG_NOSIGNAL (mp_socket_send);
     // Windows never raises SIGPIPE at all. Nothing to set up here.
     ( void )fd;
+    return true;
 #endif
 }
-
-} // namespace
 
 void mp_socket_startup()
 {
@@ -82,7 +80,7 @@ mp_socket_t mp_socket_create_tcp()
     const mp_socket_t fd = ::socket( AF_INET, SOCK_STREAM, 0 );
 #endif
     if( fd != mp_socket_invalid ) {
-        mp_socket_suppress_sigpipe( fd );
+        mp_socket_set_nosigpipe( fd );
     }
     return fd;
 }
