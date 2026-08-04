@@ -36,6 +36,11 @@ BSD-сокеты с шимом под Winsock, Catch2 (`tests/cata_test`).
 - **Стиль:** отступы и форматирование — `make astyle`. Комментарии по-английски, как во всём
   `src/`. Русский — только в документах плана и спека.
 - **Коммиты:** после каждой задачи, с префиксами `feat(mp):`, `test(mp):`, `build:`, `docs:`.
+- **Заглушки запрещены.** Каждая написанная функция получает окончательное поведение сразу.
+  Пустое тело допустимо только там, где окончательное поведение и есть «ничего не делать»,
+  и тогда в комментарии сказано почему.
+- **Имена, разрешённые при планировании,** собраны в таблице в конце документа. Брать оттуда,
+  а не искать заново.
 
 ---
 
@@ -53,17 +58,21 @@ BSD-сокеты с шимом под Winsock, Catch2 (`tests/cata_test`).
 | `src/mp/mp_loopback_transport.h`, `.cpp` | Транспорт в памяти для тестов, с инжекцией задержки |
 | `src/mp/mp_socket.h`, `.cpp` | Платформенный шим над сокетами |
 | `src/mp/mp_tcp_transport.h`, `.cpp` | TCP-транспорт |
-| `src/mp/mp_server_screen.h`, `.cpp` | Композитный буфер сервера и его связь с `cata_cursesport::WINDOW` |
+| `src/mp/mp_server_screen.h`, `.cpp` | Композитный буфер сервера, блит строк, сброс дельт |
+| `src/mp/mp_server_input.h`, `.cpp` | Очередь нажатий, ожидание ввода, запрос размера, хендшейк |
 | `src/mp/mp_curses_server.cpp` | Серверный бэкенд curses (только при `MP_SERVER`) |
-| `src/mp/mp_imgui_server.cpp` | Выкладка `ImTui::TScreen` в буфер сервера (только при `MP_SERVER`) |
+| `src/mp/mp_imgui_server.h`, `.cpp` | Выкладка `ImTui::TScreen` в буфер сервера (только при `MP_SERVER`) |
 | `src/mp/mp_server_main.h`, `.cpp` | Точка входа сервера |
-| `src/mp/mp_client_main.h`, `.cpp` | Точка входа клиента |
+| `src/mp/mp_client_screen.h`, `.cpp` | Логика клиента: разбор сообщений, кэш цветовых пар, кодирование ввода |
+| `src/mp/mp_client_main.h`, `.cpp` | Точка входа клиента и цикл отрисовки |
 | `tests/mp_frame_test.cpp` | Кадрирование |
 | `tests/mp_screen_codec_test.cpp` | Кодек экрана |
 | `tests/mp_protocol_test.cpp` | Управляющие сообщения и `input_event` |
 | `tests/mp_loopback_transport_test.cpp` | Транспорт в памяти |
 | `tests/mp_tcp_transport_test.cpp` | TCP на 127.0.0.1 |
-| `tests/mp_server_session_test.cpp` | Сессия целиком (только при `MP_SERVER`) |
+| `tests/mp_server_io_test.cpp` | Экран, ввод, хендшейк, обратное давление |
+| `tests/mp_server_backend_test.cpp` | Бэкенд curses и imgui (только при `MP_SERVER`) |
+| `tests/mp_client_test.cpp` | Логика клиента |
 | `doc/MULTIPLAYER.md` | Как поднять сервер и подключиться |
 
 **Изменяются:**
@@ -74,12 +83,18 @@ BSD-сокеты с шимом под Winsock, Catch2 (`tests/cata_test`).
 | `src/ncurses_def.cpp:1` | Guard, чтобы ncurses-бэкенд не компилировался в серверной цели |
 | `src/cata_imgui.cpp:105,119,133,156-157,167,173` | Выбор бэкенда imgui для `MP_SERVER` |
 | `src/main.cpp:301` (`first_pass_arguments`), `:636` (`main`) | Аргументы `--server`, `--connect` и развилка |
-| `Makefile:1105` и цели сборки | Флаг `MP_SERVER`, цель `cataclysm-server`, imtui-исходники |
+| `Makefile` рядом со строкой 153 | Флаг `MP_SERVER`, цель `cataclysm-server`, imtui-исходники |
 
-**Почему именно так.** Разделение на `mp_frame` / `mp_screen_codec` / `mp_protocol` /
-`mp_transport` сделано ради тестируемости: первые три — чистые функции над байтами, они
-проверяются в обычной сборке тестов, без сервера, без сокетов и без игры. Всё, что требует
-серверного бэкенда, собрано в двух файлах, компилируемых только в серверной цели.
+**Почему именно так.** Всё, что можно написать без curses, написано без curses: кадрирование,
+кодек экрана, протокол, транспорты, композитный буфер сервера, очередь ввода и логика
+клиента — чистая логика, проверяемая в обычной сборке тестов, без серверной цели, без
+сокетов и без игры. Curses видит ровно один файл, `mp_curses_server.cpp`: он вынимает строки
+ячеек из `cata_cursesport::WINDOW` и отдаёт их модулю экрана. Благодаря этому доля кода,
+которую можно проверить только вручную, сведена к циклу отрисовки клиента.
+
+**Заглушек в плане нет.** Каждый символ серверного бэкенда появляется сразу с окончательным
+поведением; там, где на сервере без графики делать нечего, функция пуста и в комментарии
+сказано почему. Обоснование — в разделе самопроверки в конце документа.
 
 ---
 
@@ -1596,37 +1611,482 @@ git commit -m "feat(mp): add transport interface and in-memory loopback"
 
 ---
 
-### Task 5: Цель сборки сервера и пустой бэкенд
+### Task 5: Модули экрана и ввода сервера
+
+**Files:**
+- Create: `src/mp/mp_server_screen.h`, `src/mp/mp_server_screen.cpp`,
+  `src/mp/mp_server_input.h`, `src/mp/mp_server_input.cpp`
+- Test: `tests/mp_server_io_test.cpp`
+
+**Interfaces:**
+- Consumes: `mp_screen_grid`, `mp_screen_encode` (Task 2); `mp_control`, `mp_wrap`,
+  `mp_unwrap`, `mp_control_to_json`, `mp_control_from_json` (Task 3); `mp_transport` (Task 4).
+- Produces:
+  - `mp_screen_grid &mp_server_grid()`
+  - `void mp_server_set_terminal_size( int width, int height )`
+  - `void mp_server_set_transport( std::shared_ptr<mp_transport> transport )`
+  - `void mp_server_blit_row( int x0, int y, const std::vector<mp_cell> &cells )`
+  - `void mp_server_flush_screen()`
+  - `void mp_server_set_cursor( int x, int y, bool visible )`
+  - `input_event mp_server_wait_for_input( int timeout_ms )`
+  - `void mp_server_pump()`
+  - `bool mp_server_take_resize_request( int &width, int &height )`
+  - `void mp_server_reset_for_test()`
+
+**Почему эти модули не знают про curses.** Блит принимает готовую строку ячеек, а не
+`cata_cursesport::WINDOW`. Вынимает ячейки из окна серверный бэкенд (Task 6) — единственный
+файл, который вообще видит curses. Благодаря этому вся логика экрана и ввода тестируется в
+обычной сборке, без серверной цели, без сокетов и без игры.
+
+**Правило сброса.** Экран уходит клиенту ровно в одном месте: в начале
+`mp_server_wait_for_input`, перед тем как заблокироваться. Это и есть дедупликация десятка
+перерисовок одного действия в одну посылку.
+
+- [ ] **Step 1: Написать падающий тест**
+
+Создать `tests/mp_server_io_test.cpp`:
+
+```cpp
+#include "cata_catch.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "input_enums.h"
+#include "mp/mp_cell.h"
+#include "mp/mp_loopback_transport.h"
+#include "mp/mp_protocol.h"
+#include "mp/mp_screen_codec.h"
+#include "mp/mp_server_input.h"
+#include "mp/mp_server_screen.h"
+
+static std::vector<mp_cell> text_row( const std::string &s )
+{
+    std::vector<mp_cell> row;
+    for( const char c : s ) {
+        mp_cell cell;
+        cell.ch = std::string( 1, c );
+        row.push_back( cell );
+    }
+    return row;
+}
+
+static void send_control( mp_transport &t, const mp_control &msg )
+{
+    const std::string json = mp_control_to_json( msg );
+    t.send( mp_wrap( mp_msg_kind::control, std::vector<uint8_t>( json.begin(), json.end() ) ) );
+}
+
+TEST_CASE( "server blits a row into the screen grid", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_server_set_terminal_size( 40, 10 );
+
+    mp_server_blit_row( 2, 1, text_row( "hello" ) );
+
+    CHECK( mp_server_grid().at( 2, 1 ).ch == "h" );
+    CHECK( mp_server_grid().at( 6, 1 ).ch == "o" );
+    CHECK( mp_server_grid().at( 7, 1 ).ch == " " );
+}
+
+TEST_CASE( "server sends nothing when nothing changed", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_server_flush_screen();
+    REQUIRE( pair.b->recv( 0 ).has_value() );
+
+    mp_server_flush_screen();
+    CHECK_FALSE( pair.b->recv( 0 ).has_value() );
+}
+
+TEST_CASE( "server sends a delta far smaller than a full screen", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 80, 24 );
+    mp_server_set_transport( pair.a );
+
+    mp_server_flush_screen();
+    const std::optional<std::vector<uint8_t>> full = pair.b->recv( 0 );
+    REQUIRE( full.has_value() );
+
+    mp_server_blit_row( 0, 0, text_row( "abcde" ) );
+    mp_server_flush_screen();
+    const std::optional<std::vector<uint8_t>> delta = pair.b->recv( 0 );
+    REQUIRE( delta.has_value() );
+    CHECK( delta->size() < full->size() / 4 );
+}
+
+TEST_CASE( "a client can reconstruct the server screen from the wire", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_server_blit_row( 5, 3, text_row( "reconstruct me" ) );
+    mp_server_flush_screen();
+
+    mp_screen_grid client( 40, 10 );
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        if( kind == mp_msg_kind::screen ) {
+            REQUIRE( mp_screen_apply( client, body ) );
+        }
+    }
+
+    for( int y = 0; y < 10; ++y ) {
+        for( int x = 0; x < 40; ++x ) {
+            REQUIRE( client.at( x, y ) == mp_server_grid().at( x, y ) );
+        }
+    }
+}
+
+TEST_CASE( "server returns a queued keystroke", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event.type = input_event_t::keyboard_char;
+    key.event.sequence = { 'y' };
+    send_control( *pair.b, key );
+
+    const input_event got = mp_server_wait_for_input( 1000 );
+    CHECK( got.type == input_event_t::keyboard_char );
+    CHECK( got.sequence == std::vector<int> { 'y' } );
+}
+
+TEST_CASE( "server flushes the screen before blocking for input", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+    mp_server_flush_screen();
+    while( pair.b->recv( 0 ) ) {
+    }
+
+    mp_server_blit_row( 0, 0, text_row( "ready" ) );
+
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event.type = input_event_t::keyboard_char;
+    key.event.sequence = { 'y' };
+    send_control( *pair.b, key );
+
+    mp_server_wait_for_input( 1000 );
+
+    bool saw_screen = false;
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        saw_screen = saw_screen || kind == mp_msg_kind::screen;
+    }
+    CHECK( saw_screen );
+}
+
+TEST_CASE( "server returns a timeout event when no input arrives", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    const input_event got = mp_server_wait_for_input( 10 );
+    CHECK( got.type == input_event_t::timeout );
+}
+
+TEST_CASE( "server records a resize request without touching the grid itself", "[mp]" )
+{
+    // The grid is rebuilt by the curses backend, which must also rebuild the
+    // game's windows; the module only records what the client asked for.
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_control resize;
+    resize.kind = mp_control_kind::resize;
+    resize.resize.width = 60;
+    resize.resize.height = 20;
+    send_control( *pair.b, resize );
+
+    mp_server_pump();
+
+    int w = 0;
+    int h = 0;
+    REQUIRE( mp_server_take_resize_request( w, h ) );
+    CHECK( w == 60 );
+    CHECK( h == 20 );
+    CHECK( mp_server_grid().width() == 40 );
+    CHECK_FALSE( mp_server_take_resize_request( w, h ) );
+}
+
+TEST_CASE( "server sends the cursor position with the screen", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_server_set_cursor( 4, 5, true );
+    mp_server_flush_screen();
+
+    bool saw_cursor = false;
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        if( kind != mp_msg_kind::control ) {
+            continue;
+        }
+        mp_control got;
+        REQUIRE( mp_control_from_json( std::string( body.begin(), body.end() ), got ) );
+        if( got.kind == mp_control_kind::cursor ) {
+            saw_cursor = true;
+            CHECK( got.cursor.x == 4 );
+            CHECK( got.cursor.y == 5 );
+            CHECK( got.cursor.visible );
+        }
+    }
+    CHECK( saw_cursor );
+}
+
+TEST_CASE( "server survives a dropped transport", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+    pair.b->close();
+
+    mp_server_blit_row( 0, 0, text_row( "gone" ) );
+    mp_server_flush_screen();
+    const input_event got = mp_server_wait_for_input( 10 );
+    CHECK( got.type == input_event_t::timeout );
+}
+```
+
+- [ ] **Step 2: Прогнать тест и убедиться, что он падает**
+
+```bash
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
+```
+
+Ожидается: `mp/mp_server_screen.h: No such file or directory`.
+
+- [ ] **Step 3: Написать `mp_server_screen.h`**
+
+```cpp
+#pragma once
+#ifndef CATA_SRC_MP_MP_SERVER_SCREEN_H
+#define CATA_SRC_MP_MP_SERVER_SCREEN_H
+
+#include <memory>
+#include <vector>
+
+#include "mp/mp_cell.h"
+
+class mp_transport;
+
+// The server's composite screen for the connected player.
+//
+// Every curses window the game draws is blitted here instead of to a terminal.
+// This module deliberately knows nothing about curses: it takes rows of cells,
+// so the whole screen path is testable without the server build. Extracting
+// rows from a cata_cursesport::WINDOW is the curses backend's job.
+
+mp_screen_grid &mp_server_grid();
+
+void mp_server_set_terminal_size( int width, int height );
+void mp_server_set_transport( std::shared_ptr<mp_transport> transport );
+
+// Writes `cells` starting at (x0, y). Cells past the right edge are dropped,
+// matching curses clipping.
+void mp_server_blit_row( int x0, int y, const std::vector<mp_cell> &cells );
+
+// Records where the client should draw its cursor; sent with the next flush.
+void mp_server_set_cursor( int x, int y, bool visible );
+
+// Encodes and sends the dirty rows and the cursor, then clears the dirty
+// flags. Does nothing when nothing changed or no transport is attached.
+void mp_server_flush_screen();
+
+// Drops all state. Tests only -- these modules hold process-wide state because
+// the curses backend they serve is itself a set of free functions.
+void mp_server_reset_for_test();
+
+#endif // CATA_SRC_MP_MP_SERVER_SCREEN_H
+```
+
+- [ ] **Step 4: Написать `mp_server_screen.cpp`**
+
+Состояние модуля: сетка, транспорт, позиция и видимость курсора, флаг «курсор менялся».
+`mp_server_flush_screen` отправляет экранное сообщение, если есть грязные строки, и
+управляющее сообщение курсора, если курсор менялся.
+
+- [ ] **Step 5: Написать `mp_server_input.h`**
+
+```cpp
+#pragma once
+#ifndef CATA_SRC_MP_MP_SERVER_INPUT_H
+#define CATA_SRC_MP_MP_SERVER_INPUT_H
+
+#include "input_enums.h"
+
+// Blocks until the connected player presses something, the timeout expires, or
+// the connection drops. Flushes the pending screen first: this is the single
+// point at which the player sees what the game drew.
+//
+// `timeout_ms` of a negative value blocks until input arrives or the transport
+// goes away. Returns an event of type `timeout` when nothing arrived.
+input_event mp_server_wait_for_input( int timeout_ms );
+
+// Consumes whatever has already arrived without blocking. Keystrokes seen here
+// are buffered for the next mp_server_wait_for_input().
+void mp_server_pump();
+
+// Reports a resize the client asked for, once. The curses backend acts on it:
+// it resizes the grid and rebuilds the game's windows.
+bool mp_server_take_resize_request( int &width, int &height );
+
+#endif // CATA_SRC_MP_MP_SERVER_INPUT_H
+```
+
+- [ ] **Step 6: Написать `mp_server_input.cpp`**
+
+Состояние: очередь `std::deque<input_event>`, отложенный запрос размера. Общая функция
+разбора одного входящего сообщения: `input` — в очередь, `resize` — в запрос, `bye` —
+закрыть транспорт. `mp_server_wait_for_input` вызывает `mp_server_flush_screen()`, затем
+отдаёт буферизованное, затем ждёт на `transport->recv` до истечения таймаута.
+`mp_server_reset_for_test()` из `mp_server_screen.cpp` должна чистить и это состояние —
+объявить в нём `void mp_server_input_reset_for_test()` и вызвать.
+
+- [ ] **Step 7: Прогнать тесты**
+
+```bash
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
+mkdir -p /tmp/cata-mp-test
+tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
+```
+
+Ожидается: десять новых тест-кейсов проходят.
+
+- [ ] **Step 8: Коммит**
+
+```bash
+git add src/mp/mp_server_screen.h src/mp/mp_server_screen.cpp \
+        src/mp/mp_server_input.h src/mp/mp_server_input.cpp tests/mp_server_io_test.cpp
+git commit -m "feat(mp): add the server screen and input modules"
+```
+
+---
+
+### Task 6: Цель сборки сервера и бэкенд curses
 
 **Files:**
 - Create: `src/mp/mp_curses_server.cpp`
-- Modify: `src/cursesport.h:5-7`, `src/ncurses_def.cpp:1`, `Makefile:1105`
-- Test: сборка (см. шаги)
+- Modify: `src/cursesport.h:5-7`, `src/ncurses_def.cpp:1`, `Makefile` (рядом со строкой 153)
+- Test: `tests/mp_server_backend_test.cpp` (только при `MP_SERVER`)
 
 **Interfaces:**
-- Consumes: ничего.
-- Produces: собирающаяся цель `cataclysm-server`; все бэкендные символы определены заглушками.
+- Consumes: всё из Task 5.
+- Produces: собирающаяся цель `cataclysm-server`; бэкенд, у которого каждый символ имеет
+  окончательное поведение.
 
-**Зачем отдельная задача.** Сборочный каркас — единственная часть, которую нельзя проверить
-юнит-тестом, и единственная, которая трогает чужие файлы. Она изолирована, чтобы ревьюер мог
-принять или отклонить её отдельно от логики.
+**Разрешённые значения, найденные при планировании** (не искать заново):
+- Имя цели задаётся `TARGET_NAME` в `Makefile:153`, а `TARGET = $(BUILD_PREFIX)$(TARGET_NAME)`
+  выводится в `Makefile:159`. Значит **блок `MP_SERVER` должен стоять до строки 159**, а не
+  рядом с блоком `MULTIPLAYER` на 1105. Источники `src/mp/*.cpp` при этом добавляются
+  существующим блоком `MULTIPLAYER`, который `MP_SERVER` включает.
+- Минимальный размер терминала: `EVEN_MINIMUM_TERM_WIDTH = 80`,
+  `EVEN_MINIMUM_TERM_HEIGHT = 24` (`src/game_constants.h:11-12`).
 
-- [ ] **Step 1: Найти все символы, которые обязан определить бэкенд**
+- [ ] **Step 1: Снять полный список символов бэкенда**
 
 ```bash
 grep -n "^[a-zA-Z_].*(" src/wincurse.cpp | grep -v "^\s" | grep -v "static" | head -40
 ```
 
-Список (проверить, что он совпадает; расхождение — повод остановиться):
-`catacurses::init_interface`, `catacurses::endwin`, `catacurses::supports_256_colors`,
-`cata_cursesport::curses_drawwindow`, `input_manager::pump_events`,
-`input_manager::get_input_event`, `input_manager::set_timeout`,
+Ожидаемый список: `catacurses::init_interface`, `catacurses::endwin`,
+`catacurses::supports_256_colors`, `cata_cursesport::curses_drawwindow`,
+`input_manager::pump_events`, `input_manager::get_input_event`, `input_manager::set_timeout`,
 `input_context::get_coordinates`, `gamepad_available`, `handle_resize`, `resize_term`,
 `projected_window_width`, `projected_window_height`, `get_terminal_width`,
 `get_terminal_height`, `refresh_display`, `drain_renderer_recovery`, `refresh_mouse_config`,
-`set_title`, `get_scaling_factor`.
+`set_title`, `get_scaling_factor`. Расхождение со списком — повод остановиться и сообщить.
 
-- [ ] **Step 2: Открыть путь к буферной реализации curses**
+- [ ] **Step 2: Написать падающий тест**
+
+Создать `tests/mp_server_backend_test.cpp`:
+
+```cpp
+#if defined(MP_SERVER)
+
+#include "cata_catch.h"
+
+#include <string>
+
+#include "cursesdef.h"
+#include "mp/mp_cell.h"
+#include "mp/mp_server_screen.h"
+#include "output.h"
+#include "point.h"
+
+TEST_CASE( "drawing a curses window reaches the server grid", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_server_set_terminal_size( 40, 10 );
+
+    catacurses::window win = catacurses::newwin( 3, 12, point( 2, 1 ) );
+    catacurses::mvwprintw( win, point( 0, 0 ), "hello" );
+    catacurses::wrefresh( win );
+
+    CHECK( mp_server_grid().at( 2, 1 ).ch == "h" );
+    CHECK( mp_server_grid().at( 6, 1 ).ch == "o" );
+}
+
+TEST_CASE( "a window redraw with no change dirties nothing", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_server_set_terminal_size( 40, 10 );
+
+    catacurses::window win = catacurses::newwin( 1, 12, point( 0, 0 ) );
+    catacurses::mvwprintw( win, point( 0, 0 ), "steady" );
+    catacurses::wrefresh( win );
+    mp_server_grid().clear_dirty();
+
+    catacurses::mvwprintw( win, point( 0, 0 ), "steady" );
+    catacurses::wrefresh( win );
+
+    CHECK_FALSE( mp_server_grid().any_dirty() );
+}
+
+TEST_CASE( "terminal size comes from the grid", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_server_set_terminal_size( 96, 30 );
+
+    CHECK( get_terminal_width() == 96 );
+    CHECK( get_terminal_height() == 30 );
+}
+
+#endif // MP_SERVER
+```
+
+- [ ] **Step 3: Открыть путь к буферной реализации curses**
 
 `src/cursesport.h:5-7` сейчас:
 
@@ -1648,393 +2108,137 @@ grep -n "^[a-zA-Z_].*(" src/wincurse.cpp | grep -v "^\s" | grep -v "static" | he
 #endif
 ```
 
-`src/ncurses_def.cpp:1` сейчас `#if !(defined(TILES))`. Заменить на
+`src/ncurses_def.cpp:1` — заменить `#if !(defined(TILES))` на
 `#if !(defined(TILES) || defined(MP_SERVER))`.
 
-- [ ] **Step 3: Проверить, что `TUI` больше нигде не значит чего-то другого**
+- [ ] **Step 4: Проверить, что `TUI` больше нигде не значит другого**
 
 ```bash
 grep -rn "defined(TUI)\|ifdef TUI\|ifndef TUI" src/ | grep -v third-party
 ```
 
-Ожидается: вхождения только в `cursesport.h`, `cursesport.cpp`, `wincurse.cpp`. Если есть
-другие — прочитать каждое и убедиться, что новая ветка их не ломает.
+Ожидается: только `cursesport.h`, `cursesport.cpp`, `wincurse.cpp`. Другие вхождения —
+прочитать каждое и убедиться, что новая ветка их не ломает.
 
-- [ ] **Step 4: Добавить флаг и цель в Makefile**
+- [ ] **Step 5: Добавить флаг и цель в Makefile**
 
-Рядом с блоком `ifeq ($(MULTIPLAYER), 1)` (`Makefile:1105`) добавить:
+Вставить **перед строкой 159** (там, где `TARGET = $(BUILD_PREFIX)$(TARGET_NAME)`), сразу
+после определения `TARGET_NAME`:
 
 ```makefile
 ifeq ($(MP_SERVER), 1)
   # The server links the in-memory curses of cursesport.cpp plus the backend in
   # src/mp/mp_curses_server.cpp, and renders imgui through imtui's text backend.
-  # It implies MULTIPLAYER and never links SDL or ncurses.
+  # It implies MULTIPLAYER and never links SDL or ncurses. This block must stay
+  # above the TARGET assignment below, which bakes TARGET_NAME in.
   MULTIPLAYER = 1
   DEFINES += -DMP_SERVER -DIMTUI
-  IMGUI_SOURCES += $(IMTUI_DIR)/imtui-impl-text.cpp
   TARGET_NAME = cataclysm-server
 endif
 ```
 
-Точное имя переменной цели (`TARGET_NAME` или другое) взять из Makefile, найдя, как
-называется цель для обычной сборки:
+Исходники imtui для текстового бэкенда добавляются в задаче 7, вместе с самим мостом.
 
-```bash
-grep -n "TARGET_NAME\|^TARGET " Makefile | head
-```
+- [ ] **Step 6: Написать бэкенд**
 
-- [ ] **Step 5: Написать пустой бэкенд**
-
-Создать `src/mp/mp_curses_server.cpp` с заглушками всех символов из шага 1. Каждая функция
-либо возвращает безобидное значение, либо ничего не делает; `get_input_event` возвращает
-событие типа `error`. Пример нескольких, остальные по образцу:
+Создать `src/mp/mp_curses_server.cpp`, весь файл под `#if defined(MP_SERVER)`. Каждый
+символ получает окончательное поведение; заглушек нет — то, что не имеет смысла на сервере
+без графики, честно ничего не делает и это записано в комментарии.
 
 ```cpp
 #if defined(MP_SERVER)
+
+#include <string>
+#include <vector>
 
 #include "cata_utility.h"
 #include "cursesdef.h"
 #include "cursesport.h"
+#include "game_constants.h"
 #include "input.h"
+#include "mp/mp_cell.h"
+#include "mp/mp_server_input.h"
+#include "mp/mp_server_screen.h"
 #include "output.h"
 #include "point.h"
 
-// Stub backend. Task 6 replaces every body here with the real screen and input
-// path; this file exists first so that the build target can be reviewed and
-// landed on its own.
-
-void catacurses::init_interface()
-{
-}
-
-void catacurses::endwin()
-{
-}
-
-bool catacurses::supports_256_colors()
-{
-    return true;
-}
-
-void cata_cursesport::curses_drawwindow( const catacurses::window &/*win*/ )
-{
-}
-
-void input_manager::pump_events()
-{
-}
-
-input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
-{
-    return input_event();
-}
-
-void input_manager::set_timeout( const int /*delay*/ )
-{
-}
-
-bool gamepad_available()
-{
-    return false;
-}
-
-int get_terminal_width()
-{
-    return 80;
-}
-
-int get_terminal_height()
-{
-    return 24;
-}
-
-// ... the remaining symbols from Step 1, in the same style.
-
-#endif // MP_SERVER
-```
-
-- [ ] **Step 6: Собрать серверную цель**
-
-```bash
-make -j$(nproc) CCACHE=1 TESTS=0 MP_SERVER=1 BUILD_PREFIX=mpserver-
-```
-
-Ожидается: линковка проходит. Типичные ошибки на этом шаге — недостающие символы
-(добавить в бэкенд) и дублирующиеся (какой-то файл не отключился guard'ом; прочитать его
-условие компиляции). Итерировать до чистой сборки.
-
-- [ ] **Step 7: Убедиться, что обычные сборки не сломались**
-
-```bash
-make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
-tests/cata_test "~[slow] ~[.]" --rng-seed 1 --order lex --user-dir=/tmp/cata-mp-test/
-```
-
-Ожидается: тесты зелёные, число тест-кейсов выросло ровно на добавленные `[mp]`.
-
-- [ ] **Step 8: Коммит**
-
-```bash
-git add src/mp/mp_curses_server.cpp src/cursesport.h src/ncurses_def.cpp Makefile
-git commit -m "build: add cataclysm-server target with a stub curses backend"
-```
-
----
-
-### Task 6: Серверный бэкенд — экран
-
-**Files:**
-- Create: `src/mp/mp_server_screen.h`, `src/mp/mp_server_screen.cpp`
-- Modify: `src/mp/mp_curses_server.cpp`
-- Test: `tests/mp_server_session_test.cpp` (новый, только при `MP_SERVER`)
-
-**Interfaces:**
-- Consumes: `mp_screen_grid`, `mp_screen_encode`, `mp_wrap`, `mp_transport`.
-- Produces:
-  - `mp_screen_grid &mp_server_grid()`
-  - `void mp_server_set_transport( std::shared_ptr<mp_transport> )`
-  - `void mp_server_set_terminal_size( int w, int h )`
-  - `void mp_server_flush_screen()` — кодирует грязные строки, отправляет, чистит флаги
-  - `void mp_server_blit_window( const catacurses::window &win )`
-
-- [ ] **Step 1: Написать падающий тест**
-
-Создать `tests/mp_server_session_test.cpp`:
-
-```cpp
-#if defined(MP_SERVER)
-
-#include "cata_catch.h"
-
-#include <memory>
-#include <vector>
-
-#include "cursesdef.h"
-#include "mp/mp_cell.h"
-#include "mp/mp_loopback_transport.h"
-#include "mp/mp_protocol.h"
-#include "mp/mp_screen_codec.h"
-#include "mp/mp_server_screen.h"
-#include "point.h"
-
-TEST_CASE( "server blits a curses window into the screen grid", "[mp]" )
-{
-    mp_loopback_pair pair = mp_make_loopback_pair();
-    mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
-
-    catacurses::window win = catacurses::newwin( 3, 10, point( 2, 1 ) );
-    catacurses::mvwprintw( win, point( 0, 0 ), "hello" );
-    catacurses::wrefresh( win );
-
-    CHECK( mp_server_grid().at( 2, 1 ).ch == "h" );
-    CHECK( mp_server_grid().at( 6, 1 ).ch == "o" );
-}
-
-TEST_CASE( "server sends only what changed", "[mp]" )
-{
-    mp_loopback_pair pair = mp_make_loopback_pair();
-    mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
-
-    // First flush carries the whole screen.
-    mp_server_flush_screen();
-    const std::optional<std::vector<uint8_t>> full = pair.b->recv( 0 );
-    REQUIRE( full.has_value() );
-
-    // Nothing changed: nothing is sent.
-    mp_server_flush_screen();
-    CHECK_FALSE( pair.b->recv( 0 ).has_value() );
-
-    // One window redraw sends a much smaller message than the full screen.
-    catacurses::window win = catacurses::newwin( 1, 5, point( 0, 0 ) );
-    catacurses::mvwprintw( win, point( 0, 0 ), "abcde" );
-    catacurses::wrefresh( win );
-    mp_server_flush_screen();
-
-    const std::optional<std::vector<uint8_t>> delta = pair.b->recv( 0 );
-    REQUIRE( delta.has_value() );
-    CHECK( delta->size() < full->size() / 4 );
-}
-
-TEST_CASE( "a client can reconstruct the server screen from the wire", "[mp]" )
-{
-    mp_loopback_pair pair = mp_make_loopback_pair();
-    mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
-
-    catacurses::window win = catacurses::newwin( 2, 20, point( 5, 3 ) );
-    catacurses::mvwprintw( win, point( 0, 0 ), "reconstruct me" );
-    catacurses::wrefresh( win );
-    mp_server_flush_screen();
-
-    mp_screen_grid client( 40, 10 );
-    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
-        mp_msg_kind kind = mp_msg_kind::control;
-        std::vector<uint8_t> body;
-        REQUIRE( mp_unwrap( *msg, kind, body ) );
-        if( kind == mp_msg_kind::screen ) {
-            REQUIRE( mp_screen_apply( client, body ) );
-        }
-    }
-
-    for( int y = 0; y < 10; ++y ) {
-        for( int x = 0; x < 40; ++x ) {
-            REQUIRE( client.at( x, y ) == mp_server_grid().at( x, y ) );
-        }
-    }
-}
-
-#endif // MP_SERVER
-```
-
-- [ ] **Step 2: Прогнать тест в серверной сборке и убедиться, что он падает**
-
-```bash
-make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
-```
-
-Ожидается: `mp/mp_server_screen.h: No such file or directory`.
-
-- [ ] **Step 3: Написать `mp_server_screen.h`**
-
-```cpp
-#pragma once
-#ifndef CATA_SRC_MP_MP_SERVER_SCREEN_H
-#define CATA_SRC_MP_MP_SERVER_SCREEN_H
-
-#include <memory>
-
-#include "mp/mp_cell.h"
-
-namespace catacurses
-{
-class window;
-} // namespace catacurses
-
-class mp_transport;
-
-// The server's composite screen for the connected player.
-//
-// Every curses window the game draws is blitted here instead of to a terminal;
-// the accumulated dirty rows are shipped to the client at exactly one point --
-// when the game is about to block waiting for that player's next keystroke.
-// Flushing there rather than on every refresh collapses the dozen redraws a
-// single action provokes into one message.
-
-mp_screen_grid &mp_server_grid();
-
-void mp_server_set_terminal_size( int width, int height );
-void mp_server_set_transport( std::shared_ptr<mp_transport> transport );
-
-// Copies the touched lines of `win` into the grid and clears their touched
-// flags, mirroring what a drawing backend would do.
-void mp_server_blit_window( const catacurses::window &win );
-
-// Encodes and sends the dirty rows, then clears them. Does nothing when
-// nothing changed or when no transport is attached.
-void mp_server_flush_screen();
-
-#endif // CATA_SRC_MP_MP_SERVER_SCREEN_H
-```
-
-- [ ] **Step 4: Написать `mp_server_screen.cpp`**
-
-Ключевой цикл повторяет то, что делает `curses_drawwindow` в `src/sdltiles.cpp`: идти по
-строкам окна, пропускать нетронутые, копировать ячейки со смещением на `win->pos`, учитывать
-пустую `ch` как продолжение двухколоночного символа.
-
-```cpp
-#include "mp/mp_server_screen.h"
-
-#include <memory>
-#include <utility>
-
-#include "cursesdef.h"
-#include "cursesport.h"
-#include "mp/mp_protocol.h"
-#include "mp/mp_screen_codec.h"
-#include "mp/mp_transport.h"
+// The fourth curses backend. Instead of a terminal it drives the composite
+// screen of mp_server_screen; instead of a keyboard it reads the player's
+// transport through mp_server_input.
 
 namespace
 {
-mp_screen_grid grid( 80, 24 );
-std::shared_ptr<mp_transport> transport;
+int input_timeout_ms = -1;
 } // namespace
 
-mp_screen_grid &mp_server_grid()
-{
-    return grid;
-}
-
-void mp_server_set_terminal_size( const int width, const int height )
-{
-    grid.resize( width, height );
-}
-
-void mp_server_set_transport( std::shared_ptr<mp_transport> t )
-{
-    transport = std::move( t );
-}
-
-void mp_server_blit_window( const catacurses::window &win_ )
+void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
 {
     cata_cursesport::WINDOW *const win = win_.get<cata_cursesport::WINDOW>();
     if( win == nullptr ) {
         return;
     }
+    std::vector<mp_cell> row;
     for( int j = 0; j < win->height; ++j ) {
         if( !win->line[j].touched ) {
             continue;
         }
         win->line[j].touched = false;
+        row.clear();
+        row.reserve( win->width );
         for( int i = 0; i < win->width; ++i ) {
             const cata_cursesport::cursecell &cell = win->line[j].chars[i];
-            if( cell.ch.empty() ) {
-                // Second column of a double-width character: the client keeps
-                // an empty glyph there, exactly as cursesport does.
-                mp_cell blank;
-                blank.ch.clear();
-                blank.fg = static_cast<uint8_t>( cell.FG );
-                blank.bg = static_cast<uint8_t>( cell.BG );
-                grid.set( win->pos.x + i, win->pos.y + j, blank );
-                continue;
-            }
             mp_cell out;
+            // An empty glyph is the second column of a double-width character;
+            // it is carried through as-is so the client renders it the same way.
             out.ch = cell.ch;
             out.fg = static_cast<uint8_t>( cell.FG );
             out.bg = static_cast<uint8_t>( cell.BG );
-            grid.set( win->pos.x + i, win->pos.y + j, out );
+            row.push_back( out );
         }
+        mp_server_blit_row( win->pos.x, win->pos.y + j, row );
     }
-}
-
-void mp_server_flush_screen()
-{
-    if( !transport || !grid.any_dirty() ) {
-        return;
-    }
-    transport->send( mp_wrap( mp_msg_kind::screen, mp_screen_encode( grid ) ) );
-    grid.clear_dirty();
-}
-```
-
-- [ ] **Step 5: Подключить бэкенд к экрану**
-
-В `src/mp/mp_curses_server.cpp` заменить заглушки:
-
-```cpp
-void cata_cursesport::curses_drawwindow( const catacurses::window &win )
-{
-    mp_server_blit_window( win );
 }
 
 void catacurses::init_interface()
 {
-    // The client told us its terminal size during the handshake; the game's
-    // root window must match it exactly.
+    // The client told us its terminal size during the handshake, so the grid
+    // is already sized; the game's root window must match it exactly.
     catacurses::stdscr = catacurses::newwin( get_terminal_height(), get_terminal_width(),
                                              point::zero );
+}
+
+void catacurses::endwin()
+{
+    // Nothing to tear down: the screen is a buffer, and the transport is owned
+    // by mp_server_main.
+}
+
+bool catacurses::supports_256_colors()
+{
+    // Colours travel as indices and the client maps them; the server never
+    // renders, so it never needs to know what a terminal can show.
+    return true;
+}
+
+input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
+{
+    int w = 0;
+    int h = 0;
+    if( mp_server_take_resize_request( w, h ) ) {
+        handle_resize( w, h );
+    }
+    return mp_server_wait_for_input( input_timeout_ms );
+}
+
+void input_manager::pump_events()
+{
+    mp_server_pump();
+}
+
+void input_manager::set_timeout( const int delay )
+{
+    // Mirrors the ncurses backend: a negative delay means "block".
+    input_timeout_ms = delay;
 }
 
 int get_terminal_width()
@@ -2047,129 +2251,135 @@ int get_terminal_height()
     return mp_server_grid().height();
 }
 
+int projected_window_width()
+{
+    return get_terminal_width();
+}
+
+int projected_window_height()
+{
+    return get_terminal_height();
+}
+
+bool handle_resize( const int w, const int h )
+{
+    if( w < EVEN_MINIMUM_TERM_WIDTH || h < EVEN_MINIMUM_TERM_HEIGHT ) {
+        return false;
+    }
+    mp_server_set_terminal_size( w, h );
+    catacurses::stdscr = catacurses::newwin( h, w, point::zero );
+    game_ui::init_ui();
+    return true;
+}
+
 void refresh_display()
 {
     // Deliberately empty: the screen goes out when the game blocks for input,
     // not on every refresh. See mp_server_screen.h.
 }
+
+// ... remaining symbols from Step 1, each with a one-line comment saying why
+// it does nothing on a server without graphics: drain_renderer_recovery,
+// refresh_mouse_config, get_scaling_factor (returns 1), gamepad_available
+// (returns false), set_title, resize_term, input_context::get_coordinates.
+
+#endif // MP_SERVER
 ```
 
-Остальные заглушки (`drain_renderer_recovery`, `refresh_mouse_config`, `get_scaling_factor`,
-`projected_window_width`, `projected_window_height`, `resize_term`) оставить пустыми до
-Task 8.
+`input_context::get_coordinates` реализовать по образцу ncurses-версии
+(`src/ncurses_def.cpp`, найти её и повторить логику пересчёта позиции мыши в координаты
+карты) — это не заглушка, мышь у клиента работает.
 
-- [ ] **Step 6: Прогнать тесты в серверной сборке**
+- [ ] **Step 7: Собрать серверную цель**
+
+```bash
+make -j$(nproc) CCACHE=1 TESTS=0 MP_SERVER=1 BUILD_PREFIX=mpserver-
+```
+
+Ожидается: линкуется `mpserver-cataclysm-server`. Типичные ошибки — недостающие символы
+(дописать в бэкенд) и дублирующиеся (какой-то файл не отключился guard'ом; прочитать его
+условие). Итерировать до чистой сборки.
+
+- [ ] **Step 8: Прогнать тесты бэкенда**
 
 ```bash
 make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
+find . -maxdepth 2 -name "cata_test" -newer Makefile
 mpserver-tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
 ```
 
-Точный путь к тестовому бинарю в сборке с `BUILD_PREFIX` уточнить:
+Точный путь к бинарю подставить из вывода `find`. Ожидается: три теста бэкенда плюс все
+предыдущие проходят.
+
+- [ ] **Step 9: Убедиться, что обычные сборки не сломались**
 
 ```bash
-find . -name "cata_test" -newer Makefile | head
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
+tests/cata_test "~[slow] ~[.]" --rng-seed 1 --order lex --user-dir=/tmp/cata-mp-test/
 ```
 
-Ожидается: три новых тест-кейса проходят.
-
-- [ ] **Step 7: Коммит**
+- [ ] **Step 10: Коммит**
 
 ```bash
-git add src/mp/mp_server_screen.h src/mp/mp_server_screen.cpp \
-        src/mp/mp_curses_server.cpp tests/mp_server_session_test.cpp
-git commit -m "feat(mp): stream the server screen as dirty-row deltas"
+git add src/mp/mp_curses_server.cpp src/cursesport.h src/ncurses_def.cpp Makefile \
+        tests/mp_server_backend_test.cpp
+git commit -m "build: add the cataclysm-server target and its curses backend"
 ```
 
 ---
 
-### Task 7: Серверный бэкенд — ввод
+### Task 7: imgui через imtui
 
 **Files:**
-- Modify: `src/mp/mp_curses_server.cpp`
-- Create: `src/mp/mp_server_input.h`, `src/mp/mp_server_input.cpp`
-- Test: `tests/mp_server_session_test.cpp` (дополнить)
+- Create: `src/mp/mp_imgui_server.h`, `src/mp/mp_imgui_server.cpp`
+- Modify: `src/cata_imgui.cpp`, `Makefile` (блок `MP_SERVER`)
+- Test: `tests/mp_server_backend_test.cpp` (дополнить)
 
 **Interfaces:**
-- Consumes: `mp_control`, `mp_control_from_json`, `mp_unwrap`, `mp_server_flush_screen`.
-- Produces:
-  - `input_event mp_server_wait_for_input( int timeout_ms )`
-  - `void mp_server_pump( )` — неблокирующий разбор входящих сообщений
-  - `void mp_server_set_cursor( int x, int y, bool visible )`
+- Consumes: `mp_server_grid()`, `mp_server_blit_row()`.
+- Produces: `void mp_imgui_draw_screen()`, `void mp_test_fill_imtui_screen( int w, int h, char ch, uint8_t fg, uint8_t bg )`
 
-**Правило.** Именно здесь экран уходит клиенту: перед тем как заблокироваться, бэкенд
-вызывает `mp_server_flush_screen()`. Это единственная точка сброса.
+**Зачем.** Крафт, инвентарь, попапы и ещё шестнадцать файлов рисуются через imgui. В
+текстовом режиме проект рендерит его вендоренным `imtui`: `imtui-impl-text.cpp` кладёт кадр
+в `ImTui::TScreen`, `imtui-impl-ncurses.cpp` выкладывает его в curses
+(`src/third-party/imtui/imtui-impl-ncurses.cpp:428`). Серверу нужен третий выкладыватель.
+Без него все imgui-экраны у клиента пустые.
 
-- [ ] **Step 1: Дописать падающий тест**
+**Разрешённые значения:** перекодировка кодовой точки — `utf32_to_utf8( uint32_t ch )`
+(`src/catacharset.h:47`). Доступ к буферу — `ImTui::ImTui_Impl_GetBackendData()->Screen`,
+как в `imtui-impl-ncurses.cpp:430-436`. `ImTui::TCell` — `{ TColor fg; TColor bg; uint32_t ch;
+uint8_t chwidth; }` (`src/third-party/imtui/imtui.h:22-27`).
 
-Добавить в `tests/mp_server_session_test.cpp`:
+- [ ] **Step 1: Написать падающий тест**
+
+Добавить в `tests/mp_server_backend_test.cpp`:
 
 ```cpp
-TEST_CASE( "server flushes the screen before blocking for input", "[mp]" )
+TEST_CASE( "imgui frames reach the server screen grid", "[mp]" )
 {
-    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
-    mp_server_flush_screen();
-    while( pair.b->recv( 0 ) ) {
-        // drain the initial full screen
-    }
 
-    catacurses::window win = catacurses::newwin( 1, 5, point( 0, 0 ) );
-    catacurses::mvwprintw( win, point( 0, 0 ), "ready" );
-    catacurses::wrefresh( win );
+    mp_test_fill_imtui_screen( 40, 10, 'Z', 3, 1 );
+    mp_imgui_draw_screen();
 
-    // Queue a keystroke so the wait returns, then check that the screen went
-    // out before the input was consumed.
-    mp_control key;
-    key.kind = mp_control_kind::input;
-    key.event.type = input_event_t::keyboard_char;
-    key.event.sequence = { 'y' };
-    pair.b->send( mp_wrap( mp_msg_kind::control,
-                           std::vector<uint8_t>( mp_control_to_json( key ).begin(),
-                                   mp_control_to_json( key ).end() ) ) );
-
-    const input_event got = mp_server_wait_for_input( 1000 );
-    CHECK( got.type == input_event_t::keyboard_char );
-    CHECK( got.sequence == std::vector<int> { 'y' } );
-
-    bool saw_screen = false;
-    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
-        mp_msg_kind kind = mp_msg_kind::control;
-        std::vector<uint8_t> body;
-        REQUIRE( mp_unwrap( *msg, kind, body ) );
-        saw_screen = saw_screen || kind == mp_msg_kind::screen;
-    }
-    CHECK( saw_screen );
+    CHECK( mp_server_grid().at( 0, 0 ).ch == "Z" );
+    CHECK( mp_server_grid().at( 39, 9 ).ch == "Z" );
+    CHECK( mp_server_grid().at( 5, 5 ).fg == 3 );
+    CHECK( mp_server_grid().at( 5, 5 ).bg == 1 );
 }
 
-TEST_CASE( "server returns a timeout event when no input arrives", "[mp]" )
+TEST_CASE( "an imgui frame larger than the terminal is clipped, not overrun", "[mp]" )
 {
-    mp_loopback_pair pair = mp_make_loopback_pair();
-    mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
+    mp_server_reset_for_test();
+    mp_server_set_terminal_size( 20, 5 );
 
-    const input_event got = mp_server_wait_for_input( 10 );
-    CHECK( got.type == input_event_t::timeout );
-}
+    mp_test_fill_imtui_screen( 40, 10, 'Q', 7, 0 );
+    mp_imgui_draw_screen();
 
-TEST_CASE( "server applies a resize from the client", "[mp]" )
-{
-    mp_loopback_pair pair = mp_make_loopback_pair();
-    mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
-
-    mp_control resize;
-    resize.kind = mp_control_kind::resize;
-    resize.resize.width = 60;
-    resize.resize.height = 20;
-    const std::string json = mp_control_to_json( resize );
-    pair.b->send( mp_wrap( mp_msg_kind::control,
-                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
-
-    mp_server_pump();
-    CHECK( mp_server_grid().width() == 60 );
-    CHECK( mp_server_grid().height() == 20 );
+    CHECK( mp_server_grid().at( 19, 4 ).ch == "Q" );
+    CHECK( mp_server_grid().width() == 20 );
+    CHECK( mp_server_grid().height() == 5 );
 }
 ```
 
@@ -2179,197 +2389,25 @@ TEST_CASE( "server applies a resize from the client", "[mp]" )
 make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
 ```
 
-Ожидается: `mp/mp_server_input.h: No such file or directory`.
-
-- [ ] **Step 3: Написать `mp_server_input.h` и `.cpp`**
-
-```cpp
-#pragma once
-#ifndef CATA_SRC_MP_MP_SERVER_INPUT_H
-#define CATA_SRC_MP_MP_SERVER_INPUT_H
-
-#include "input_enums.h"
-
-// Blocks until the connected player presses something, the timeout expires, or
-// the connection drops. Flushes the pending screen first: this is the single
-// point at which the player sees what the game drew.
-//
-// `timeout_ms` of a negative value blocks indefinitely.
-input_event mp_server_wait_for_input( int timeout_ms );
-
-// Consumes whatever has already arrived without blocking. Used by the game's
-// interrupt checks; keyboard events seen here are buffered for the next
-// mp_server_wait_for_input().
-void mp_server_pump();
-
-void mp_server_set_cursor( int x, int y, bool visible );
-
-#endif // CATA_SRC_MP_MP_SERVER_INPUT_H
-```
-
-Реализация: очередь `std::deque<input_event>` буферизованных нажатий; общая функция
-`handle_message()`, которая разбирает одно входящее сообщение — `input` кладёт в очередь,
-`resize` вызывает `mp_server_set_terminal_size` плюс `handle_resize`, `bye` закрывает
-транспорт. `mp_server_wait_for_input` сначала `mp_server_flush_screen()`, потом отдаёт
-буферизованное, потом ждёт на `transport->recv`.
-
-- [ ] **Step 4: Подключить к бэкенду**
-
-В `src/mp/mp_curses_server.cpp`:
-
-```cpp
-input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
-{
-    return mp_server_wait_for_input( input_timeout_ms );
-}
-
-void input_manager::pump_events()
-{
-    mp_server_pump();
-}
-
-void input_manager::set_timeout( const int delay )
-{
-    // Mirrors the ncurses backend: a negative delay means "block forever".
-    input_timeout_ms = delay;
-}
-
-void catacurses::curs_set( const int visibility )
-{
-    mp_server_set_cursor( last_cursor_x, last_cursor_y, visibility != 0 );
-}
-```
-
-Проверить, определяет ли `cursesport.cpp` уже `curs_set` — если да (`src/cursesport.cpp:485`),
-то переопределять его в бэкенде нельзя, и позицию курсора надо брать из
-`catacurses::getcurx/getcury( stdscr )` в момент сброса экрана. Выбрать второй путь.
-
-- [ ] **Step 5: Прогнать тесты**
-
-```bash
-make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
-mpserver-tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
-```
-
-Ожидается: шесть тест-кейсов сессии проходят.
-
-- [ ] **Step 6: Коммит**
-
-```bash
-git add src/mp/mp_server_input.h src/mp/mp_server_input.cpp src/mp/mp_curses_server.cpp \
-        tests/mp_server_session_test.cpp
-git commit -m "feat(mp): read player input from the transport on the server"
-```
-
----
-
-### Task 8: imgui через imtui
-
-**Files:**
-- Create: `src/mp/mp_imgui_server.cpp`
-- Modify: `src/cata_imgui.cpp`
-- Test: `tests/mp_server_session_test.cpp` (дополнить)
-
-**Interfaces:**
-- Consumes: `mp_server_grid()`.
-- Produces: `void mp_imgui_draw_screen()` — выкладывает `ImTui::TScreen` в буфер сервера.
-
-**Зачем.** Крафт, инвентарь, попапы и ещё шестнадцать файлов рисуются через imgui. В
-текстовом режиме проект уже рендерит его через вендоренный `imtui`: `imtui-impl-text.cpp`
-кладёт кадр в `ImTui::TScreen`, а `imtui-impl-ncurses.cpp` выкладывает этот буфер в curses
-(`src/third-party/imtui/imtui-impl-ncurses.cpp:428`). Серверу нужен третий выкладыватель —
-в наш буфер ячеек. Без него все imgui-интерфейсы у клиента будут пустыми.
-
-- [ ] **Step 1: Прочитать, как ncurses-выкладыватель добирается до буфера**
-
-```bash
-sed -n '425,480p' src/third-party/imtui/imtui-impl-ncurses.cpp
-```
-
-Обратить внимание: `ImTui::ImplImtui_Data *bd = ImTui::ImTui_Impl_GetBackendData();` и
-`ImTui::TScreen &screen = bd->Screen;`. Цвета `TCell::fg`/`TCell::bg` — индексы ansi256,
-`TCell::ch` — `uint32_t` кодовая точка, `TCell::chwidth` — ширина в колонках.
-
-- [ ] **Step 2: Написать падающий тест**
-
-Добавить в `tests/mp_server_session_test.cpp`:
-
-```cpp
-TEST_CASE( "imgui frames reach the server screen grid", "[mp]" )
-{
-    mp_loopback_pair pair = mp_make_loopback_pair();
-    mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
-
-    // Paint a recognisable pattern into the imtui screen and lay it out.
-    mp_test_fill_imtui_screen( 40, 10, 'Z', 3, 1 );
-    mp_imgui_draw_screen();
-
-    CHECK( mp_server_grid().at( 0, 0 ).ch == "Z" );
-    CHECK( mp_server_grid().at( 39, 9 ).ch == "Z" );
-    CHECK( mp_server_grid().at( 5, 5 ).fg == 3 );
-    CHECK( mp_server_grid().at( 5, 5 ).bg == 1 );
-}
-```
-
-`mp_test_fill_imtui_screen` объявить в `src/mp/mp_imgui_server.cpp` и в заголовке
-`src/mp/mp_imgui_server.h`; это тестовый хук, наполняющий `ImTui::TScreen` заданным
-символом и цветами, чтобы не поднимать в тесте всю игру.
-
 - [ ] **Step 3: Написать выкладыватель**
 
 Создать `src/mp/mp_imgui_server.cpp` (весь файл под `#if defined(MP_SERVER)`). Цикл
-повторяет `ImTui_ImplNcurses_DrawScreen`, но пишет в `mp_server_grid()`:
+повторяет `ImTui_ImplNcurses_DrawScreen`, но пишет строками в `mp_server_blit_row`.
+Двухколоночный глиф занимает следующую колонку пустой ячейкой-продолжением, как это делает
+`cursesport`.
 
-```cpp
-void mp_imgui_draw_screen()
-{
-    ImTui::ImplImtui_Data *bd = ImTui::ImTui_Impl_GetBackendData();
-    if( bd == nullptr ) {
-        return;
-    }
-    ImTui::TScreen &screen = bd->Screen;
-    mp_screen_grid &grid = mp_server_grid();
-
-    for( int y = 0; y < screen.ny && y < grid.height(); ++y ) {
-        for( int x = 0; x < screen.nx && x < grid.width(); ) {
-            const ImTui::TCell &cell = screen.data[y * screen.nx + x];
-            mp_cell out;
-            out.ch = utf32_to_utf8( cell.ch );
-            out.fg = cell.fg;
-            out.bg = cell.bg;
-            grid.set( x, y, out );
-            // A double-width glyph occupies the next column with an empty
-            // continuation cell, matching how cursesport stores wide text.
-            for( int k = 1; k < cell.chwidth && x + k < grid.width(); ++k ) {
-                mp_cell cont;
-                cont.ch.clear();
-                cont.fg = cell.fg;
-                cont.bg = cell.bg;
-                grid.set( x + k, y, cont );
-            }
-            x += cell.chwidth > 0 ? cell.chwidth : 1;
-        }
-    }
-}
-```
-
-Функцию `utf32_to_utf8` взять существующую из `src/catacharset.h` (проверить точное имя:
-`utf32_to_utf8` или `utf8_wrapper`), не писать свою.
-
-```bash
-grep -n "utf32_to_utf8\|std::string utf" src/catacharset.h
-```
+`mp_test_fill_imtui_screen` — тестовый хук, наполняющий `ImTui::TScreen` заданным символом
+и цветами, чтобы не поднимать в тесте всю игру.
 
 - [ ] **Step 4: Развести бэкенды в `cata_imgui.cpp`**
 
-В `src/cata_imgui.cpp` вызовы `ImTui_ImplNcurses_Init/Shutdown/NewFrame/DrawScreen/
-UploadColorPair/SetAllocedPairCount` (строки 105, 119, 133, 157, 167, 173) обернуть так,
-чтобы при `MP_SERVER` вместо них вызывались наши. Для `DrawScreen` — `mp_imgui_draw_screen()`;
-для `Init`, `Shutdown`, `NewFrame`, `UploadColorPair`, `SetAllocedPairCount` — пустые
-функции, потому что цвета сервер передаёт индексами и палитру не выделяет.
+Вызовы `ImTui_ImplNcurses_Init` (`:105`), `_Shutdown` (`:119`), `_NewFrame` (`:133`),
+`_DrawScreen` (`:157`), `_UploadColorPair` (`:167`), `_SetAllocedPairCount` (`:173`)
+обернуть так, чтобы при `MP_SERVER` вместо них вызывались наши. Для `DrawScreen` —
+`mp_imgui_draw_screen()`; остальные при `MP_SERVER` не делают ничего, потому что палитру
+сервер не выделяет: цвета уходят индексами.
 
-Форма правки (по одному месту на вызов):
+Форма правки, по одному месту на вызов:
 
 ```cpp
 #if defined(MP_SERVER)
@@ -2379,36 +2417,41 @@ UploadColorPair/SetAllocedPairCount` (строки 105, 119, 133, 157, 167, 173)
 #endif
 ```
 
-Держать эти вставки минимальными: это единственный существующий файл с содержательной
-правкой, и каждая строка здесь — будущий конфликт при вливании апстрима.
+Держать вставки минимальными: это единственный существующий файл с содержательной правкой,
+и каждая строка здесь — будущий конфликт при вливании апстрима.
 
-- [ ] **Step 5: Прогнать тесты**
+- [ ] **Step 5: Добавить исходник imtui в серверную сборку**
+
+В блок `MP_SERVER` Makefile добавить `IMGUI_SOURCES += $(IMTUI_DIR)/imtui-impl-text.cpp`.
+Проверить, что `IMGUI_SOURCES` к этому моменту уже определена; если нет — добавить строку
+во второй блок `MP_SERVER` рядом с `Makefile:1150`, где ncurses-сборка добавляет свои
+imtui-исходники.
+
+- [ ] **Step 6: Прогнать тесты**
 
 ```bash
 make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
 mpserver-tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
 ```
 
-Ожидается: семь тест-кейсов сессии проходят.
-
-- [ ] **Step 6: Убедиться, что обычные сборки не задеты**
+- [ ] **Step 7: Убедиться, что обычные сборки не задеты**
 
 ```bash
 make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
 tests/cata_test "~[slow] ~[.]" --rng-seed 1 --order lex --user-dir=/tmp/cata-mp-test/
 ```
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 8: Коммит**
 
 ```bash
-git add src/mp/mp_imgui_server.cpp src/mp/mp_imgui_server.h src/cata_imgui.cpp \
-        tests/mp_server_session_test.cpp
+git add src/mp/mp_imgui_server.h src/mp/mp_imgui_server.cpp src/cata_imgui.cpp Makefile \
+        tests/mp_server_backend_test.cpp
 git commit -m "feat(mp): render imgui into the server screen through imtui"
 ```
 
 ---
 
-### Task 9: Сокеты и TCP-транспорт
+### Task 8: Сокеты и TCP-транспорт
 
 **Files:**
 - Create: `src/mp/mp_socket.h`, `src/mp/mp_socket.cpp`, `src/mp/mp_tcp_transport.h`, `src/mp/mp_tcp_transport.cpp`
@@ -2418,16 +2461,16 @@ git commit -m "feat(mp): render imgui into the server screen through imtui"
 - Consumes: `mp_frame_encode`, `mp_frame_reader`, `mp_transport`.
 - Produces:
   - `class mp_listener` — `static std::optional<mp_listener> bind( int port, std::string &err )`,
-    `std::shared_ptr<mp_transport> accept( int timeout_ms )`
+    `int port() const`, `std::shared_ptr<mp_transport> accept( int timeout_ms )`
   - `std::shared_ptr<mp_transport> mp_tcp_connect( const std::string &host, int port, std::string &err )`
 
-**Требования к реализации, каждое проверяется тестом ниже:**
+**Требования, каждое проверяется тестом ниже:**
 - `TCP_NODELAY` на обоих концах.
-- Неблокирующие сокеты; частичная запись копится в исходящем буфере и дописывается
-  при следующей возможности, в том числе изнутри `recv`.
+- Неблокирующие сокеты; частичная запись копится в исходящем буфере и дописывается при
+  следующей возможности, в том числе изнутри `recv`.
 - Частичное чтение собирается через `mp_frame_reader`.
 - `SIGPIPE` подавлен (`MSG_NOSIGNAL` на Linux, `SO_NOSIGPIPE` на macOS).
-- `EINTR` не считается ошибкой.
+- `EINTR` не ошибка.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -2437,6 +2480,8 @@ git commit -m "feat(mp): render imgui into the server screen through imtui"
 #include "cata_catch.h"
 
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -2444,7 +2489,7 @@ git commit -m "feat(mp): render imgui into the server screen through imtui"
 #include "mp/mp_transport.h"
 
 // Port 0 asks the OS for a free port, so the suite never collides with a
-// developer's running server or with a parallel test run.
+// running server or with a parallel test run.
 TEST_CASE( "tcp transport carries messages over a real socket", "[mp]" )
 {
     std::string err;
@@ -2492,6 +2537,25 @@ TEST_CASE( "tcp transport reassembles a large message", "[mp]" )
     CHECK( *got == big );
 }
 
+TEST_CASE( "tcp transport preserves message order under one read", "[mp]" )
+{
+    std::string err;
+    std::optional<mp_listener> listener = mp_listener::bind( 0, err );
+    REQUIRE( listener.has_value() );
+    std::shared_ptr<mp_transport> client = mp_tcp_connect( "127.0.0.1", listener->port(), err );
+    REQUIRE( client );
+    std::shared_ptr<mp_transport> server_side = listener->accept( 1000 );
+    REQUIRE( server_side );
+
+    client->send( { 1 } );
+    client->send( { 2 } );
+    client->send( { 3 } );
+
+    CHECK( server_side->recv( 1000 ) == std::vector<uint8_t> { 1 } );
+    CHECK( server_side->recv( 1000 ) == std::vector<uint8_t> { 2 } );
+    CHECK( server_side->recv( 1000 ) == std::vector<uint8_t> { 3 } );
+}
+
 TEST_CASE( "tcp transport reports a closed peer", "[mp]" )
 {
     std::string err;
@@ -2503,8 +2567,6 @@ TEST_CASE( "tcp transport reports a closed peer", "[mp]" )
     REQUIRE( server_side );
 
     client->close();
-    // The peer may take a moment to notice; recv returning nothing with the
-    // connection reported down is the contract.
     server_side->recv( 500 );
     CHECK_FALSE( server_side->connected() );
 }
@@ -2517,6 +2579,14 @@ TEST_CASE( "tcp connect to a dead port fails with a message", "[mp]" )
     CHECK_FALSE( client );
     CHECK_FALSE( err.empty() );
 }
+
+TEST_CASE( "accept times out when nobody connects", "[mp]" )
+{
+    std::string err;
+    std::optional<mp_listener> listener = mp_listener::bind( 0, err );
+    REQUIRE( listener.has_value() );
+    CHECK_FALSE( listener->accept( 50 ) );
+}
 ```
 
 - [ ] **Step 2: Прогнать и убедиться, что падает**
@@ -2525,21 +2595,19 @@ TEST_CASE( "tcp connect to a dead port fails with a message", "[mp]" )
 make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
 ```
 
-Ожидается: `mp/mp_tcp_transport.h: No such file or directory`.
+- [ ] **Step 3: Написать платформенный шим**
 
-- [ ] **Step 3: Написать платформенный шим `mp_socket.h`/`.cpp`**
-
-Содержимое: `using mp_socket_t = int` на POSIX и `SOCKET` на Windows; `mp_socket_startup()`
-(на Windows зовёт `WSAStartup`, иначе ничего), `mp_socket_close`, `mp_socket_set_nonblocking`,
-`mp_socket_set_nodelay`, `mp_socket_last_error_string()`, `mp_socket_poll( fd, want_read,
-want_write, timeout_ms )`. Ни одна из этих функций не знает про игру.
+`src/mp/mp_socket.h` / `.cpp`: `using mp_socket_t = int` на POSIX и `SOCKET` на Windows;
+`mp_socket_startup()` (на Windows `WSAStartup`, иначе ничего), `mp_socket_close`,
+`mp_socket_set_nonblocking`, `mp_socket_set_nodelay`, `mp_socket_last_error_string()`,
+`mp_socket_poll( fd, want_read, want_write, timeout_ms )`. Ни одна функция не знает про игру.
 
 - [ ] **Step 4: Написать `mp_tcp_transport`**
 
-`send` кладёт кадр (`mp_frame_encode`) в исходящий буфер и пытается протолкнуть его сразу;
-`recv` перед ожиданием дописывает остаток исходящего буфера, потом ждёт на
-`mp_socket_poll` и наполняет `mp_frame_reader`. `connected()` становится ложным при
-`recv() == 0`, при ошибке сокета или при `reader.failed()`.
+`send` кладёт кадр в исходящий буфер и пытается протолкнуть сразу; `recv` перед ожиданием
+дописывает остаток исходящего буфера, затем ждёт на `mp_socket_poll` и наполняет
+`mp_frame_reader`. `connected()` ложно при `recv() == 0`, при ошибке сокета или при
+`reader.failed()`.
 
 - [ ] **Step 5: Прогнать тесты**
 
@@ -2548,9 +2616,7 @@ make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
 tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
 ```
 
-Ожидается: четыре новых тест-кейса проходят.
-
-- [ ] **Step 6: Убедиться, что `TCP_NODELAY` действительно выставлен**
+- [ ] **Step 6: Проверить, что `TCP_NODELAY` действительно выставлен**
 
 ```bash
 grep -n "TCP_NODELAY" src/mp/mp_socket.cpp src/mp/mp_tcp_transport.cpp
@@ -2568,26 +2634,30 @@ git commit -m "feat(mp): add TCP transport over raw sockets"
 
 ---
 
-### Task 10: Точка входа сервера
+### Task 9: Точка входа сервера
 
 **Files:**
 - Create: `src/mp/mp_server_main.h`, `src/mp/mp_server_main.cpp`
 - Modify: `src/main.cpp`
-- Test: ручная проверка (см. шаги) плюс тест хендшейка
+- Test: `tests/mp_server_io_test.cpp` (дополнить — хендшейк не требует серверной сборки)
 
 **Interfaces:**
 - Consumes: `mp_listener`, `mp_control`, `mp_server_set_terminal_size`, `mp_server_set_transport`.
 - Produces:
-  - `int mp_server_main( int port, const std::string &world_name )`
   - `bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )`
+  - `int mp_server_main( int port, const std::string &world_name )`
 
-- [ ] **Step 1: Написать падающий тест хендшейка**
+**Разрешённые значения:** минимальный размер терминала — `EVEN_MINIMUM_TERM_WIDTH = 80`,
+`EVEN_MINIMUM_TERM_HEIGHT = 24` (`src/game_constants.h:11-12`).
 
-Добавить в `tests/mp_server_session_test.cpp`:
+- [ ] **Step 1: Написать падающий тест**
+
+Добавить в `tests/mp_server_io_test.cpp`:
 
 ```cpp
 TEST_CASE( "handshake accepts a matching protocol version", "[mp]" )
 {
+    mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
     mp_control hello;
@@ -2596,9 +2666,7 @@ TEST_CASE( "handshake accepts a matching protocol version", "[mp]" )
     hello.hello.name = "serg";
     hello.hello.width = 100;
     hello.hello.height = 30;
-    const std::string json = mp_control_to_json( hello );
-    pair.b->send( mp_wrap( mp_msg_kind::control,
-                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
+    send_control( *pair.b, hello );
 
     std::string reason;
     CHECK( mp_server_handshake( *pair.a, reason ) );
@@ -2609,6 +2677,7 @@ TEST_CASE( "handshake accepts a matching protocol version", "[mp]" )
 
 TEST_CASE( "handshake refuses a protocol mismatch with an explanation", "[mp]" )
 {
+    mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
     mp_control hello;
@@ -2617,63 +2686,97 @@ TEST_CASE( "handshake refuses a protocol mismatch with an explanation", "[mp]" )
     hello.hello.name = "serg";
     hello.hello.width = 100;
     hello.hello.height = 30;
-    const std::string json = mp_control_to_json( hello );
-    pair.b->send( mp_wrap( mp_msg_kind::control,
-                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
+    send_control( *pair.b, hello );
 
     std::string reason;
     CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
     CHECK_THAT( reason, Catch::Matchers::ContainsSubstring( "protocol" ) );
 }
 
-TEST_CASE( "handshake refuses a terminal that is too small", "[mp]" )
+TEST_CASE( "handshake refuses a terminal below the game's minimum", "[mp]" )
 {
+    mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
     mp_control hello;
     hello.kind = mp_control_kind::hello;
     hello.hello.proto = MP_PROTOCOL_VERSION;
     hello.hello.name = "serg";
-    hello.hello.width = 20;
-    hello.hello.height = 5;
-    const std::string json = mp_control_to_json( hello );
-    pair.b->send( mp_wrap( mp_msg_kind::control,
-                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
+    hello.hello.width = EVEN_MINIMUM_TERM_WIDTH - 1;
+    hello.hello.height = EVEN_MINIMUM_TERM_HEIGHT;
+    send_control( *pair.b, hello );
 
     std::string reason;
     CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
     CHECK_THAT( reason, Catch::Matchers::ContainsSubstring( "terminal" ) );
 }
-```
 
-Минимальный размер терминала взять из существующей константы проекта:
+TEST_CASE( "handshake sends its verdict to the client either way", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
 
-```bash
-grep -rn "EIGHT_BY_EIGHT\|MIN_TERM\|TERMINAL_WIDTH_MIN\|minimum.*terminal" src/*.h src/*.cpp | head
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION + 1;
+    hello.hello.name = "serg";
+    hello.hello.width = 100;
+    hello.hello.height = 30;
+    send_control( *pair.b, hello );
+
+    std::string reason;
+    mp_server_handshake( *pair.a, reason );
+
+    const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 100 );
+    REQUIRE( msg.has_value() );
+    mp_msg_kind kind = mp_msg_kind::screen;
+    std::vector<uint8_t> body;
+    REQUIRE( mp_unwrap( *msg, kind, body ) );
+    REQUIRE( kind == mp_msg_kind::control );
+    mp_control ack;
+    REQUIRE( mp_control_from_json( std::string( body.begin(), body.end() ), ack ) );
+    CHECK( ack.kind == mp_control_kind::hello_ack );
+    CHECK_FALSE( ack.hello_ack.accepted );
+    CHECK_FALSE( ack.hello_ack.reason.empty() );
+}
+
+TEST_CASE( "handshake gives up when the client says nothing", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+
+    std::string reason;
+    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( reason.empty() );
+}
 ```
 
 - [ ] **Step 2: Прогнать и убедиться, что падает**
 
 ```bash
-make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
 ```
 
-- [ ] **Step 3: Написать хендшейк и главный цикл сервера**
+- [ ] **Step 3: Написать хендшейк**
 
-`mp_server_handshake` читает первое сообщение с таймаутом, проверяет версию и размер
-терминала, отправляет `hello_ack` и настраивает буфер экрана.
+`mp_server_handshake` читает первое сообщение с таймаутом (пять секунд), проверяет вид
+`hello`, версию протокола и размер терминала, отправляет `hello_ack` с вердиктом и, при
+успехе, настраивает размер экрана. Отказ всегда сопровождается текстом причины — и в
+`reject_reason`, и в отправленном клиенту сообщении.
 
-`mp_server_main` делает: `mp_socket_startup()`, `mp_listener::bind( port )`,
-`accept` с ожиданием, `mp_server_handshake`, `mp_server_set_transport`, затем передаёт
-управление обычному запуску игры — тому же пути, что и одиночная игра после
-`catacurses::init_interface()` в `src/main.cpp:779`.
+- [ ] **Step 4: Написать `mp_server_main`**
 
-- [ ] **Step 4: Добавить аргументы в `src/main.cpp`**
+`mp_socket_startup()`, `mp_listener::bind( port )`, ожидание подключения, `mp_server_handshake`,
+`mp_server_set_transport`, затем передача управления обычному запуску игры — тому же пути,
+что и одиночная игра после `catacurses::init_interface()` (`src/main.cpp:779`). Файл под
+`#if defined(MP_SERVER)`, кроме `mp_server_handshake`, который живёт в `mp_server_input.cpp`
+и потому доступен тестам обычной сборки.
 
-В `first_pass_arguments` (`src/main.cpp:301`) добавить два обработчика по образцу
-соседних: `--server <port>` и `--connect <host:port>`, каждый пишет в поля структуры
-разбора аргументов. В `main()` (`:636`) до `catacurses::init_interface()` добавить
-развилку:
+- [ ] **Step 5: Добавить аргументы в `src/main.cpp`**
+
+В `first_pass_arguments` (`:301`) добавить два обработчика по образцу соседних:
+`--server <port>` и `--connect <host:port>`. В `main()` (`:636`), до
+`catacurses::init_interface()` (`:779`), вставить развилку:
 
 ```cpp
 #if defined(MP_SERVER)
@@ -2688,119 +2791,251 @@ make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
 #endif
 ```
 
-Держать эту вставку в одном месте и не больше десяти строк.
+Вставка — в одном месте и не длиннее десяти строк.
 
-- [ ] **Step 5: Прогнать тесты и собрать сервер**
+- [ ] **Step 6: Прогнать тесты и собрать сервер**
 
 ```bash
-make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
-mpserver-tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
+tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
 make -j$(nproc) CCACHE=1 TESTS=0 MP_SERVER=1 BUILD_PREFIX=mpserver-
 ```
 
-- [ ] **Step 6: Коммит**
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add src/mp/mp_server_main.h src/mp/mp_server_main.cpp src/main.cpp \
-        tests/mp_server_session_test.cpp
+git add src/mp/mp_server_main.h src/mp/mp_server_main.cpp src/mp/mp_server_input.cpp \
+        src/mp/mp_server_input.h src/main.cpp tests/mp_server_io_test.cpp
 git commit -m "feat(mp): add the server entry point and handshake"
 ```
 
 ---
 
-### Task 11: Клиент `--connect`
+### Task 10: Клиент `--connect`
 
 **Files:**
-- Create: `src/mp/mp_client_main.h`, `src/mp/mp_client_main.cpp`
-- Test: ручная проверка (см. шаги)
+- Create: `src/mp/mp_client_main.h`, `src/mp/mp_client_main.cpp`, `src/mp/mp_client_screen.h`, `src/mp/mp_client_screen.cpp`
+- Test: `tests/mp_client_test.cpp`
 
 **Interfaces:**
 - Consumes: `mp_tcp_connect`, `mp_control`, `mp_screen_apply`, `mp_screen_grid`.
-- Produces: `int mp_client_main( const std::string &host_and_port )`
+- Produces:
+  - `bool mp_parse_host_port( const std::string &text, std::string &host, int &port )`
+  - `enum class mp_client_event { none, screen, cursor, rejected, closed }`
+  - `mp_client_event mp_client_apply_message( const std::vector<uint8_t> &payload, mp_screen_grid &screen, mp_client_state &state )`
+  - `std::vector<uint8_t> mp_client_encode_input( const input_event &ev )`
+  - `int mp_client_pair_for( uint8_t fg, uint8_t bg )`
+  - `int mp_client_main( const std::string &host_and_port )`
 
-**Что делает клиент.** Инициализирует свой обычный бэкенд curses, соединяется, шлёт `hello`
-со своим размером терминала, затем крутит цикл: применяет присланные ячейки к своим окнам,
-читает локальные нажатия и отправляет их немедленно, не дожидаясь ответа. Мира,
-контента и правил у него нет.
+**Разрешённые значения по цветам.** Ячейка приходит парой индексов. Клиент держит
+собственный кэш пар: при первой встрече комбинации зовёт `catacurses::init_pair( n, fg, bg )`
+и запоминает `n`, затем рисует через `nc_color::from_color_pair_index( n )` (`src/color.h:381`).
+Ровно так поступает `imtui-impl-ncurses.cpp:452-461`. Массив пар в `cursesport` — сто
+элементов (`src/cursesport.h:81`), поэтому кэш ограничен 96 парами, а при исчерпании
+используется пара 1 (белое на чёрном) с записью в лог. На практике одновременно живых
+комбинаций у CDDA меньше сорока.
 
-- [ ] **Step 1: Написать скелет клиента**
+**Разделение на два файла.** `mp_client_screen` — чистая логика (разбор сообщения,
+применение к сетке, кэш пар, кодирование ввода), тестируется в обычной сборке.
+`mp_client_main` — цикл вокруг терминала и сокета, проверяется на воротах руками.
 
-Создать `src/mp/mp_client_main.h` и `.cpp`. Цикл:
+- [ ] **Step 1: Написать падающий тест**
+
+Создать `tests/mp_client_test.cpp`:
 
 ```cpp
-int mp_client_main( const std::string &host_and_port )
+#include "cata_catch.h"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "input_enums.h"
+#include "mp/mp_cell.h"
+#include "mp/mp_client_screen.h"
+#include "mp/mp_protocol.h"
+#include "mp/mp_screen_codec.h"
+
+TEST_CASE( "client parses host and port", "[mp]" )
 {
     std::string host;
     int port = 0;
-    if( !mp_parse_host_port( host_and_port, host, port ) ) {
-        std::cerr << "expected --connect host:port" << std::endl;
-        return 1;
+    REQUIRE( mp_parse_host_port( "127.0.0.1:4321", host, port ) );
+    CHECK( host == "127.0.0.1" );
+    CHECK( port == 4321 );
+
+    CHECK_FALSE( mp_parse_host_port( "127.0.0.1", host, port ) );
+    CHECK_FALSE( mp_parse_host_port( "127.0.0.1:", host, port ) );
+    CHECK_FALSE( mp_parse_host_port( "127.0.0.1:notaport", host, port ) );
+    CHECK_FALSE( mp_parse_host_port( "", host, port ) );
+}
+
+TEST_CASE( "client applies a screen message", "[mp]" )
+{
+    mp_screen_grid source( 20, 5 );
+    mp_cell cell;
+    cell.ch = "@";
+    cell.fg = 3;
+    cell.bg = 1;
+    source.set( 4, 2, cell );
+
+    mp_screen_grid client_screen( 20, 5 );
+    mp_client_state state;
+    const std::vector<uint8_t> payload = mp_wrap( mp_msg_kind::screen, mp_screen_encode( source ) );
+
+    CHECK( mp_client_apply_message( payload, client_screen, state ) == mp_client_event::screen );
+    CHECK( client_screen.at( 4, 2 ) == cell );
+}
+
+TEST_CASE( "client records the cursor position", "[mp]" )
+{
+    mp_screen_grid client_screen( 20, 5 );
+    mp_client_state state;
+
+    mp_control cursor;
+    cursor.kind = mp_control_kind::cursor;
+    cursor.cursor.x = 7;
+    cursor.cursor.y = 3;
+    cursor.cursor.visible = true;
+    const std::string json = mp_control_to_json( cursor );
+    const std::vector<uint8_t> payload =
+        mp_wrap( mp_msg_kind::control, std::vector<uint8_t>( json.begin(), json.end() ) );
+
+    CHECK( mp_client_apply_message( payload, client_screen, state ) == mp_client_event::cursor );
+    CHECK( state.cursor_x == 7 );
+    CHECK( state.cursor_y == 3 );
+    CHECK( state.cursor_visible );
+}
+
+TEST_CASE( "client reports a rejection with its reason", "[mp]" )
+{
+    mp_screen_grid client_screen( 20, 5 );
+    mp_client_state state;
+
+    mp_control ack;
+    ack.kind = mp_control_kind::hello_ack;
+    ack.hello_ack.accepted = false;
+    ack.hello_ack.reason = "protocol version mismatch";
+    const std::string json = mp_control_to_json( ack );
+    const std::vector<uint8_t> payload =
+        mp_wrap( mp_msg_kind::control, std::vector<uint8_t>( json.begin(), json.end() ) );
+
+    CHECK( mp_client_apply_message( payload, client_screen, state ) == mp_client_event::rejected );
+    CHECK( state.reject_reason == "protocol version mismatch" );
+}
+
+TEST_CASE( "client ignores a malformed message without crashing", "[mp]" )
+{
+    mp_screen_grid client_screen( 20, 5 );
+    mp_client_state state;
+
+    CHECK( mp_client_apply_message( { 99, 1, 2 }, client_screen, state ) == mp_client_event::none );
+    CHECK( mp_client_apply_message( {}, client_screen, state ) == mp_client_event::none );
+
+    const std::vector<uint8_t> bad_json =
+        mp_wrap( mp_msg_kind::control, std::vector<uint8_t> { 'n', 'o', 'p', 'e' } );
+    CHECK( mp_client_apply_message( bad_json, client_screen, state ) == mp_client_event::none );
+}
+
+TEST_CASE( "client encodes a keystroke as a control message", "[mp]" )
+{
+    input_event ev;
+    ev.type = input_event_t::keyboard_char;
+    ev.sequence = { 'k' };
+
+    const std::vector<uint8_t> payload = mp_client_encode_input( ev );
+    mp_msg_kind kind = mp_msg_kind::screen;
+    std::vector<uint8_t> body;
+    REQUIRE( mp_unwrap( payload, kind, body ) );
+    REQUIRE( kind == mp_msg_kind::control );
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( std::string( body.begin(), body.end() ), got ) );
+    CHECK( got.kind == mp_control_kind::input );
+    CHECK( got.event.sequence == std::vector<int> { 'k' } );
+}
+
+TEST_CASE( "client reuses a colour pair for a repeated combination", "[mp]" )
+{
+    mp_client_reset_pairs_for_test();
+    const int first = mp_client_pair_for( 3, 1 );
+    CHECK( mp_client_pair_for( 3, 1 ) == first );
+    CHECK( mp_client_pair_for( 4, 1 ) != first );
+}
+
+TEST_CASE( "client falls back to a safe pair when the cache is exhausted", "[mp]" )
+{
+    // cursesport only has a hundred pairs; running past the cache must degrade
+    // to readable text rather than corrupt the pair table.
+    mp_client_reset_pairs_for_test();
+    for( int i = 0; i < 200; ++i ) {
+        const int pair = mp_client_pair_for( static_cast<uint8_t>( i % 256 ),
+                                             static_cast<uint8_t>( i / 16 ) );
+        REQUIRE( pair >= 1 );
+        REQUIRE( pair < 100 );
     }
-
-    std::string err;
-    std::shared_ptr<mp_transport> transport = mp_tcp_connect( host, port, err );
-    if( !transport ) {
-        std::cerr << "cannot connect to " << host_and_port << ": " << err << std::endl;
-        return 1;
-    }
-
-    catacurses::init_interface();
-
-    mp_control hello;
-    hello.kind = mp_control_kind::hello;
-    hello.hello.proto = MP_PROTOCOL_VERSION;
-    hello.hello.name = mp_client_player_name();
-    hello.hello.width = get_terminal_width();
-    hello.hello.height = get_terminal_height();
-    hello.hello.colors_256 = catacurses::supports_256_colors();
-    mp_send_control( *transport, hello );
-
-    // ... await hello_ack, print the rejection reason and exit on refusal ...
-
-    mp_screen_grid screen( hello.hello.width, hello.hello.height );
-    while( transport->connected() ) {
-        // Outgoing first: a keystroke must never wait for a redraw.
-        mp_client_send_pending_input( *transport );
-        const std::optional<std::vector<uint8_t>> msg = transport->recv( 16 );
-        if( msg ) {
-            mp_client_apply_message( *msg, screen );
-        }
-    }
-    return 0;
 }
 ```
 
-- [ ] **Step 2: Отрисовка присланного экрана**
-
-`mp_client_apply_message` для `mp_msg_kind::screen` вызывает `mp_screen_apply`, затем
-выкладывает изменившиеся строки в `catacurses::stdscr` обычными вызовами
-(`catacurses::wattron`, `catacurses::mvwprintw`) и делает `catacurses::wrefresh( stdscr )`.
-Цвета: индексы 0–15 отдавать через существующую таблицу `all_colors`; индексы выше —
-через 256-цветную ветку, если `supports_256_colors()`, иначе схлопывать в ближайший из 16.
-
-Точное имя функции получения `nc_color` по индексу пары найти так:
+- [ ] **Step 2: Прогнать и убедиться, что падает**
 
 ```bash
-grep -n "from_color_pair_index\|get_all_colors\|nc_color::from" src/color.h src/color.cpp | head
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
 ```
 
-- [ ] **Step 3: Отправка ввода**
+- [ ] **Step 3: Написать `mp_client_screen`**
 
-`mp_client_send_pending_input` берёт события через `inp_mngr.get_input_event()` своего
-локального бэкенда с нулевым таймаутом и отправляет каждое как `mp_control_kind::input`.
-Локально ничего не интерпретировать: сочетание клавиш превращает в действие сервер.
+`struct mp_client_state { int cursor_x = 0; int cursor_y = 0; bool cursor_visible = false;
+std::string reject_reason; bool accepted = false; };` плюс перечисленные функции.
+`mp_client_apply_message` не бросает ни на каком вводе: некорректное сообщение — это
+`mp_client_event::none`.
 
-- [ ] **Step 4: Обработка изменения размера терминала**
+- [ ] **Step 4: Написать `mp_client_main`**
 
-При изменении локального размера (существующий путь `handle_resize`) клиент шлёт
-`mp_control_kind::resize` и пересоздаёт свой `mp_screen_grid` под новый размер.
+Цикл: разобрать адрес, соединиться, `catacurses::init_interface()`, отправить `hello` со
+своим размером терминала и `supports_256_colors()`, дождаться `hello_ack` (при отказе —
+напечатать причину и выйти с кодом 1), затем крутить:
 
-- [ ] **Step 5: Собрать и проверить руками**
+```cpp
+while( transport->connected() ) {
+    // Outgoing first: a keystroke must never wait for a redraw.
+    while( true ) {
+        inp_mngr.set_timeout( 0 );
+        const input_event ev = inp_mngr.get_input_event();
+        if( ev.type == input_event_t::timeout || ev.type == input_event_t::error ) {
+            break;
+        }
+        transport->send( mp_client_encode_input( ev ) );
+    }
+    const std::optional<std::vector<uint8_t>> msg = transport->recv( 16 );
+    if( msg && mp_client_apply_message( *msg, screen, state ) == mp_client_event::screen ) {
+        mp_client_paint( screen, state );
+    }
+}
+```
+
+`mp_client_paint` выкладывает изменившиеся строки в `catacurses::stdscr` обычными вызовами
+(`wattron` с `nc_color::from_color_pair_index( mp_client_pair_for( fg, bg ) )`, `mvwprintw`),
+ставит курсор и делает `wrefresh`.
+
+Изменение локального размера терминала (существующий путь `handle_resize`) отправляет
+`mp_control_kind::resize` и пересоздаёт `mp_screen_grid` под новый размер.
+
+- [ ] **Step 5: Прогнать тесты**
+
+```bash
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
+tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
+```
+
+Ожидается: восемь тестов клиента проходят.
+
+- [ ] **Step 6: Проверить руками**
 
 Терминал 1:
 
 ```bash
-mpserver-cataclysm-server --server 4321 --world testworld --userdir /tmp/cata-mp-server/
+./mpserver-cataclysm-server --server 4321 --world testworld --userdir /tmp/cata-mp-server/
 ```
 
 Терминал 2:
@@ -2809,42 +3044,47 @@ mpserver-cataclysm-server --server 4321 --world testworld --userdir /tmp/cata-mp
 ./cataclysm-tiles --connect 127.0.0.1:4321
 ```
 
-Ожидается: в терминале 2 появляется главное меню игры, стрелки и Enter работают, создание
-персонажа проходит, игра запускается, персонаж ходит.
+Ожидается: главное меню, стрелки и Enter работают, создание персонажа проходит, игра
+запускается, персонаж ходит.
 
-- [ ] **Step 6: Коммит**
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add src/mp/mp_client_main.h src/mp/mp_client_main.cpp
+git add src/mp/mp_client_screen.h src/mp/mp_client_screen.cpp src/mp/mp_client_main.h \
+        src/mp/mp_client_main.cpp tests/mp_client_test.cpp
 git commit -m "feat(mp): add the thin client connect mode"
 ```
 
 ---
 
-### Task 12: Обратное давление и схлопывание
+### Task 11: Обратное давление
 
 **Files:**
-- Modify: `src/mp/mp_server_screen.cpp`, `src/mp/mp_tcp_transport.cpp`
-- Test: `tests/mp_server_session_test.cpp` (дополнить)
+- Modify: `src/mp/mp_transport.h`, `src/mp/mp_loopback_transport.cpp`, `src/mp/mp_tcp_transport.cpp`, `src/mp/mp_server_screen.cpp`
+- Test: `tests/mp_server_io_test.cpp` (дополнить)
 
 **Interfaces:**
-- Consumes: `mp_transport::pending_bytes()` — новый метод интерфейса, по умолчанию 0.
-- Produces: поведение «очередь переполнена — послать полную перерисовку вместо истории».
+- Consumes: `mp_transport`.
+- Produces: `virtual size_t mp_transport::pending_bytes() const`,
+  `virtual void mp_transport::drop_pending_screen_messages()`,
+  `constexpr size_t MP_SCREEN_BACKLOG_BYTES = 512u * 1024u`
 
 - [ ] **Step 1: Написать падающий тест**
+
+Добавить в `tests/mp_server_io_test.cpp`:
 
 ```cpp
 TEST_CASE( "a backlogged client gets one full redraw instead of a history", "[mp]" )
 {
-    // A transport that never drains simulates a client that stopped reading.
+    // A loopback peer that never reads simulates a client that stopped
+    // draining its socket.
+    mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 80, 24 );
     mp_server_set_transport( pair.a );
 
-    for( int i = 0; i < 200; ++i ) {
-        catacurses::window win = catacurses::newwin( 1, 10, point( 0, i % 24 ) );
-        catacurses::mvwprintw( win, point( 0, 0 ), "%d", i );
-        catacurses::wrefresh( win );
+    for( int i = 0; i < 400; ++i ) {
+        mp_server_blit_row( 0, i % 24, text_row( std::to_string( i ) + " filler text" ) );
         mp_server_flush_screen();
     }
 
@@ -2855,41 +3095,78 @@ TEST_CASE( "a backlogged client gets one full redraw instead of a history", "[mp
         REQUIRE( mp_unwrap( *msg, kind, body ) );
         screen_messages += kind == mp_msg_kind::screen ? 1 : 0;
     }
-    // Without coalescing this would be 200.
-    CHECK( screen_messages < 50 );
+    CHECK( screen_messages < 400 );
+}
+
+TEST_CASE( "the coalesced redraw still describes the whole screen", "[mp]" )
+{
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 80, 24 );
+    mp_server_set_transport( pair.a );
+
+    for( int i = 0; i < 400; ++i ) {
+        mp_server_blit_row( 0, i % 24, text_row( std::to_string( i ) + " filler text" ) );
+        mp_server_flush_screen();
+    }
+
+    mp_screen_grid client( 80, 24 );
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        if( kind == mp_msg_kind::screen ) {
+            REQUIRE( mp_screen_apply( client, body ) );
+        }
+    }
+
+    for( int y = 0; y < 24; ++y ) {
+        for( int x = 0; x < 80; ++x ) {
+            REQUIRE( client.at( x, y ) == mp_server_grid().at( x, y ) );
+        }
+    }
 }
 ```
 
-- [ ] **Step 2: Реализовать**
+Второй тест — существенный: схлопывание обязано быть безопасным, а не просто уменьшать
+число сообщений. Экран идемпотентен, поэтому потеря промежуточных кадров допустима, а
+потеря содержимого — нет.
 
-Добавить `virtual size_t pending_bytes() const { return 0; }` в `mp_transport`,
-переопределить в TCP-транспорте (размер исходящего буфера) и в loopback (сумма размеров
-очереди). В `mp_server_flush_screen`: если `pending_bytes()` превышает порог
-(`MP_SCREEN_BACKLOG_BYTES = 512 * 1024`), отбросить накопленные исходящие экранные
-сообщения, вызвать `grid.mark_all_dirty()` и отправить одну полную перерисовку.
-
-Для отбрасывания понадобится `virtual void drop_pending_screen_messages()` — либо, проще,
-транспорт хранит только последнее экранное сообщение, если следующее пришло раньше отправки.
-Выбрать первое: явный метод понятнее в чтении.
-
-- [ ] **Step 3: Прогнать тесты**
+- [ ] **Step 2: Прогнать и убедиться, что падает**
 
 ```bash
-make -j$(nproc) CCACHE=1 TESTS=1 MP_SERVER=1 BUILD_PREFIX=mpserver-
-mpserver-tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
 ```
 
-- [ ] **Step 4: Коммит**
+- [ ] **Step 3: Реализовать**
+
+В `mp_transport` добавить `virtual size_t pending_bytes() const { return 0; }` и
+`virtual void drop_pending_screen_messages() {}`. В обеих реализациях: `pending_bytes` —
+объём неотправленного; `drop_pending_screen_messages` — выбросить из очереди сообщения с
+байтом вида `screen`, не трогая управляющие.
+
+В `mp_server_flush_screen`: если `pending_bytes()` превышает `MP_SCREEN_BACKLOG_BYTES`,
+вызвать `drop_pending_screen_messages()`, затем `grid.mark_all_dirty()` и отправить одну
+полную перерисовку.
+
+- [ ] **Step 4: Прогнать тесты**
 
 ```bash
-git add src/mp/mp_server_screen.cpp src/mp/mp_transport.h src/mp/mp_tcp_transport.cpp \
-        src/mp/mp_loopback_transport.cpp tests/mp_server_session_test.cpp
+make -j$(nproc) CCACHE=1 TILES=0 TESTS=1 MULTIPLAYER=1
+tests/cata_test "[mp]" --user-dir=/tmp/cata-mp-test/
+```
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/mp/mp_transport.h src/mp/mp_loopback_transport.cpp src/mp/mp_tcp_transport.cpp \
+        src/mp/mp_server_screen.cpp tests/mp_server_io_test.cpp
 git commit -m "feat(mp): collapse the screen backlog for a slow client"
 ```
 
 ---
 
-### Task 13: CI, документация и ворота
+### Task 12: CI, документация и ворота
 
 **Files:**
 - Create: `doc/MULTIPLAYER.md`
@@ -2914,19 +3191,18 @@ grep -rn "TILES=0\|make -j" .github/workflows/*.yml | head
 
 - [ ] **Step 3: Написать `doc/MULTIPLAYER.md`**
 
-Содержание: как собрать сервер, как его запустить, как подключиться, какие ограничения
-первой версии (раскладка клавиш сервера, нет звука, нет TILES-карты, один игрок),
-как читать лог управляющих сообщений при отладке.
+Содержание: как собрать сервер, как его запустить, как подключиться, ограничения первой
+версии (раскладка клавиш сервера, нет звука, нет TILES-карты, один игрок), как читать лог
+управляющих сообщений при отладке.
 
 - [ ] **Step 4: Ворота — вечер настоящей игры**
 
-Поднять сервер на одной машине, подключиться с другой (или через Tailscale) и играть
-не менее часа обычную одиночную партию: создание персонажа, перемещение, бой, крафт,
-инвентарь, чтение, сон.
+Поднять сервер на одной машине, подключиться с другой (или через Tailscale) и играть не
+менее часа: создание персонажа, перемещение, бой, крафт, инвентарь, чтение, сон.
 
 Записать в `docs/superpowers/reports/2026-XX-XX-mp-phase1-gate.md`:
 - субъективное ощущение задержки при перемещении и в меню;
-- есть ли артефакты отрисовки, и на каких экранах;
+- есть ли артефакты отрисовки и на каких экранах;
 - работает ли печать вперёд;
 - измеренный трафик (`ss -i` или `nethogs`) в спокойной игре и в бою;
 - вердикт: продолжать к Ф2 или пересматривать модель клиента.
@@ -2942,31 +3218,45 @@ git commit -m "docs: document the multiplayer server and add a CI guard"
 
 ## Самопроверка плана
 
-**Покрытие спека.** §5.1 (роли, серверный бэкенд, отдельная цель) — задачи 5–8, 10.
-§5.2 (модули `src/mp/`) — все задачи; `mp_sched` и `mp_turn` намеренно отсутствуют, это Ф3
-и Ф4. §6.1 (композит, сброс перед ожиданием ввода, бинарь с прогонами) — задачи 2, 6, 7.
-§6.2 (сообщения) — задача 3. §6.3 (размер терминала) — задачи 10, 11. §6.4 (версионирование
-и отказ) — задача 10. §9 «медленный клиент» — задача 12. §10 (CI-сторож) — задача 13.
-§11 Ф0 и Ф1 с воротами — задача 13, шаг 4.
+**Покрытие спека.** §5.1 (роли, серверный бэкенд, отдельная цель, три шва включая imgui) —
+задачи 5–7, 9. §5.2 (модули `src/mp/`) — все задачи; `mp_sched` и `mp_turn` намеренно
+отсутствуют, это Ф3 и Ф4. §6.1 (композит, сброс перед ожиданием ввода, строки а не
+прямоугольники, прогоны, индексы цветов) — задачи 2, 5, 7. §6.2 (сообщения) — задача 3.
+§6.3 (размер терминала) — задачи 6, 9, 10. §6.4 (версионирование и отказ) — задача 9.
+§6.5 (свои сокеты, `TCP_NODELAY`, частичный ввод-вывод) — задача 8. §9 «медленный клиент» —
+задача 11. §10 (CI-сторож) — задача 12. §11 Ф0 и Ф1 с воротами — задача 12, шаг 4.
 
-Сознательно вне этого плана и записано как долг: `status`-сообщение (нужно только с
-появлением второго игрока, Ф4), персональные раскладки, звук, TILES.
+Сознательно вне этого плана и записано как долг: `status`-сообщение (нужно только со вторым
+игроком, Ф4), персональные раскладки, звук, TILES.
 
 **Отклонение от спека, зафиксированное явно.** Спек §5.3 говорит, что под флагом
 `MULTIPLAYER` остаются планировщик, сеть и серверный бэкенд. План оставляет чистые модули
-(`mp_frame`, `mp_cell`, `mp_screen_codec`, `mp_protocol`, транспорты) тоже под `MULTIPLAYER`,
-но собирает тесты с этим флагом, чтобы они гонялись в CI. Серверный бэкенд дополнительно
-закрыт `MP_SERVER`. Это ужесточение, а не ослабление изоляции.
+(`mp_frame`, `mp_cell`, `mp_screen_codec`, `mp_protocol`, транспорты, `mp_server_screen`,
+`mp_server_input`, `mp_client_screen`) тоже под `MULTIPLAYER`, но собирает тесты с этим
+флагом, чтобы они гонялись в CI. Серверный бэкенд дополнительно закрыт `MP_SERVER`. Это
+ужесточение изоляции, а не ослабление.
 
-**Согласованность имён.** `mp_screen_grid` используется одинаково в задачах 2, 6, 8, 11, 12.
-`mp_transport::send/recv/connected/close` — в задачах 4, 6, 7, 9, 10, 11; `pending_bytes` и
-`drop_pending_screen_messages` добавляются в задаче 12 и там же реализуются во всех
-наследниках. `mp_control` и `mp_control_kind` — задачи 3, 7, 10, 11. `mp_server_grid()`,
-`mp_server_flush_screen()`, `mp_server_blit_window()` — задачи 6, 7, 8, 12.
+**Почему нет заглушек.** Ранняя редакция плана открывала серверную часть задачей, которая
+определяла все символы бэкенда пустышками ради линковки, а наполняла их через две задачи.
+Это противоречит рубрике ревью и просто плохо: заглушка, дожившая до конца работы, не
+отличима от забытой. Вместо этого модули экрана и ввода пишутся первыми и полностью
+(задача 5, без curses и потому тестируемые в обычной сборке), а бэкенд (задача 6)
+появляется сразу целиком — каждый его символ с окончательным поведением.
 
-**Места, где план сознательно оставляет решение исполнителю**, потому что точный ответ
-виден только в коде и проверяется тут же компилятором: точные имена в API работы с JSON
-(задача 3, шаг 5), имя переменной цели сборки в Makefile (задача 5, шаг 4), имя функции
-перекодировки UTF-32 в UTF-8 (задача 8, шаг 3), константа минимального размера терминала
-(задача 10, шаг 1), способ получить `nc_color` по индексу пары (задача 11, шаг 2). В каждом
-случае в плане стоит команда, которой ответ находится за секунды.
+**Согласованность имён.** `mp_screen_grid` — задачи 2, 5, 10, 11. `mp_transport::send/recv/
+connected/close` — задачи 4, 5, 8, 9, 10; `pending_bytes` и `drop_pending_screen_messages`
+добавляются и реализуются во всех наследниках в задаче 11. `mp_control` и `mp_control_kind` —
+задачи 3, 5, 9, 10. `mp_server_grid()`, `mp_server_flush_screen()`, `mp_server_blit_row()`,
+`mp_server_reset_for_test()` — задачи 5, 6, 7, 11. `mp_server_handshake` — задача 9.
+
+**Значения, разрешённые при планировании** (в коде не искать, брать отсюда):
+
+| Что | Значение |
+|---|---|
+| Разбор JSON | `json_loader::from_string_opt( std::string const & )`, обёрнутый в `try`/`catch( const JsonError & )` |
+| Массивы в JSON | `JsonObject::get_int_array( std::string_view )` (`src/json.h:1145`), `has_string` (`:1168`) |
+| Имя цели сборки | `TARGET_NAME` (`Makefile:153`); `TARGET` выводится на `:159`, поэтому блок `MP_SERVER` ставить **выше** |
+| UTF-32 в UTF-8 | `utf32_to_utf8( uint32_t ch )` (`src/catacharset.h:47`) |
+| Минимальный терминал | `EVEN_MINIMUM_TERM_WIDTH = 80`, `EVEN_MINIMUM_TERM_HEIGHT = 24` (`src/game_constants.h:11-12`) |
+| Цвет по индексу пары | `nc_color::from_color_pair_index( int )` (`src/color.h:381`); пары выделяются `catacurses::init_pair`, всего их сто (`src/cursesport.h:81`) |
+| Буфер imgui | `ImTui::ImTui_Impl_GetBackendData()->Screen`, ячейка `ImTui::TCell` (`src/third-party/imtui/imtui.h:22-27`) |
