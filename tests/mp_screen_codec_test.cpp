@@ -31,6 +31,23 @@ static bool all_default( const mp_screen_grid &g )
     return true;
 }
 
+// Builds a payload wrapping one glyph as the sole cell of a 1x1 grid, for
+// testing decoder rejection of a specific glyph byte sequence in isolation:
+// on a 1x1 grid a single repeat=1 run always totals the row width, so
+// nothing about the row shape can mask whatever the glyph check itself
+// decides.
+static std::vector<uint8_t> single_glyph_payload( const std::vector<uint8_t> &glyph )
+{
+    std::vector<uint8_t> payload = {
+        0x00, 0x01, 0x00, 0x01, 0x00, 0x01, // 1x1 grid, one dirty row
+        0x00, 0x00, 0x00, 0x01,             // row 0, one run
+        0x00, 0x01, 0x07, 0x00,             // repeat=1 fg=7 bg=0
+        static_cast<uint8_t>( glyph.size() )
+    };
+    payload.insert( payload.end(), glyph.begin(), glyph.end() );
+    return payload;
+}
+
 TEST_CASE( "mp_screen_grid starts fully dirty", "[mp]" )
 {
     // A freshly created grid has never been sent, so every row must go out.
@@ -195,16 +212,30 @@ TEST_CASE( "mp_screen codec round trips a double-width continuation cell", "[mp]
 
 TEST_CASE( "mp_screen_apply rejects a run with a non-positive repeat", "[mp]" )
 {
+    // Two runs, repeat=0 then repeat=3, so the row still totals width=3 if
+    // the repeat<=0 check were the only thing standing in the way: a single
+    // repeat=0 run would leave x=0 != width and get caught by the row-width
+    // check regardless, which would not prove this check does anything.
+    // With both runs present, deleting the repeat<=0 check lets repeat=0
+    // contribute nothing and repeat=3 complete the row on its own, so only
+    // the repeat<=0 check itself stands between this payload and acceptance.
     const std::vector<uint8_t> payload = {
         0x00, 0x03, 0x00, 0x02, 0x00, 0x01, // 3x2, one dirty row
-        0x00, 0x00, 0x00, 0x01,             // row 0, one run
-        0x00, 0x00, 0x07, 0x00, 0x01, 0x78  // repeat=0 fg=7 bg=0 len=1 'x'
+        0x00, 0x00, 0x00, 0x02,             // row 0, two runs
+        0x00, 0x00, 0x07, 0x00, 0x01, 0x78, // repeat=0 fg=7 bg=0 len=1 'x'
+        0x00, 0x03, 0x07, 0x00, 0x01, 0x79  // repeat=3 fg=7 bg=0 len=1 'y'
     };
     mp_screen_grid target( 3, 2 );
     CHECK_FALSE( mp_screen_apply( target, payload ) );
     CHECK( all_default( target ) );
 }
 
+// The `x + repeat > width` half of the repeat/width check
+// (mp_screen_codec.cpp) has no test of its own: any payload that overshoots
+// the row also leaves `x != width` at the end of it, so the row-width check
+// below rejects it regardless of whether the overshoot check itself ran.
+// Deleting the overshoot check does not change this test's outcome, and
+// that is by design -- see the comment beside the check in the source.
 TEST_CASE( "mp_screen_apply rejects a run that overflows the row width", "[mp]" )
 {
     const std::vector<uint8_t> payload = {
@@ -231,9 +262,18 @@ TEST_CASE( "mp_screen_apply rejects a row whose runs fall short of the row width
 
 TEST_CASE( "mp_screen_apply rejects an out-of-range row index", "[mp]" )
 {
+    // Row 5 gets a complete body (run_count=1, repeat=3 filling the width-3
+    // row) rather than an empty one: with an empty body, a payload with the
+    // y >= height check deleted would still fail on x != width (0 != 3), so
+    // that would not prove this check does anything. With a complete body,
+    // deleting y >= height indexes seen_row[5] on a height-2 (size 2)
+    // std::vector<bool> -- undefined behaviour, not just a wrong answer --
+    // so this check is load-bearing for memory safety, not merely
+    // correctness, and was previously unpinned.
     const std::vector<uint8_t> payload = {
         0x00, 0x03, 0x00, 0x02, 0x00, 0x01,
-        0x00, 0x05, 0x00, 0x00  // row_index=5 on a height-2 grid
+        0x00, 0x05, 0x00, 0x01,             // row_index=5 on a height-2 grid
+        0x00, 0x03, 0x07, 0x00, 0x01, 0x78  // repeat=3 fg=7 bg=0 len=1 'x'
     };
     mp_screen_grid target( 3, 2 );
     CHECK_FALSE( mp_screen_apply( target, payload ) );
@@ -255,13 +295,15 @@ TEST_CASE( "mp_screen_apply rejects a duplicate row index", "[mp]" )
     CHECK( all_default( target ) );
 }
 
+// row_count > height (mp_screen_apply) has no test discriminating it from
+// the checks below it. By pigeonhole, a row_count greater than height
+// forces at least one row_index to repeat or land outside [0, height) among
+// the rows that follow -- both already rejected by walk_rows() -- so this
+// check is an early exit, not an independent guard. Deleting it does not
+// change this test's outcome, and that is by design -- see the comment
+// beside the check in the source.
 TEST_CASE( "mp_screen_apply rejects a row_count larger than the grid height", "[mp]" )
 {
-    // A legitimate encoder's row_count is bounded by dirty_rows(), which can
-    // never exceed height. Without this check a decoder that buffers writes
-    // can be walked into materialising width * row_count entries from a
-    // payload of only a few hundred kilobytes -- hundreds of megabytes on a
-    // wide terminal. This grid never even reaches the row data.
     const std::vector<uint8_t> payload = {
         0x00, 0x03, 0x00, 0x02, 0x00, 0x03  // row_count=3 on a height-2 grid
     };
@@ -272,28 +314,28 @@ TEST_CASE( "mp_screen_apply rejects a row_count larger than the grid height", "[
 
 TEST_CASE( "mp_screen_apply rejects a glyph_len that overruns the payload", "[mp]" )
 {
-    const std::vector<uint8_t> payload = {
-        0x00, 0x03, 0x00, 0x02, 0x00, 0x01,
+    // On a 1x1 grid, repeat=1 always totals the row width -- see
+    // single_glyph_payload()'s comment -- so what rejects this payload is
+    // solely the mismatch between the declared glyph_len (4) and the single
+    // byte actually supplied, not any row-shape check.
+    std::vector<uint8_t> payload = {
+        0x00, 0x01, 0x00, 0x01, 0x00, 0x01,
         0x00, 0x00, 0x00, 0x01,
         0x00, 0x01, 0x07, 0x00, 0x04, 0x78 // glyph_len=4 but only 1 byte follows
     };
-    mp_screen_grid target( 3, 2 );
+    mp_screen_grid target( 1, 1 );
     CHECK_FALSE( mp_screen_apply( target, payload ) );
     CHECK( all_default( target ) );
 }
 
-TEST_CASE( "mp_screen_apply rejects a glyph longer than 4 bytes", "[mp]" )
+TEST_CASE( "mp_screen_apply rejects a glyph longer than the byte cap", "[mp]" )
 {
-    // No single UTF-8 code point encodes to more than 4 bytes; a longer
-    // glyph can only be a hostile or corrupt payload trying to smuggle
-    // arbitrary bytes into a cell that a later client hands to its renderer.
-    const std::vector<uint8_t> payload = {
-        0x00, 0x03, 0x00, 0x02, 0x00, 0x01,
-        0x00, 0x00, 0x00, 0x01,
-        0x00, 0x01, 0x07, 0x00, 0x05, 0x41, 0x41, 0x41, 0x41, 0x41 // len=5
-    };
-    mp_screen_grid target( 3, 2 );
-    CHECK_FALSE( mp_screen_apply( target, payload ) );
+    // glyph_max_bytes (mp_screen_codec.cpp) is 32; 33 well-formed ASCII
+    // bytes are supplied in full, so what rejects this is solely the length
+    // cap -- not a truncated read, which is covered separately above.
+    std::vector<uint8_t> glyph( 33, 0x41 ); // 33 'A' bytes -- one over the cap
+    mp_screen_grid target( 1, 1 );
+    CHECK_FALSE( mp_screen_apply( target, single_glyph_payload( glyph ) ) );
     CHECK( all_default( target ) );
 }
 
@@ -301,13 +343,52 @@ TEST_CASE( "mp_screen_apply rejects a malformed UTF-8 lead byte", "[mp]" )
 {
     // 0x80 is a bare continuation byte (10xxxxxx); it can never legally
     // start a UTF-8 sequence.
-    const std::vector<uint8_t> payload = {
-        0x00, 0x03, 0x00, 0x02, 0x00, 0x01,
-        0x00, 0x00, 0x00, 0x01,
-        0x00, 0x01, 0x07, 0x00, 0x01, 0x80 // len=1, byte=0x80
-    };
-    mp_screen_grid target( 3, 2 );
-    CHECK_FALSE( mp_screen_apply( target, payload ) );
+    const std::vector<uint8_t> glyph = { 0x80 };
+    mp_screen_grid target( 1, 1 );
+    CHECK_FALSE( mp_screen_apply( target, single_glyph_payload( glyph ) ) );
     CHECK( all_default( target ) );
+}
+
+TEST_CASE( "mp_screen_apply rejects UTF-8 that a lead-byte-length check alone would miss", "[mp]" )
+{
+    // A check that only matches the leading 1-bits of the first byte (e.g.
+    // "starts with 1110" means "3 bytes follow") accepts far more than
+    // valid UTF-8: it misses overlong encodings, UTF-16 surrogates smuggled
+    // in as a 3-byte sequence, and 4-byte sequences past U+10FFFF. Each
+    // glyph below has a lead byte and byte count that look plausible but a
+    // continuation byte outside the range the Unicode standard actually
+    // allows for that lead byte.
+    const std::vector<std::vector<uint8_t>> invalid_glyphs = {
+        { 0xC0, 0x80 },             // overlong 2-byte encoding of U+0000
+        { 0xC1, 0xBF },             // overlong 2-byte encoding
+        { 0xE0, 0x80, 0x80 },       // overlong 3-byte encoding
+        { 0xED, 0xA0, 0x80 },       // UTF-16 surrogate U+D800
+        { 0xF4, 0x90, 0x80, 0x80 }, // beyond U+10FFFF
+        { 0xF5, 0x80, 0x80, 0x80 }  // lead byte past the valid 4-byte range
+    };
+    for( const std::vector<uint8_t> &glyph : invalid_glyphs ) {
+        mp_screen_grid target( 1, 1 );
+        CHECK_FALSE( mp_screen_apply( target, single_glyph_payload( glyph ) ) );
+        CHECK( all_default( target ) );
+    }
+}
+
+TEST_CASE( "mp_screen codec round trips a base character with a combining mark", "[mp]" )
+{
+    // cata_cursesport::fill() (src/cursesport.cpp) deliberately packs
+    // zero-width combining marks into the same cursecell::ch as their base
+    // character, so a legitimate cell can hold more than one code point.
+    // "e" (1 byte) plus U+0301 COMBINING ACUTE ACCENT (0xCC 0x81, 2 bytes)
+    // is the simplest real example of that -- a base letter plus a
+    // *separate* floating accent, unlike the single precomposed code point
+    // "e"-with-acute used elsewhere in this file.
+    mp_screen_grid source( 2, 1 );
+    source.set( 0, 0, cell( "e\xCC\x81", 7, 0 ) );
+    source.set( 1, 0, cell( "#", 3, 1 ) );
+
+    mp_screen_grid target( 2, 1 );
+    REQUIRE( mp_screen_apply( target, mp_screen_encode( source ) ) );
+    CHECK( target.at( 0, 0 ) == source.at( 0, 0 ) );
+    CHECK( target.at( 1, 0 ) == source.at( 1, 0 ) );
 }
 #endif // MULTIPLAYER

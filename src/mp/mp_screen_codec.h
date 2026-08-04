@@ -18,7 +18,12 @@ class mp_screen_grid;
 //       u16 repeat
 //       u8  fg, u8 bg
 //       u8  glyph_len, glyph_len bytes of UTF-8 (0 means a continuation cell,
-//           otherwise 1-4 bytes forming exactly one well-formed code point)
+//           otherwise 1-32 bytes forming one or more well-formed code points
+//           -- a base character plus any zero-width combining marks that
+//           follow it, matching what cata_cursesport::fill() can pack into
+//           one cursecell::ch; overlong encodings, UTF-16 surrogates, and
+//           code points past U+10FFFF are rejected even if the byte count
+//           looks plausible)
 //
 // Only rows the grid reports as dirty are included. The caller is responsible
 // for calling clear_dirty() afterwards -- encoding does not mutate the grid,
