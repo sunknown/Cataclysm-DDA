@@ -7,9 +7,20 @@
 #include "cursesdef.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_imgui_server.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "output.h"
 #include "point.h"
+
+// The real mp_server_request_exit() is defined in src/main.cpp, which is not
+// part of the test binary (Makefile filters main.o out of the archive). The mp
+// curses backend calls it when the only peer disconnects so the game stops
+// spinning in its input loops; the tests never reach that input path, so a
+// no-op here satisfies the archive's reference without terminating the test
+// process.
+void mp_server_request_exit()
+{
+}
 
 TEST_CASE( "drawing_a_curses_window_reaches_the_server_grid", "[mp]" )
 {
