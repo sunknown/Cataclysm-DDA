@@ -2,12 +2,22 @@
 #ifndef CATA_SRC_MP_MP_SERVER_SCREEN_H
 #define CATA_SRC_MP_MP_SERVER_SCREEN_H
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
 #include "mp/mp_cell.h"
 
 class mp_transport;
+
+// A client that stops draining its socket leaves screen updates piling up in
+// the transport's outbound buffer. Past this many undelivered bytes the
+// history is not worth replaying -- screen state is idempotent, so the server
+// drops the queued updates and sends one full redraw of the current screen
+// instead, letting the client converge instead of lagging behind forever.
+// Exposed so tests can fill the backlog against the real limit rather than
+// guessing how many flushes it takes to cross it.
+constexpr size_t MP_SCREEN_BACKLOG_BYTES = 512u * 1024u;
 
 // The server's composite screen for the connected player.
 //

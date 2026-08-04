@@ -361,7 +361,7 @@ TEST_CASE( "a_backlogged_client_gets_one_full_redraw_instead_of_a_history", "[mp
     // screen message. After a few dozen flushes the undelivered backlog
     // crosses MP_SCREEN_BACKLOG_BYTES and the server must collapse the queued
     // history into a single full redraw instead of replaying every stale
-    // frame -- which is why far fewer than 400 screen messages survive.
+    // frame, so only the frames queued since the last collapse survive.
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 80, 24 );
@@ -369,17 +369,28 @@ TEST_CASE( "a_backlogged_client_gets_one_full_redraw_instead_of_a_history", "[mp
 
     for( int i = 0; i < 400; ++i ) {
         blit_full_screen( i );
+        // A moving cursor queues a control message next to every screen
+        // update, so the drop has control messages to spare.
+        mp_server_set_cursor( i % 80, i % 24, true );
         mp_server_flush_screen();
     }
 
     int screen_messages = 0;
+    int control_messages = 0;
     while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
         mp_msg_kind kind = mp_msg_kind::control;
         std::vector<uint8_t> body;
         REQUIRE( mp_unwrap( *msg, kind, body ) );
         screen_messages += kind == mp_msg_kind::screen ? 1 : 0;
+        control_messages += kind == mp_msg_kind::control ? 1 : 0;
     }
-    CHECK( screen_messages < 400 );
+    // ~11 KB per full redraw against a 512 KB limit collapses the backlog
+    // roughly every 45 flushes, so the survivors number in the dozens. A bound
+    // of 400 would also pass if the server dropped a single message.
+    CHECK( screen_messages < 100 );
+    // Backpressure drops screen history, never control messages: every cursor
+    // move is still queued, including the ones from before each collapse.
+    CHECK( control_messages == 400 );
 }
 
 TEST_CASE( "the_coalesced_redraw_still_describes_the_whole_screen", "[mp]" )
@@ -389,13 +400,33 @@ TEST_CASE( "the_coalesced_redraw_still_describes_the_whole_screen", "[mp]" )
     // to the current state, as long as every dropped run is followed by a
     // full redraw. Applying every screen message the client actually receives
     // must therefore reproduce the server's final grid cell for cell.
+    //
+    // The flush that crosses the limit has to be a *partial* update for this
+    // to have teeth: if every flush already carried a whole screen, the client
+    // would converge whether or not the server redrew after the drop. So the
+    // backlog is filled with full frames first, and the updates that follow
+    // touch one row each -- without the redraw the client would be left with
+    // that one row over a screen of stale blanks.
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 80, 24 );
     mp_server_set_transport( pair.a );
 
-    for( int i = 0; i < 400; ++i ) {
-        blit_full_screen( i );
+    // The peer never reads, so the queue only grows.
+    int fills = 0;
+    while( pair.a->pending_bytes() <= MP_SCREEN_BACKLOG_BYTES ) {
+        // Guards against a transport that reports no backlog at all, which
+        // would otherwise spin here forever.
+        REQUIRE( fills < 1000 );
+        blit_full_screen( fills );
+        mp_server_flush_screen();
+        ++fills;
+    }
+
+    // The first of these sees the over-limit backlog and must turn its
+    // one dirty row into a redraw of the whole screen.
+    for( int i = 0; i < 20; ++i ) {
+        mp_server_blit_row( 0, i % 24, text_row( "partial update " + std::to_string( i ) ) );
         mp_server_flush_screen();
     }
 
