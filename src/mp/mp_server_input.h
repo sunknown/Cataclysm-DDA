@@ -31,12 +31,13 @@ constexpr int MP_MAX_TERMINAL_HEIGHT = 1000;
 // `reject_reason` that is also sent to the client in the ack.
 bool mp_server_handshake( mp_transport &transport, std::string &reject_reason );
 
-// Blocks until the connected player presses something, the timeout expires, or
-// the connection drops. Flushes the pending screen first: this is the single
-// point at which the player sees what the game drew.
+// Blocks until the connected player presses something, a resize arrives, the
+// timeout expires, or the connection drops. Flushes the pending screen first:
+// this is the single point at which the player sees what the game drew.
 //
-// `timeout_ms` of a negative value blocks until input arrives or the transport
-// goes away. Returns an event of type `timeout` when nothing arrived.
+// `timeout_ms` of a negative value blocks until one of those happens. Returns
+// an event of type `timeout` when nothing arrived and when the wait ended on a
+// resize -- the caller tells the two apart with mp_server_resize_pending().
 input_event mp_server_wait_for_input( int timeout_ms );
 
 // Consumes whatever has already arrived without blocking. Keystrokes seen here
@@ -46,5 +47,10 @@ void mp_server_pump();
 // Reports a resize the client asked for, once. The curses backend acts on it:
 // it resizes the grid and rebuilds the game's windows.
 bool mp_server_take_resize_request( int &width, int &height );
+
+// Whether a resize is recorded and still waiting to be taken. Lets the curses
+// backend tell "the wait ended because the client resized" from an ordinary
+// timeout without consuming the request.
+bool mp_server_resize_pending();
 
 #endif // CATA_SRC_MP_MP_SERVER_INPUT_H

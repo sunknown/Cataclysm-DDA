@@ -24,6 +24,7 @@
 #include "mp/mp_server_screen.h"
 #include "output.h"
 #include "point.h"
+#include "ui_manager.h"
 
 // The fourth curses backend. Instead of a terminal it drives the composite
 // screen of mp_server_screen; instead of a keyboard it reads the player's
@@ -132,20 +133,34 @@ bool catacurses::supports_256_colors()
 
 input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
 {
-    int w = 0;
-    int h = 0;
-    if( mp_server_take_resize_request( w, h ) ) {
-        handle_resize( w, h );
+    while( true ) {
+        int w = 0;
+        int h = 0;
+        if( mp_server_take_resize_request( w, h ) && handle_resize( w, h ) ) {
+            // The same pair catacurses::resizeterm() runs in the ncurses
+            // backend: handle_resize() rebuilt the windows, and this redraws
+            // every UI into them. Without it the game repaints only whatever
+            // it happens to invalidate next, and the flush below would carry a
+            // blank grid to a client that has already cleared its terminal.
+            ui_manager::screen_resized();
+        }
+        // When the only peer is gone there is nobody to wait for, and returning
+        // a timeout forever just makes the game spin in its input loops. End the
+        // session through the entry point instead; the game itself never sees
+        // the transport. This is the one place the backend learns about the
+        // wire, and it is deliberately the mp layer, not game logic.
+        if( !mp_server_peer_connected() ) {
+            mp_server_request_exit();
+        }
+        const input_event ev = mp_server_wait_for_input( input_timeout_ms );
+        if( ev.type == input_event_t::timeout && mp_server_resize_pending() ) {
+            // The wait ended on the client resizing, not on the clock. Go round
+            // and apply it rather than handing the game a timeout it would sit
+            // on until the player pressed a key.
+            continue;
+        }
+        return ev;
     }
-    // When the only peer is gone there is nobody to wait for, and returning a
-    // timeout forever just makes the game spin in its input loops. End the
-    // session through the entry point instead; the game itself never sees the
-    // transport. This is the one place the backend learns about the wire, and
-    // it is deliberately the mp layer, not game logic.
-    if( !mp_server_peer_connected() ) {
-        mp_server_request_exit();
-    }
-    return mp_server_wait_for_input( input_timeout_ms );
 }
 
 void input_manager::pump_events()

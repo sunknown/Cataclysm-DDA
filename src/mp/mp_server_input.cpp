@@ -246,6 +246,16 @@ input_event mp_server_wait_for_input( const int timeout_ms )
         if( take_queued( buffered ) ) {
             return buffered;
         }
+        if( g_pending_resize ) {
+            // A resize is not a keystroke, but it still has to end the wait:
+            // the curses backend applies it on the way back in, redraws at the
+            // new size and flushes that redraw. Blocking on here would leave
+            // the client -- which has already blanked its terminal to the new
+            // size -- staring at nothing until the player pressed a key.
+            // Input wins the race above, so waking this way never drops a
+            // keystroke; the request stays recorded for the backend to take.
+            return make_timeout_event();
+        }
     }
 }
 
@@ -269,4 +279,9 @@ bool mp_server_take_resize_request( int &width, int &height )
     height = g_pending_resize->height;
     g_pending_resize.reset();
     return true;
+}
+
+bool mp_server_resize_pending()
+{
+    return g_pending_resize.has_value();
 }

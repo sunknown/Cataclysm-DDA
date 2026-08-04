@@ -1,6 +1,7 @@
 #include "cata_catch.h"
 
 #if defined(MULTIPLAYER)
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -212,6 +213,71 @@ TEST_CASE( "server_records_a_resize_request_without_touching_the_grid_itself", "
     CHECK( h == 20 );
     CHECK( mp_server_grid().width() == 40 );
     CHECK_FALSE( mp_server_take_resize_request( w, h ) );
+}
+
+TEST_CASE( "a_resize_wakes_the_input_wait", "[mp]" )
+{
+    // A resize is not a keystroke, so it used to leave the wait blocked: the
+    // curses backend only applies a pending resize on its way into the *next*
+    // get_input_event(), which never came until the player pressed something.
+    // The client had already blanked its terminal by then, so the session sat
+    // on a black screen until the next keypress. Waking the wait lets the
+    // backend rebuild the windows and flush a full redraw straight away.
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_control resize;
+    resize.kind = mp_control_kind::resize;
+    resize.resize.width = 60;
+    resize.resize.height = 20;
+    send_control( *pair.b, resize );
+
+    const auto start = std::chrono::steady_clock::now();
+    const input_event got = mp_server_wait_for_input( 5000 );
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start );
+
+    CHECK( got.type == input_event_t::timeout );
+    CHECK( elapsed < std::chrono::milliseconds( 1000 ) );
+    CHECK( mp_server_resize_pending() );
+}
+
+TEST_CASE( "a_keystroke_outranks_a_resize_that_arrived_with_it", "[mp]" )
+{
+    // Waking on a resize must not swallow input that arrived first: the
+    // keystroke is returned now and the resize survives for the next pass
+    // (still on the wire here, since the wait stopped at the frame that
+    // carried the keystroke).
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    mp_server_set_terminal_size( 40, 10 );
+    mp_server_set_transport( pair.a );
+
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event.type = input_event_t::keyboard_char;
+    key.event.sequence.push_back( 'q' );
+    send_control( *pair.b, key );
+
+    mp_control resize;
+    resize.kind = mp_control_kind::resize;
+    resize.resize.width = 60;
+    resize.resize.height = 20;
+    send_control( *pair.b, resize );
+
+    const input_event got = mp_server_wait_for_input( 5000 );
+    CHECK( got.type == input_event_t::keyboard_char );
+    REQUIRE( got.sequence.size() == 1 );
+    CHECK( got.sequence[0] == 'q' );
+
+    mp_server_pump();
+    int w = 0;
+    int h = 0;
+    REQUIRE( mp_server_take_resize_request( w, h ) );
+    CHECK( w == 60 );
+    CHECK( h == 20 );
 }
 
 TEST_CASE( "server_rejects_an_oversized_resize", "[mp]" )
