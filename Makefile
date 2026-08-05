@@ -1115,6 +1115,11 @@ endif
 ifeq ($(MULTIPLAYER), 1)
   DEFINES += -DMULTIPLAYER
   SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)
+  ifeq ($(TARGETSYSTEM),WINDOWS)
+    # src/mp/mp_socket.cpp uses winsock (WSAStartup, WSAPoll); the base Windows
+    # link line does not pull it in.
+    LDFLAGS += -lws2_32
+  endif
 endif
 C_SOURCES := $(SRC_DIR)/cata_allocator_c.c
 THIRD_PARTY_SOURCES := $(wildcard $(SRC_DIR)/third-party/flatbuffers/*.cpp $(SRC_DIR)/third-party/fmt/*.cc)
