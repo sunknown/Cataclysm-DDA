@@ -50,6 +50,14 @@ bool mp_socket_set_nodelay( mp_socket_t fd );
 // needs a setsockopt call.
 bool mp_socket_set_nosigpipe( mp_socket_t fd );
 
+// Lets a listening socket bind a port that a previous session's connection is
+// still holding in TIME_WAIT, so an operator can restart the server at once
+// instead of waiting out the kernel's timeout. It never lets a second server
+// steal a port from a live listener. No-op on Windows, where SO_REUSEADDR
+// means exactly that theft; a restart there is not blocked in the first place.
+// Returns false on failure.
+bool mp_socket_set_reuseaddr( mp_socket_t fd );
+
 // Binds the socket to all local interfaces on `port`; port 0 asks the OS for a
 // free one. Returns false with `err` set on failure.
 bool mp_socket_bind( mp_socket_t fd, int port, std::string &err );

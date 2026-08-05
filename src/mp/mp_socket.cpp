@@ -118,6 +118,22 @@ bool mp_socket_set_nodelay( const mp_socket_t fd )
                          reinterpret_cast<const char *>( &one ), sizeof( one ) ) == 0;
 }
 
+bool mp_socket_set_reuseaddr( const mp_socket_t fd )
+{
+#ifdef _WIN32
+    // On Windows SO_REUSEADDR lets a second process bind a port a live server
+    // is already listening on, which is the opposite of what is wanted here.
+    // Windows also releases the port on process exit, so there is nothing to
+    // work around.
+    ( void )fd;
+    return true;
+#else
+    const int one = 1;
+    return ::setsockopt( fd, SOL_SOCKET, SO_REUSEADDR,
+                         reinterpret_cast<const char *>( &one ), sizeof( one ) ) == 0;
+#endif
+}
+
 bool mp_socket_bind( const mp_socket_t fd, const int port, std::string &err )
 {
     sockaddr_in addr = {};

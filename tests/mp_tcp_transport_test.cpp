@@ -241,4 +241,31 @@ TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_frames_without_corrupt
     CHECK( client->connected() );
     CHECK( server_side->connected() );
 }
+
+TEST_CASE( "listener_rebinds_the_same_port_right_after_a_session", "[mp]" )
+{
+    // An operator restarts the server as soon as the previous one exits. The
+    // server is the side that closes the connection -- it tears the socket
+    // down in its exit path while the client is still up -- so its end of the
+    // accepted socket sits in TIME_WAIT on the listening port for a couple of
+    // minutes afterwards. Without address reuse the next bind() is refused
+    // with "Address already in use" for that whole window.
+    std::string err;
+    std::optional<mp_listener> listener = mp_listener::bind( 0, err );
+    REQUIRE( listener.has_value() );
+    const int port = listener->port();
+
+    std::shared_ptr<mp_transport> client = mp_tcp_connect( "127.0.0.1", port, err );
+    REQUIRE( client );
+    std::shared_ptr<mp_transport> server_side = listener->accept( 1000 );
+    REQUIRE( server_side );
+
+    // Order matters: the server closes first, with the client still connected.
+    listener.reset();
+    server_side->close();
+
+    std::optional<mp_listener> restarted = mp_listener::bind( port, err );
+    CHECK( restarted.has_value() );
+    CHECK( err.empty() );
+}
 #endif // MULTIPLAYER

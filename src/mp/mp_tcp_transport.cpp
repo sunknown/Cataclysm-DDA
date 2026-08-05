@@ -217,6 +217,16 @@ std::optional<mp_listener> mp_listener::bind( const int port, std::string &err )
         return std::nullopt;
     }
 
+    // Before bind(): the server closes the connection itself when the client
+    // leaves, so its end sits in TIME_WAIT on this port and an immediate
+    // restart would be refused with "Address already in use".
+    if( !mp_socket_set_reuseaddr( fd ) ) {
+        err = "could not set SO_REUSEADDR on the listening socket: " +
+              mp_socket_last_error_string();
+        mp_socket_close( fd );
+        return std::nullopt;
+    }
+
     if( !mp_socket_bind( fd, port, err ) ) {
         mp_socket_close( fd );
         return std::nullopt;
