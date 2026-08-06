@@ -9,11 +9,17 @@
 #include "game_constants.h"
 #include "input_enums.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_screen.h"
+
+// Server input lives in the active player context (its input_queue), so every
+// test must set one before any input call or reset. Static, not a stack local,
+// so the active pointer does not dangle between tests.
+static player_context test_input_ctx;
 
 static std::vector<mp_cell> text_row( const std::string &s )
 {
@@ -61,6 +67,8 @@ static void blit_full_screen( const int seed )
 
 TEST_CASE( "server_blits_a_row_into_the_screen_grid", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
 
@@ -73,6 +81,8 @@ TEST_CASE( "server_blits_a_row_into_the_screen_grid", "[mp]" )
 
 TEST_CASE( "server_sends_nothing_when_nothing_changed", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -87,6 +97,8 @@ TEST_CASE( "server_sends_nothing_when_nothing_changed", "[mp]" )
 
 TEST_CASE( "server_sends_a_delta_far_smaller_than_a_full_screen", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 80, 24 );
@@ -105,6 +117,8 @@ TEST_CASE( "server_sends_a_delta_far_smaller_than_a_full_screen", "[mp]" )
 
 TEST_CASE( "a_client_can_reconstruct_the_server_screen_from_the_wire", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -132,6 +146,8 @@ TEST_CASE( "a_client_can_reconstruct_the_server_screen_from_the_wire", "[mp]" )
 
 TEST_CASE( "server_returns_a_queued_keystroke", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -150,6 +166,8 @@ TEST_CASE( "server_returns_a_queued_keystroke", "[mp]" )
 
 TEST_CASE( "server_flushes_the_screen_before_blocking_for_input", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -180,6 +198,8 @@ TEST_CASE( "server_flushes_the_screen_before_blocking_for_input", "[mp]" )
 
 TEST_CASE( "server_returns_a_timeout_event_when_no_input_arrives", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -193,6 +213,8 @@ TEST_CASE( "server_records_a_resize_request_without_touching_the_grid_itself", "
 {
     // The grid is rebuilt by the curses backend, which must also rebuild the
     // game's windows; the module only records what the client asked for.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -223,6 +245,8 @@ TEST_CASE( "a_resize_wakes_the_input_wait", "[mp]" )
     // The client had already blanked its terminal by then, so the session sat
     // on a black screen until the next keypress. Waking the wait lets the
     // backend rebuild the windows and flush a full redraw straight away.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -250,6 +274,8 @@ TEST_CASE( "a_keystroke_outranks_a_resize_that_arrived_with_it", "[mp]" )
     // keystroke is returned now and the resize survives for the next pass
     // (still on the wire here, since the wait stopped at the frame that
     // carried the keystroke).
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -285,6 +311,8 @@ TEST_CASE( "server_rejects_an_oversized_resize", "[mp]" )
     // A resize above the cap is dropped at the peer-data entry point, so it is
     // never recorded and the grid stays at its current size; honouring it would
     // make the grid allocation abort on std::bad_alloc.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -307,6 +335,8 @@ TEST_CASE( "server_rejects_an_oversized_resize", "[mp]" )
 
 TEST_CASE( "server_sends_the_cursor_position_with_the_screen", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -337,6 +367,8 @@ TEST_CASE( "server_sends_the_cursor_position_with_the_screen", "[mp]" )
 
 TEST_CASE( "server_survives_a_dropped_transport", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 40, 10 );
@@ -351,6 +383,8 @@ TEST_CASE( "server_survives_a_dropped_transport", "[mp]" )
 
 TEST_CASE( "handshake_accepts_a_matching_protocol_version", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -371,6 +405,8 @@ TEST_CASE( "handshake_accepts_a_matching_protocol_version", "[mp]" )
 
 TEST_CASE( "handshake_refuses_a_protocol_mismatch_with_an_explanation", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -389,6 +425,8 @@ TEST_CASE( "handshake_refuses_a_protocol_mismatch_with_an_explanation", "[mp]" )
 
 TEST_CASE( "handshake_refuses_a_terminal_below_the_game_s_minimum", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -410,6 +448,8 @@ TEST_CASE( "handshake_refuses_an_oversized_terminal", "[mp]" )
     // A peer that claims a terminal above the cap would otherwise make the
     // server's grid allocation multiply the two dimensions and abort on
     // std::bad_alloc; the handshake must refuse it like any other bad hello.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -441,6 +481,8 @@ TEST_CASE( "handshake_refuses_an_oversized_terminal", "[mp]" )
 
 TEST_CASE( "handshake_sends_its_verdict_to_the_client_either_way", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -470,6 +512,8 @@ TEST_CASE( "handshake_sends_its_verdict_to_the_client_either_way", "[mp]" )
 
 TEST_CASE( "handshake_gives_up_when_the_client_says_nothing", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
@@ -487,6 +531,8 @@ TEST_CASE( "a_backlogged_client_gets_one_full_redraw_instead_of_a_history", "[mp
     // crosses MP_SCREEN_BACKLOG_BYTES and the server must collapse the queued
     // history into a single full redraw instead of replaying every stale
     // frame, so only the frames queued since the last collapse survive.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 80, 24 );
@@ -532,6 +578,8 @@ TEST_CASE( "the_coalesced_redraw_still_describes_the_whole_screen", "[mp]" )
     // backlog is filled with full frames first, and the updates that follow
     // touch one row each -- without the redraw the client would be left with
     // that one row over a screen of stale blanks.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
     mp_server_set_terminal_size( 80, 24 );

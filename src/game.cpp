@@ -543,7 +543,13 @@ void game_ui::init_ui()
     }
 
     // First get TERMX, TERMY
-#if !defined(TUI)
+#if defined(MP_SERVER)
+    // The terminal size is the client's (the server's composite grid); do not
+    // write TERMINAL_X/Y, which would clobber the server's config. ensure_term_size()
+    // is not compiled in the server build, so it must not be called here either.
+    TERMX = get_terminal_width();
+    TERMY = get_terminal_height();
+#elif !defined(TUI)
     TERMX = get_terminal_width();
     TERMY = get_terminal_height();
 

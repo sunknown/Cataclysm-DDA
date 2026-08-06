@@ -6,11 +6,18 @@
 
 #include "cursesdef.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_context.h"
 #include "mp/mp_imgui_server.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "output.h"
 #include "point.h"
+
+// mp_server_reset_for_test() resets the screen module, which also resets the
+// input module, and that now clears the active player context's input_queue.
+// Every test must set one before the reset. Static, not a stack local, so the
+// active pointer does not dangle between tests.
+static player_context test_input_ctx;
 
 // The real mp_server_request_exit() is defined in src/main.cpp, which is not
 // part of the test binary (Makefile filters main.o out of the archive). The mp
@@ -24,6 +31,8 @@ void mp_server_request_exit()
 
 TEST_CASE( "drawing_a_curses_window_reaches_the_server_grid", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
 
@@ -37,6 +46,8 @@ TEST_CASE( "drawing_a_curses_window_reaches_the_server_grid", "[mp]" )
 
 TEST_CASE( "a_window_redraw_with_no_change_dirties_nothing", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
 
@@ -53,6 +64,8 @@ TEST_CASE( "a_window_redraw_with_no_change_dirties_nothing", "[mp]" )
 
 TEST_CASE( "terminal_size_comes_from_the_grid", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 96, 30 );
 
@@ -62,6 +75,8 @@ TEST_CASE( "terminal_size_comes_from_the_grid", "[mp]" )
 
 TEST_CASE( "imgui_frames_reach_the_server_screen_grid", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 40, 10 );
 
@@ -76,6 +91,8 @@ TEST_CASE( "imgui_frames_reach_the_server_screen_grid", "[mp]" )
 
 TEST_CASE( "an_imgui_frame_larger_than_the_terminal_is_clipped_not_overrun", "[mp]" )
 {
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_server_set_terminal_size( 20, 5 );
 

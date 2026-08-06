@@ -3155,7 +3155,13 @@ bool game::do_regular_action( action_id &act, avatar &player_character,
             break;
 
         case ACTION_TOGGLE_PANEL_ADM:
+#if defined(MP_SERVER)
+            // The sidebar layout is shared on the server; moving the viewport
+            // mid-turn would disturb every player, so the action is unavailable.
+            add_msg( m_info, _( "Sidebar layout is shared on the server." ) );
+#else
             panel_manager::get_manager().show_adm();
+#endif
             break;
 
         case ACTION_RELOAD_TILESET:

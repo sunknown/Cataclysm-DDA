@@ -19,6 +19,7 @@
 #include "input_context.h"
 #include "map.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_context.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
@@ -30,11 +31,6 @@
 // The fourth curses backend. Instead of a terminal it drives the composite
 // screen of mp_server_screen; instead of a keyboard it reads the player's
 // transport through mp_server_input.
-
-namespace
-{
-int input_timeout_ms = -1;
-} // namespace
 
 // The imgui client the game drives (declared in ui_manager.h). The ncurses
 // backend defines it too; that file is excluded from the server build, so this
@@ -158,7 +154,7 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                            ( length.empty() ? std::string() : " after " + length ) );
             mp_server_request_exit();
         }
-        const input_event ev = mp_server_wait_for_input( input_timeout_ms );
+        const input_event ev = mp_server_wait_for_input( mp_active_context().input_timeout_ms );
         if( ev.type == input_event_t::timeout && mp_server_resize_pending() ) {
             // The wait ended on the client resizing, not on the clock. Go round
             // and apply it rather than handing the game a timeout it would sit
@@ -176,8 +172,13 @@ void input_manager::pump_events()
 
 void input_manager::set_timeout( const int delay )
 {
-    // Mirrors the ncurses backend: a negative delay means "block".
-    input_timeout_ms = delay;
+    // Mirrors the ncurses backend: a negative delay means "block". load_static_data
+    // resets the timeout (via inp_mngr.init) before any player context exists; the
+    // write is then the -1 default anyway, so only touch the context when there is
+    // one to touch.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        ctx->input_timeout_ms = delay;
+    }
     input_timeout = delay;
 }
 

@@ -10,6 +10,7 @@
 
 #include "debug.h"
 #include "game_constants.h"
+#include "mp/mp_context.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_screen.h"
@@ -23,10 +24,9 @@ void mp_server_input_reset_for_test();
 namespace
 {
 
-// Keystrokes the game has not yet consumed, and the resize the client asked
-// for but the curses backend has not yet acted on. Both are process-wide for
-// the same reason the screen state is.
-std::deque<input_event> g_input_queue;
+// The resize the client asked for but the curses backend has not yet acted on.
+// Process-wide for the same reason the screen state is. Keystrokes live in the
+// active player context's input_queue (mp_active_context()).
 std::optional<mp_resize> g_pending_resize;
 
 using clock = std::chrono::steady_clock;
@@ -59,7 +59,7 @@ void dispatch( const mp_control &msg )
 {
     switch( msg.kind ) {
         case mp_control_kind::input:
-            g_input_queue.push_back( msg.event );
+            mp_active_context().input_queue.push_back( msg.event );
             break;
         case mp_control_kind::resize:
             // A size above the cap would make the grid allocation abort the
@@ -110,11 +110,12 @@ void dispatch_frame( const std::vector<uint8_t> &payload )
 
 bool take_queued( input_event &out )
 {
-    if( g_input_queue.empty() ) {
+    std::deque<input_event> &q = mp_active_context().input_queue;
+    if( q.empty() ) {
         return false;
     }
-    out = std::move( g_input_queue.front() );
-    g_input_queue.pop_front();
+    out = std::move( q.front() );
+    q.pop_front();
     return true;
 }
 
@@ -203,7 +204,7 @@ bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
 
 void mp_server_input_reset_for_test()
 {
-    g_input_queue.clear();
+    mp_active_context().input_queue.clear();
     g_pending_resize.reset();
 }
 
