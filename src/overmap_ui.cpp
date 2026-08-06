@@ -58,6 +58,7 @@
 #include "messages.h"
 #include "mission.h"
 #include "mongroup.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "npc.h"
 #include "omdata.h"
@@ -2101,7 +2102,8 @@ static tripoint_abs_omt display()
 
         to_overmap_font_dimension( OVERMAP_WINDOW_WIDTH, OVERMAP_WINDOW_HEIGHT );
 
-        g->w_overmap = catacurses::newwin( OVERMAP_WINDOW_HEIGHT, OVERMAP_WINDOW_WIDTH, point::zero );
+        g->w_overmap = mp_active_context().w_overmap = catacurses::newwin(
+                           OVERMAP_WINDOW_HEIGHT, OVERMAP_WINDOW_WIDTH, point::zero );
 
         ui.position_from_window( catacurses::stdscr );
     } );

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <deque>
 #include <functional>
 #include <iosfwd>
 #include <map>
@@ -31,6 +32,7 @@
 #include "item_location.h"
 #include "map_scale_constants.h"
 #include "memory_fast.h"
+#include "mp/mp_context.h"
 #include "overmap_ui.h"
 #include "pimpl.h"
 #include "type_id.h"
@@ -197,6 +199,7 @@ class game
         friend class game_test_helper;
         friend bool turn_handler::cleanup_at_end();
         friend bool mp_hotseat_do_turn();
+        friend void mp_resize_active_context();
         friend global_variables &get_globals();
     public:
         game();
@@ -438,6 +441,10 @@ class game
         monster *place_critter_at_or_within( const shared_ptr_fast<monster> &mon, map *here,
                                              const tripoint_bub_ms &center, const tripoint_range<tripoint_bub_ms> &range );
         /** @} */
+        // Player contexts, parallel to player_slots. Deque keeps element addresses
+        // stable across emplace_back, so active-context pointers never dangle. Phase 2:
+        // size is always one; a second context arrives with the scheduler in Phase 3.
+        std::deque<player_context> contexts; // NOLINT(cata-serialize)
         size_t player_slot_count() const;
         size_t active_slot() const;
         void set_active_slot( size_t index );
@@ -1376,8 +1383,6 @@ class game
                 const tripoint_rel_ms &last, bool iso );
         std::pair<tripoint_rel_omt, tripoint_rel_omt> mouse_edge_scrolling( input_context &ctxt, int speed,
                 const tripoint_rel_omt &last, bool iso );
-
-        weak_ptr_fast<ui_adaptor> main_ui_adaptor; // NOLINT(cata-serialize)
 
         std::unique_ptr<static_popup> wait_popup; // NOLINT(cata-serialize)
     public:

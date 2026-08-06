@@ -34,3 +34,13 @@ player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for r
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
 void mp_apply_viewport_params( const player_context &ctx );
+
+// Creates game::contexts[0] if needed, fills its viewport from TERMX/TERMY,
+// mirrors catacurses::stdscr, applies the viewport params and makes the context
+// active. Always sets an active context, even when contexts was already non-empty
+// (otherwise after contexts.clear() the active pointer would dangle).
+void mp_ensure_player_context();
+// Re-reads the viewport from TERMX/TERMY, applies the metrics, creates the
+// context's windows, re-points game's window aliases to them and repositions
+// the main ui_adaptor from the context's stdscr.
+void mp_resize_active_context();

@@ -4,6 +4,7 @@
 
 #include "cata_utility.h"
 #include "game.h"
+#include "game_constants.h"
 #include "game_ui.h"
 #include "output.h"
 #include "panels.h"
@@ -55,4 +56,52 @@ void mp_apply_viewport_params( const player_context &ctx )
 
     POSX = TERRAIN_WINDOW_WIDTH / 2;
     POSY = TERRAIN_WINDOW_HEIGHT / 2;
+}
+
+void mp_ensure_player_context()
+{
+    if( g->contexts.empty() ) {
+        g->contexts.emplace_back();
+    }
+    player_context &ctx = g->contexts[0];
+    // TERMX/TERMY are set by game_ui::init_ui() before any callbacks; the context
+    // mirrors them (the source is init_ui, not get_terminal_width, which in the TUI
+    // reads the TERMINAL_X option rather than the real terminal size).
+    ctx.viewport.term_cols = TERMX;
+    ctx.viewport.term_rows = TERMY;
+    mp_apply_viewport_params( ctx );
+    ctx.stdscr = catacurses::stdscr;
+    mp_set_active_context( &ctx );
+    // Task 5 will add mp_activate_player( 0 ) here -- see task 5, step 6.
+}
+
+void mp_resize_active_context()
+{
+    player_context &ctx = mp_active_context();
+
+    ctx.viewport.term_cols = TERMX;
+    ctx.viewport.term_rows = TERMY;
+    mp_apply_viewport_params( ctx );
+
+    const int sidebar_left = panel_manager::get_manager().get_width_left();
+
+    ctx.w_terrain = ctx.w_terrain_ptr = catacurses::newwin(
+                       TERRAIN_WINDOW_HEIGHT, TERRAIN_WINDOW_WIDTH, point( sidebar_left, 0 ) );
+    ctx.w_minimap = ctx.w_minimap_ptr = catacurses::newwin(
+                        MINIMAP_HEIGHT, MINIMAP_WIDTH, point::zero );
+    ctx.w_pixel_minimap = catacurses::newwin( 1, 1, point::zero );
+
+    // Re-point game's window aliases to the active context's windows.
+    catacurses::stdscr = ctx.stdscr;
+    g->w_terrain = ctx.w_terrain;
+    g->w_overmap = ctx.w_overmap;
+    g->w_omlegend = ctx.w_omlegend;
+    g->w_minimap = ctx.w_minimap;
+    g->w_pixel_minimap = ctx.w_pixel_minimap;
+    g->w_terrain_ptr = ctx.w_terrain_ptr;
+    g->w_minimap_ptr = ctx.w_minimap_ptr;
+
+    if( const shared_ptr_fast<ui_adaptor> ui = ctx.main_ui_adaptor.lock() ) {
+        ui->position_from_window( ctx.stdscr );
+    }
 }

@@ -677,6 +677,12 @@ void game::reenter_fullscreen()
  */
 void game::setup()
 {
+    // The context must exist before the save is loaded: savegame.cpp:318 reads
+    // the view state through the active context, and setup() is called from
+    // main_menu.cpp:991 (new game) and game_io.cpp:315 (loading) -- both before
+    // create_or_get_main_ui_adaptor.
+    mp_ensure_player_context();
+
     new_game = true;
     {
         static_popup popup;
@@ -3172,61 +3178,16 @@ static void draw_footsteps( const catacurses::window &window, const tripoint_rel
 
 shared_ptr_fast<ui_adaptor> game::create_or_get_main_ui_adaptor()
 {
-    shared_ptr_fast<ui_adaptor> ui = main_ui_adaptor.lock();
+    mp_ensure_player_context();
+    player_context &ctx = mp_active_context();
+    shared_ptr_fast<ui_adaptor> ui = ctx.main_ui_adaptor.lock();
     if( !ui ) {
-        main_ui_adaptor = ui = make_shared_fast<ui_adaptor>();
-        ui->on_redraw( []( ui_adaptor & ui ) {
-            g->draw( ui );
+        ctx.main_ui_adaptor = ui = make_shared_fast<ui_adaptor>();
+        ui->on_redraw( []( ui_adaptor & u ) {
+            g->draw( u );
         } );
-        ui->on_screen_resize( [this]( ui_adaptor & ui ) {
-            // remove some space for the sidebar, this is the maximal space
-            // (using standard font) that the terrain window can have
-            const int sidebar_left = panel_manager::get_manager().get_width_left();
-            const int sidebar_right = panel_manager::get_manager().get_width_right();
-
-            TERRAIN_WINDOW_HEIGHT = TERMY;
-            TERRAIN_WINDOW_WIDTH = TERMX - ( sidebar_left + sidebar_right );
-            TERRAIN_WINDOW_TERM_WIDTH = TERRAIN_WINDOW_WIDTH;
-            TERRAIN_WINDOW_TERM_HEIGHT = TERRAIN_WINDOW_HEIGHT;
-
-            /**
-             * In tiles mode w_terrain can have a different font (with a different
-             * tile dimension) or can be drawn by cata_tiles which uses tiles that again
-             * might have a different dimension then the normal font used everywhere else.
-             *
-             * TERRAIN_WINDOW_WIDTH/TERRAIN_WINDOW_HEIGHT defines how many squares can
-             * be displayed in w_terrain (using it's specific tile dimension), not
-             * including partially drawn squares at the right/bottom. You should
-             * use it whenever you want to draw specific squares in that window or to
-             * determine whether a specific square is draw on screen (or outside the screen
-             * and needs scrolling).
-             *
-             * TERRAIN_WINDOW_TERM_WIDTH/TERRAIN_WINDOW_TERM_HEIGHT defines the size of
-             * w_terrain in the standard font dimension (the font that everything else uses).
-             * You usually don't have to use it, expect for positioning of windows,
-             * because the window positions use the standard font dimension.
-             *
-             * The code here calculates size available for w_terrain, caps it at
-             * max_view_size (the maximal view range than any character can have at
-             * any time).
-             * It is stored in TERRAIN_WINDOW_*.
-             */
-            to_map_font_dimension( TERRAIN_WINDOW_WIDTH, TERRAIN_WINDOW_HEIGHT );
-
-            // Position of the player in the terrain window, it is always in the center
-            POSX = TERRAIN_WINDOW_WIDTH / 2;
-            POSY = TERRAIN_WINDOW_HEIGHT / 2;
-
-            w_terrain = w_terrain_ptr = catacurses::newwin( TERRAIN_WINDOW_HEIGHT, TERRAIN_WINDOW_WIDTH,
-                                        point( sidebar_left, 0 ) );
-
-            // minimap is always MINIMAP_WIDTH x MINIMAP_HEIGHT in size
-            w_minimap = w_minimap_ptr = catacurses::newwin( MINIMAP_HEIGHT, MINIMAP_WIDTH, point::zero );
-
-            // need to init in order to avoid crash. gets updated by the panel code.
-            w_pixel_minimap = catacurses::newwin( 1, 1, point::zero );
-
-            ui.position_from_window( catacurses::stdscr );
+        ui->on_screen_resize( []( ui_adaptor & ) {
+            mp_resize_active_context();
         } );
         ui->mark_resize();
     }
@@ -3235,17 +3196,19 @@ shared_ptr_fast<ui_adaptor> game::create_or_get_main_ui_adaptor()
 
 void game::invalidate_main_ui_adaptor() const
 {
-    shared_ptr_fast<ui_adaptor> ui = main_ui_adaptor.lock();
-    if( ui ) {
-        ui->invalidate_ui();
+    for( const player_context &ctx : contexts ) {
+        if( const shared_ptr_fast<ui_adaptor> ui = ctx.main_ui_adaptor.lock() ) {
+            ui->invalidate_ui();
+        }
     }
 }
 
 void game::mark_main_ui_adaptor_resize() const
 {
-    shared_ptr_fast<ui_adaptor> ui = main_ui_adaptor.lock();
-    if( ui ) {
-        ui->mark_resize();
+    for( const player_context &ctx : contexts ) {
+        if( const shared_ptr_fast<ui_adaptor> ui = ctx.main_ui_adaptor.lock() ) {
+            ui->mark_resize();
+        }
     }
 }
 
@@ -3497,7 +3460,7 @@ void game::draw_panels( bool force_draw )
 
 void game::draw_pixel_minimap( const catacurses::window &w )
 {
-    w_pixel_minimap = w;
+    w_pixel_minimap = mp_active_context().w_pixel_minimap = w;
 }
 
 void game::draw_critter( const Creature &critter, const tripoint_bub_ms &center )

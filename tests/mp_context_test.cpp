@@ -111,3 +111,11 @@ TEST_CASE( "ui_adaptors_register_into_the_active_stack", "[mp]" )
     CHECK( ui_adaptor::ui_stack_size() == 0 );
     // restore_active_state's destructor restores the previous active stack.
 }
+
+TEST_CASE( "ensure_creates_the_single_context_and_activates_it", "[mp]" )
+{
+    mp_ensure_player_context();
+    CHECK( g->contexts.size() == 1 );
+    CHECK( &mp_active_context() == &g->contexts[0] );
+    CHECK( g->contexts[0].viewport.term_cols == TERMX );
+}
