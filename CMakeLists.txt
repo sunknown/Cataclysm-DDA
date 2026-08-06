@@ -482,8 +482,6 @@ endif ()
 
 if (MULTIPLAYER)
     add_definitions(-DMULTIPLAYER)
-    file(GLOB MULTIPLAYER_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mp/*.cpp)
-    list(APPEND CATACLYSM_DDA_SOURCES ${MULTIPLAYER_SOURCES})
 endif ()
 
 find_program(CCACHE_FOUND ccache HINTS ${CMAKE_CURRENT_SOURCE_DIR}/ccache)

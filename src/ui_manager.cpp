@@ -21,8 +21,6 @@
 #include "sdltiles.h"
 #endif
 
-using ui_stack_t = std::vector<std::reference_wrapper<ui_adaptor>>;
-
 static bool imgui_frame_started = false;
 static bool redraw_in_progress = false;
 static bool showing_debug_message = false;

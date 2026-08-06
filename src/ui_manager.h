@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "cuboid_rectangle.h"
 #include "point.h"
@@ -20,6 +21,9 @@ namespace catacurses
 {
 class window;
 } // namespace catacurses
+
+class ui_adaptor;
+using ui_stack_t = std::vector<std::reference_wrapper<ui_adaptor>>;
 
 /**
  * Adaptor between UI code and the UI management system. Using this class allows

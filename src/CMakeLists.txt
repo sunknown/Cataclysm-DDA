@@ -17,6 +17,15 @@ file(GLOB CATACLYSM_DDA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cata_allocator_c.c)
 
+# The player context ships in every build; the rest of src/mp/ is MULTIPLAYER-only.
+list(APPEND CATACLYSM_DDA_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mp/mp_context.cpp)
+
+if (MULTIPLAYER)
+    file(GLOB MULTIPLAYER_MP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mp/*.cpp)
+    list(FILTER MULTIPLAYER_MP_SOURCES EXCLUDE REGEX ".*mp_context\\.cpp$")
+    list(APPEND CATACLYSM_DDA_SOURCES ${MULTIPLAYER_MP_SOURCES})
+endif ()
+
 if (MSVC)
     set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/mapgen.cpp
