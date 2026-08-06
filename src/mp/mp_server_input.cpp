@@ -59,7 +59,11 @@ void dispatch( const mp_control &msg )
 {
     switch( msg.kind ) {
         case mp_control_kind::input:
-            mp_active_context().input_queue.push_back( msg.event );
+            // No context exists while the main menu runs before game::setup();
+            // there is no queue to deliver the keystroke to, so drop it.
+            if( player_context *ctx = mp_active_context_ptr() ) {
+                ctx->input_queue.push_back( msg.event );
+            }
             break;
         case mp_control_kind::resize:
             // A size above the cap would make the grid allocation abort the
@@ -110,7 +114,13 @@ void dispatch_frame( const std::vector<uint8_t> &payload )
 
 bool take_queued( input_event &out )
 {
-    std::deque<input_event> &q = mp_active_context().input_queue;
+    // No context exists while the main menu runs before game::setup(), and the
+    // queue lives on the context; with none set there is nothing queued yet.
+    player_context *ctx = mp_active_context_ptr();
+    if( ctx == nullptr ) {
+        return false;
+    }
+    std::deque<input_event> &q = ctx->input_queue;
     if( q.empty() ) {
         return false;
     }

@@ -154,7 +154,11 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                            ( length.empty() ? std::string() : " after " + length ) );
             mp_server_request_exit();
         }
-        const input_event ev = mp_server_wait_for_input( mp_active_context().input_timeout_ms );
+        // No player context exists during startup (main-menu input runs before
+        // game::setup()); the -1 default matches the old file-local value.
+        const int timeout = mp_active_context_ptr() ?
+                            mp_active_context().input_timeout_ms : -1;
+        const input_event ev = mp_server_wait_for_input( timeout );
         if( ev.type == input_event_t::timeout && mp_server_resize_pending() ) {
             // The wait ended on the client resizing, not on the clock. Go round
             // and apply it rather than handing the game a timeout it would sit
