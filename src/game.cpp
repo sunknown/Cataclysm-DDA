@@ -1462,7 +1462,8 @@ void game::calc_driving_offset( vehicle *veh )
 
     // Turn the offset into a vector that increments the offset toward the desired position
     // instead of setting it there instantly, should smooth out jerkiness.
-    const point_rel_ms offset_difference( -mp_active_context().driving_view_offset + point( offset.x, offset.y ) );
+    const point_rel_ms offset_difference( -mp_active_context().driving_view_offset +
+        point( offset.x, offset.y ) );
 
     const point_rel_ms offset_sign( ( offset_difference.x() < 0 ) ? -1 : 1,
                                     ( offset_difference.y() < 0 ) ? -1 : 1 );
