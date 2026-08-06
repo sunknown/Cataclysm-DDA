@@ -23,17 +23,17 @@ player_context *mp_active_context_ptr()
 
 void mp_set_active_context( player_context *ctx )
 {
-    // nullptr — легальный сброс (нужен тестам и, в Ф3, выходу из игрока);
-    // чтение через mp_active_context() ассертит ненулевой указатель.
+    // nullptr is a legal reset (needed by tests and, in Phase 3, by leaving a player);
+    // reading through mp_active_context() asserts a non-null pointer.
     active_context = ctx;
 }
 
 void mp_apply_viewport_params( const player_context &ctx )
 {
-    // Базовые TERMX/TERMY уже установлены game_ui::init_ui() до любого
-    // колбэка; контекст заполняется из них (задачи 3), поэтому эти записи
-    // тождественны в Ф2 и станут реальными в Ф3, когда размер терминала
-    // будет следовать за активным игроком.
+    // The base TERMX/TERMY are already set by game_ui::init_ui() before any
+    // callback; the context is filled from them (task 3), so these writes
+    // are identical in Phase 2 and will become real in Phase 3, when the terminal
+    // size will follow the active player.
     TERMX = ctx.viewport.term_cols;
     TERMY = ctx.viewport.term_rows;
 
@@ -45,10 +45,10 @@ void mp_apply_viewport_params( const player_context &ctx )
     TERRAIN_WINDOW_TERM_WIDTH = TERRAIN_WINDOW_WIDTH;
     TERRAIN_WINDOW_TERM_HEIGHT = TERRAIN_WINDOW_HEIGHT;
 
-    // Террейн-окно считается в тайлах карты; шрифты терминала и карты могут
-    // отличаться. В серверной сборке пересчёта нет: единицы уже учтены тем,
-    // кто заполнил viewport_params (клиентом), а to_map_font_dimension читал бы
-    // font-глобалы, которых на сервере нет.
+    // The terrain window is measured in map tiles; the terminal and map fonts may
+    // differ. In the server build there is no recalculation: the units are already
+    // accounted for by whoever filled viewport_params (the client), and
+    // to_map_font_dimension would read font globals, which the server does not have.
 #if !defined(MP_SERVER)
     to_map_font_dimension( TERRAIN_WINDOW_WIDTH, TERRAIN_WINDOW_HEIGHT );
 #endif

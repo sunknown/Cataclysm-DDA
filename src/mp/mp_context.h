@@ -29,8 +29,8 @@ struct player_context {
     weak_ptr_fast<ui_adaptor> main_ui_adaptor;
 };
 
-player_context &mp_active_context();       // ассертит ненулевой активный контекст
-player_context *mp_active_context_ptr();   // сырой указатель, может быть nullptr (для сброса/тестов)
-void mp_set_active_context( player_context *ctx ); // nullptr = сброс; чтение ассертит
+player_context &mp_active_context();       // asserts a non-null active context
+player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for reset/tests)
+void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
 void mp_apply_viewport_params( const player_context &ctx );

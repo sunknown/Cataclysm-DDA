@@ -9,7 +9,7 @@
 
 TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" )
 {
-    // Метрики — глобалы; записать и восстановить все, чтобы не засорять соседние тесты.
+    // The metrics are globals; save and restore all of them to avoid polluting neighboring tests.
     restore_on_out_of_scope restore_termx( TERMX );
     restore_on_out_of_scope restore_termy( TERMY );
     restore_on_out_of_scope restore_tww( TERRAIN_WINDOW_WIDTH );
@@ -19,8 +19,8 @@ TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" 
     restore_on_out_of_scope restore_posx( POSX );
     restore_on_out_of_scope restore_posy( POSY );
 
-    // Терминал 120x40, боковые панели по умолчанию. Проверяем, что метрики —
-    // чистая функция от viewport, без скрытых источников.
+    // Terminal 120x40, default side panels. We verify that the metrics are a
+    // pure function of the viewport, with no hidden sources.
     player_context ctx;
     ctx.viewport.term_cols = 120;
     ctx.viewport.term_rows = 40;
@@ -29,7 +29,7 @@ TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" 
 
     CHECK( TERMX == 120 );
     CHECK( TERMY == 40 );
-    // Террейн-окно: вся ширина за вычетом боковых панелей.
+    // Terrain window: the full width minus the side panels.
     const int sidebar = panel_manager::get_manager().get_width_left() +
                         panel_manager::get_manager().get_width_right();
     CHECK( TERRAIN_WINDOW_WIDTH + sidebar == 120 );
@@ -40,7 +40,7 @@ TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" 
 
 namespace {
 
-// Восстанавливает активный контекст на предыдущий (может быть nullptr).
+// Restores the active context to the previous one (may be nullptr).
 class restore_active_context
 {
         player_context *const saved_;
@@ -76,7 +76,7 @@ TEST_CASE( "view_state_written_under_one_context_is_invisible_to_another", "[mp]
     mp_active_context().driving_view_offset = point_rel_ms( 1, 2 );
 
     mp_set_active_context( &b );
-    // Вью-стейт контекста B не тронут активацией A.
+    // B's view state is not touched by A's activation.
     CHECK( mp_active_context().ter_view_p == tripoint_bub_ms() );
     CHECK( mp_active_context().driving_view_offset == point_rel_ms() );
 
