@@ -2,7 +2,6 @@
 
 #include <cassert>
 
-#include "cata_utility.h"
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
@@ -126,6 +125,10 @@ void mp_activate_player( size_t idx )
 void mp_resize_active_context()
 {
     player_context &ctx = mp_active_context();
+
+    // Re-capture the backend's fresh root: backends that replace stdscr on
+    // resize (server, SDL) leave the context's stored window at the old size.
+    ctx.stdscr = catacurses::stdscr;
 
     ctx.viewport.term_cols = TERMX;
     ctx.viewport.term_rows = TERMY;

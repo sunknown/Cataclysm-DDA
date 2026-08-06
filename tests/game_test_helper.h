@@ -28,18 +28,23 @@ class game_test_helper
         }
 };
 
-// Restores the active context and the active ui stack on scope exit. Any test
-// that points the globals at stack locals must own one of these.
+// Restores the active context, the active ui stack and catacurses::stdscr on
+// scope exit. Any test that points the globals at stack locals must own one of
+// these (tests that replace stdscr with a scratch window leave it there
+// otherwise, leaking a test window into every later test).
 class restore_active_state
 {
         player_context *const ctx_;
         ui_stack_t *const stack_;
+        catacurses::window const stdscr_;
     public:
         restore_active_state() :
-            ctx_( mp_active_context_ptr() ), stack_( ui_manager::get_active_stack() ) {}
+            ctx_( mp_active_context_ptr() ), stack_( ui_manager::get_active_stack() ),
+            stdscr_( catacurses::stdscr ) {}
         ~restore_active_state()
         {
             mp_set_active_context( ctx_ );
             ui_manager::set_active_stack( stack_ );
+            catacurses::stdscr = stdscr_;
         }
 };

@@ -214,7 +214,11 @@ bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
 
 void mp_server_input_reset_for_test()
 {
-    mp_active_context().input_queue.clear();
+    // mp_active_context() asserts a non-null pointer, so only clear the queue
+    // when a context exists; a future caller may not have set one up.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        ctx->input_queue.clear();
+    }
     g_pending_resize.reset();
 }
 

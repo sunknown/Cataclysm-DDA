@@ -8,6 +8,7 @@
 #include "cursesport.h"          // cata_cursesport::WINDOW
 #include "game_test_helper.h"    // restore_active_state
 #include "mp/mp_context.h"
+#include "output.h"              // TERMX, TERMY
 #include "ui_manager.h"
 
 namespace {
@@ -118,5 +119,38 @@ TEST_CASE( "context_swap_restores_each_screens_cells", "[mp]" )
 
     // Key assertion: A == A' by cell content.
     CHECK( cells_a == cells_a2 );
+}
+
+TEST_CASE( "resize_recaptures_a_replaced_stdscr", "[mp]" )
+{
+    // Server (mp_curses_server.cpp handle_resize) and SDL (sdltiles.cpp
+    // on_window_resized) backends replace catacurses::stdscr on resize, so the
+    // context's stored window would stay at the pre-resize size; the resize
+    // path must re-capture the fresh root instead.
+    restore_active_state restore;
+    restore_on_out_of_scope restore_termx( TERMX );
+    restore_on_out_of_scope restore_termy( TERMY );
+
+    player_context ctx;
+    // 120x40 is large enough that the terrain window stays positive even with
+    // the default sidebar width (mp_context_test.cpp uses the same size).
+    const int cols = 120;
+    const int rows = 40;
+    ctx.viewport.term_cols = cols;
+    ctx.viewport.term_rows = rows;
+    mp_set_active_context( &ctx );
+    TERMX = cols;
+    TERMY = rows;
+    // Reproduce the backend replacing stdscr: a fresh root window the context
+    // has never seen.
+    const catacurses::window fresh_root = catacurses::newwin( rows, cols, point::zero );
+    catacurses::stdscr = fresh_root;
+
+    mp_resize_active_context();
+
+    // The context re-captured the fresh root rather than keeping a stale one,
+    // and the global root still points at it.
+    CHECK( ctx.stdscr == fresh_root );
+    CHECK( catacurses::stdscr == fresh_root );
 }
 #endif // defined(MP_SERVER)

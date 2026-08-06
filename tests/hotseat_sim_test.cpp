@@ -8,6 +8,7 @@
 #include "coordinates.h"
 #include "debug.h"
 #include "game.h"
+#include "game_test_helper.h"   // restore_active_state
 #include "map.h"
 #include "map_helpers_tests.h"
 #include "monster.h"
@@ -122,6 +123,9 @@ TEST_CASE( "monster_targets_the_closer_player", "[hotseat]" )
 
 TEST_CASE( "hotseat_turn_advances_calendar_once", "[hotseat]" )
 {
+    // Restore the context/stack/stdscr this test points at the ensure'd
+    // context, so sibling tests start clean.
+    restore_active_state restore;
     // The hotseat loop activates slots through mp_activate_player(), which
     // asserts a non-empty contexts; the test harness never runs game::setup(),
     // so ensure the context explicitly (as hotseat_test.cpp does).
@@ -157,6 +161,9 @@ TEST_CASE( "hotseat_turn_advances_calendar_once", "[hotseat]" )
 
 TEST_CASE( "hotseat_turn_drains_moves_from_every_slot", "[hotseat]" )
 {
+    // Restore the context/stack/stdscr this test points at the ensure'd
+    // context, so sibling tests start clean.
+    restore_active_state restore;
     // See hotseat_turn_advances_calendar_once: the hotseat loop needs the
     // context to exist (mp_activate_player asserts a non-empty contexts).
     mp_ensure_player_context();

@@ -1326,7 +1326,8 @@ class game
          * instead of going through get_avatar()) transparently operates on
          * that slot. A no-op for slot_index == 0. The operation is its own
          * inverse and is only valid as a swap-in/swap-out pair, so it is
-         * private; the only caller is the friend mp_activate_player().
+         * private; the callers are the friend mp_activate_player() and
+         * game::remove_extra_player_slots().
          */
         void swap_slot_into_u( size_t slot_index );
 
