@@ -3,9 +3,11 @@
 #include <memory>
 
 #include "cata_scope_helpers.h"
+#include "game_test_helper.h"
 #include "mp/mp_context.h"
 #include "output.h"
 #include "panels.h"
+#include "ui_manager.h"
 
 TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" )
 {
@@ -83,4 +85,29 @@ TEST_CASE( "view_state_written_under_one_context_is_invisible_to_another", "[mp]
     mp_set_active_context( &a );
     CHECK( mp_active_context().ter_view_p == tripoint_bub_ms( 5, 6, 0 ) );
     CHECK( mp_active_context().driving_view_offset == point_rel_ms( 1, 2 ) );
+}
+
+TEST_CASE( "ui_adaptors_register_into_the_active_stack", "[mp]" )
+{
+    restore_active_state restore;
+    ui_stack_t stack_a;
+    ui_stack_t stack_b;
+
+    ui_manager::set_active_stack( &stack_a );
+    {
+        ui_adaptor ui;
+        CHECK( ui_adaptor::ui_stack_size() == 1 );
+    }
+    // Destructor ran under the same active stack - the ownership invariant holds.
+    CHECK( ui_adaptor::ui_stack_size() == 0 );
+
+    ui_manager::set_active_stack( &stack_b );
+    {
+        ui_adaptor ui;
+        CHECK( ui_adaptor::ui_stack_size() == 1 );
+        CHECK( stack_a.size() == 0 );
+        CHECK( stack_b.size() == 1 );
+    }
+    CHECK( ui_adaptor::ui_stack_size() == 0 );
+    // restore_active_state's destructor restores the previous active stack.
 }

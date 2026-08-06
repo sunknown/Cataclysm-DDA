@@ -259,6 +259,10 @@ class ui_adaptor
         bool is_debug_message_ui;
         bool is_shutting_down = false;
 
+        // The stack this adaptor registered into at construction. The destructor
+        // asserts that it is still the active stack (the ownership invariant).
+        ui_stack_t *owner = nullptr;
+
         mutable bool invalidated;
         mutable bool deferred_resize;
 };
@@ -302,6 +306,15 @@ void redraw_invalidated();
  **/
 void screen_resized();
 void invalidate_all_ui_adaptors();
+/**
+ * Set the stack that new and existing `ui_adaptor` objects register into and
+ * that the redraw paths iterate. Never null: the world-phase placeholder is
+ * used while no player context is active. Called from mp_activate_player /
+ * mp_activate_world (Phase 3).
+ */
+void set_active_stack( ui_stack_t *stack );
+/** Get the active stack. Never null. Used by tests to restore it on scope exit. */
+ui_stack_t *get_active_stack();
 void reset();
 } // namespace ui_manager
 

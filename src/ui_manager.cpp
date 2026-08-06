@@ -31,20 +31,23 @@ static std::optional<SDL_Rect> prev_clip_rect;
 // restore can be skipped if a recovery rebuilt the renderer in between.
 static uint64_t prev_clip_rect_generation = 0;
 #endif
-static ui_stack_t ui_stack;
+static ui_stack_t world_stack;
+static ui_stack_t *active_stack = &world_stack;
 
 ui_adaptor::ui_adaptor() : is_imgui( false ), disabling_uis_below( false ),
     is_debug_message_ui( false ),
     invalidated( false ), deferred_resize( false )
 {
-    ui_stack.emplace_back( *this );
+    active_stack->emplace_back( *this );
+    owner = active_stack;
 }
 
 ui_adaptor::ui_adaptor( ui_adaptor::disable_uis_below ) : is_imgui( false ),
     disabling_uis_below( true ),
     is_debug_message_ui( false ), invalidated( false ), deferred_resize( false )
 {
-    ui_stack.emplace_back( *this );
+    active_stack->emplace_back( *this );
+    owner = active_stack;
 }
 
 ui_adaptor::ui_adaptor( ui_adaptor::debug_message_ui ) : is_imgui( false ),
@@ -81,7 +84,8 @@ ui_adaptor::ui_adaptor( ui_adaptor::debug_message_ui ) : is_imgui( false ),
         }
     }
 #endif
-    ui_stack.emplace_back( *this );
+    active_stack->emplace_back( *this );
+    owner = active_stack;
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape): cata_assert may throw on failed invariant by design
@@ -104,9 +108,10 @@ ui_adaptor::~ui_adaptor()
         }
 #endif
     }
-    for( auto it = ui_stack.rbegin(); it < ui_stack.rend(); ++it ) {
+    cata_assert( owner == active_stack );
+    for( auto it = active_stack->rbegin(); it < active_stack->rend(); ++it ) {
         if( &it->get() == this ) {
-            ui_stack.erase( std::prev( it.base() ) );
+            active_stack->erase( std::prev( it.base() ) );
             // TODO avoid invalidating portions that do not need to be redrawn
             ui_manager::invalidate( dimensions, disabling_uis_below );
             break;
@@ -247,7 +252,7 @@ static bool overlap( const rectangle<point> &lhs, const rectangle<point> &rhs )
 
 size_t ui_adaptor::ui_stack_size()
 {
-    return ui_stack.size();
+    return active_stack->size();
 }
 
 // This function does two things:
@@ -264,14 +269,14 @@ void ui_adaptor::invalidation_consistency_and_optimization()
     // resized or redrawn, so the invalidation flag is not cleared, and including
     // the disabled UI in the following calculation would unnecessarily
     // invalidate any upper intersecting UIs.
-    auto rfirst = ui_stack.crbegin();
-    for( ; rfirst != ui_stack.crend(); ++rfirst ) {
+    auto rfirst = active_stack->crbegin();
+    for( ; rfirst != active_stack->crend(); ++rfirst ) {
         if( rfirst->get().disabling_uis_below ) {
             break;
         }
     }
-    const auto first = rfirst == ui_stack.crend() ? ui_stack.cbegin() : std::prev( rfirst.base() );
-    for( auto it_upper = first; it_upper < ui_stack.cend(); ++it_upper ) {
+    const auto first = rfirst == active_stack->crend() ? active_stack->cbegin() : std::prev( rfirst.base() );
+    for( auto it_upper = first; it_upper < active_stack->cend(); ++it_upper ) {
         const ui_adaptor &ui_upper = it_upper->get();
         for( auto it_lower = first; it_lower < it_upper; ++it_lower ) {
             const ui_adaptor &ui_lower = it_lower->get();
@@ -300,17 +305,17 @@ void ui_adaptor::invalidate_ui() const
     if( invalidated ) {
         return;
     }
-    auto it = ui_stack.cbegin();
-    for( ; it < ui_stack.cend(); ++it ) {
+    auto it = active_stack->cbegin();
+    for( ; it < active_stack->cend(); ++it ) {
         if( &it->get() == this ) {
             break;
         }
     }
-    if( it == ui_stack.end() ) {
+    if( it == active_stack->end() ) {
         return;
     }
     // If an upper UI occludes this UI then nothing gets redrawn
-    for( auto it_upper = std::next( it ); it_upper < ui_stack.cend(); ++it_upper ) {
+    for( auto it_upper = std::next( it ); it_upper < active_stack->cend(); ++it_upper ) {
         if( contains( it_upper->get().dimensions, dimensions ) ) {
             return;
         }
@@ -345,7 +350,7 @@ void ui_adaptor::invalidate( const rectangle<point> &rect, const bool reenable_u
     // Always invalidate every UI, even if it is below another UI with
     // `disable_uis_below`, so when the UI with `disable_uis_below` is removed,
     // UIs below are correctly marked for redraw.
-    for( auto it_upper = ui_stack.cbegin(); it_upper < ui_stack.cend(); ++it_upper ) {
+    for( auto it_upper = active_stack->cbegin(); it_upper < active_stack->cend(); ++it_upper ) {
         const ui_adaptor &ui_upper = it_upper->get();
         if( !ui_upper.invalidated && overlap( ui_upper.dimensions, rect ) ) {
             // invalidated by `rect`
@@ -357,7 +362,7 @@ void ui_adaptor::invalidate( const rectangle<point> &rect, const bool reenable_u
 
 bool ui_adaptor::has_imgui()
 {
-    for( auto ui : ui_stack ) {
+    for( auto ui : *active_stack ) {
         if( ui.get().is_imgui ) {
             return true;
         }
@@ -367,15 +372,15 @@ bool ui_adaptor::has_imgui()
 
 void ui_adaptor::redraw()
 {
-    if( !ui_stack.empty() ) {
-        ui_stack.back().get().invalidated = true;
+    if( !active_stack->empty() ) {
+        active_stack->back().get().invalidated = true;
     }
     redraw_invalidated();
 }
 
 void ui_adaptor::redraw_invalidated( )
 {
-    if( test_mode || ui_stack.empty() ) {
+    if( test_mode || active_stack->empty() ) {
         return;
     }
 #if defined(TILES)
@@ -425,8 +430,8 @@ void ui_adaptor::redraw_invalidated( )
 
         // Find the first enabled UI. From now on enabling and disabling UIs
         // have no effect until the end of this call.
-        auto first = ui_stack.rbegin();
-        for( ; first != ui_stack.rend(); ++first ) {
+        auto first = active_stack->rbegin();
+        for( ; first != active_stack->rend(); ++first ) {
             if( first->get().disabling_uis_below ) {
                 break;
             }
@@ -436,8 +441,8 @@ void ui_adaptor::redraw_invalidated( )
         // always contains the original UI stack, and `first_enabled` always points
         // to elements of `ui_stack_orig`.
         std::unique_ptr<ui_stack_t> ui_stack_copy;
-        auto first_enabled = first == ui_stack.rend() ? ui_stack.begin() : std::prev( first.base() );
-        ui_stack_t *ui_stack_orig = &ui_stack;
+        auto first_enabled = first == active_stack->rend() ? active_stack->begin() : std::prev( first.base() );
+        ui_stack_t *ui_stack_orig = active_stack;
 
         // Apply deferred resizing.
         bool needs_resize = false;
@@ -543,7 +548,7 @@ void ui_adaptor::screen_resized()
     // Always mark every UI for resize even if it is below another UI with
     // `disable_uis_below`, so when the UI with `disable_uis_below` is removed,
     // UIs below are correctly marked for resize.
-    for( ui_adaptor &ui : ui_stack ) {
+    for( ui_adaptor &ui : *active_stack ) {
         ui.deferred_resize = true;
     }
     redraw();
@@ -587,14 +592,25 @@ void screen_resized()
 }
 void invalidate_all_ui_adaptors()
 {
-    for( ui_adaptor &adaptor : ui_stack ) {
+    for( ui_adaptor &adaptor : *active_stack ) {
         adaptor.invalidate_ui();
     }
 }
 
+void set_active_stack( ui_stack_t *stack )
+{
+    cata_assert( stack != nullptr );
+    active_stack = stack;
+}
+
+ui_stack_t *get_active_stack()
+{
+    return active_stack;
+}
+
 void reset()
 {
-    for( ui_adaptor &adaptor : ui_stack ) {
+    for( ui_adaptor &adaptor : *active_stack ) {
         adaptor.shutdown();
     }
 }
