@@ -29,6 +29,7 @@
 #include "map.h"
 #include "memory_fast.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "options.h"
 #include "output.h"
@@ -150,7 +151,8 @@ tripoint_rel_ms relative_view_pos( const avatar &u, const tripoint_bub_ms &p ) n
 // Convert p to screen position relative to the current terrain view
 tripoint_rel_ms relative_view_pos( const game &g, const tripoint_bub_ms &p ) noexcept
 {
-    return p - g.ter_view_p + point( POSX, POSY );
+    ( void )g; // view state is read through the active context
+    return p - mp_active_context().ter_view_p + point( POSX, POSY );
 }
 
 void draw_explosion_curses( game &g, const tripoint_bub_ms &center, const int r,

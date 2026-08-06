@@ -35,6 +35,7 @@
 #include "mission.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "npc.h"
 #include "omdata.h"
@@ -135,7 +136,7 @@ void game::serialize_json( std::ostream &fout )
     // Then each monster
     json.member( "active_monsters", *critter_tracker );
 
-    json.member( "driving_view_offset", driving_view_offset );
+    json.member( "driving_view_offset", mp_active_context().driving_view_offset );
     json.member( "turnssincelastmon", turnssincelastmon );
     json.member( "bVMonsterLookFire", bVMonsterLookFire );
 
@@ -315,7 +316,7 @@ void game::unserialize_impl( const JsonObject &data )
     data.has_null( "stair_monsters" ); // TEMPORARY until 0.G
     data.has_null( "monstairz" ); // TEMPORARY until 0.G
 
-    data.read( "driving_view_offset", driving_view_offset );
+    data.read( "driving_view_offset", mp_active_context().driving_view_offset );
     data.read( "turnssincelastmon", turnssincelastmon );
     data.read( "bVMonsterLookFire", bVMonsterLookFire );
 

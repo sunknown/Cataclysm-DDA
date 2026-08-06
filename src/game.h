@@ -1276,7 +1276,6 @@ class game
         /** True if the game has just started or loaded, else false. */
         bool new_game = false; // NOLINT(cata-serialize)
 
-        tripoint_bub_ms ter_view_p; // NOLINT(cata-serialize)
         catacurses::window w_terrain; // NOLINT(cata-serialize)
         catacurses::window w_overmap; // NOLINT(cata-serialize)
         catacurses::window w_omlegend; // NOLINT(cata-serialize)
@@ -1286,11 +1285,6 @@ class game
 
         //overmap UI singleton
         overmap_ui::overmap_draw_data_t overmap_data; // NOLINT(cata-serialize)
-
-        // View offset based on the driving speed (if any)
-        // that has been added to u.view_offset,
-        // Don't write to this directly, always use set_driving_view_offset
-        point_rel_ms driving_view_offset;
 
         // show NPC pathfinding on overmap ui
         bool debug_pathfinding = false; // NOLINT(cata-serialize)

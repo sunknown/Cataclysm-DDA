@@ -1462,29 +1462,27 @@ void game::calc_driving_offset( vehicle *veh )
 
     // Turn the offset into a vector that increments the offset toward the desired position
     // instead of setting it there instantly, should smooth out jerkiness.
-    const point_rel_ms offset_difference( -driving_view_offset + point( offset.x, offset.y ) );
+    const point_rel_ms offset_difference( -mp_active_context().driving_view_offset + point( offset.x, offset.y ) );
 
     const point_rel_ms offset_sign( ( offset_difference.x() < 0 ) ? -1 : 1,
                                     ( offset_difference.y() < 0 ) ? -1 : 1 );
     // Shift the current offset in the direction of the calculated offset by one tile
     // per draw event, but snap to calculated offset if we're close enough to avoid jitter.
     offset.x = ( std::abs( offset_difference.x() ) > 1 ) ?
-               ( driving_view_offset.x() + offset_sign.x() ) : offset.x;
+               ( mp_active_context().driving_view_offset.x() + offset_sign.x() ) : offset.x;
     offset.y = ( std::abs( offset_difference.y() ) > 1 ) ?
-               ( driving_view_offset.y() + offset_sign.y() ) : offset.y;
+               ( mp_active_context().driving_view_offset.y() + offset_sign.y() ) : offset.y;
 
     set_driving_view_offset( { offset.x, offset.y } );
 }
 
 void game::set_driving_view_offset( const point_rel_ms &p )
 {
-    // remove the previous driving offset,
-    // store the new offset and apply the new offset.
-    u.view_offset.raw() -=
-        driving_view_offset.raw(); // TODO: Implement -= etc. for relative coordinates.
-    driving_view_offset = p;
-    u.view_offset.raw() +=
-        driving_view_offset.raw(); // TODO: Implement -= etc. for relative coordinates.
+    player_context &ctx = mp_active_context();
+    avatar &you = get_avatar();
+    you.view_offset.raw() -= ctx.driving_view_offset.raw();
+    ctx.driving_view_offset = p;
+    you.view_offset.raw() += ctx.driving_view_offset.raw();
 }
 
 void game::catch_a_monster( monster *fish, const tripoint_bub_ms &pos, Character *p,
@@ -2473,7 +2471,7 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
         action = ctxt.handle_input();
         if( action == "MOUSE_MOVE" ) {
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
-                    ter_view_p.raw().xy(),
+                    mp_active_context().ter_view_p.raw().xy(),
                     true );
             if( mouse_pos && ( !liveview_pos || *mouse_pos != *liveview_pos ) ) {
                 liveview_pos = mouse_pos;
@@ -3348,9 +3346,9 @@ void game::draw( ui_adaptor &ui )
         you.view_offset = here.get_bub( you.zone_sort_viewport.center ) - you.pos_bub( here );
     }
 
-    ter_view_p.z() = ( you.pos_bub() + you.view_offset ).z();
-    here.build_map_cache( ter_view_p.z() );
-    here.update_visibility_cache( ter_view_p.z() );
+    mp_active_context().ter_view_p.z() = ( you.pos_bub() + you.view_offset ).z();
+    here.build_map_cache( mp_active_context().ter_view_p.z() );
+    here.update_visibility_cache( mp_active_context().ter_view_p.z() );
 
     werase( w_terrain );
     void_blink_curses();
@@ -3530,7 +3528,7 @@ void game::draw_ter( const tripoint_bub_ms &center, const bool looking, const bo
     avatar &you = get_avatar();
     const tripoint_bub_ms pos = you.pos_bub( );
 
-    ter_view_p = center;
+    mp_active_context().ter_view_p = center;
 
     here.draw( w_terrain, tripoint_bub_ms( center ) );
 
@@ -6405,7 +6403,7 @@ look_around_result game::look_around(
                 center += action == "MOUSE_MOVE" ? edge_scroll * 2 : edge_scroll;
             } else if( action == "MOUSE_MOVE" ) {
                 const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
-                        ter_view_p.raw().xy(),
+                        mp_active_context().ter_view_p.raw().xy(),
                         true );
                 if( mouse_pos ) {
                     lx = mouse_pos->x();

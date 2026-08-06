@@ -62,6 +62,7 @@
 #include "memory_fast.h"
 #include "messages.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "npc.h"
 #include "options.h"
@@ -3234,7 +3235,7 @@ bool target_ui::handle_cursor_movement( const std::string &action, bool &skip_re
         // Shift view/cursor with directional keys
         shift_view_or_cursor( delta.value() );
     } else if( action == "SELECT" &&
-               ( mouse_pos = ctxt.get_coordinates( g->w_terrain, g->ter_view_p.raw().xy() ) ) ) {
+               ( mouse_pos = ctxt.get_coordinates( g->w_terrain, mp_active_context().ter_view_p.raw().xy() ) ) ) {
         // Set pos by clicking with mouse
         mouse_pos->z() = you->posz() + you->view_offset.z();
         set_cursor_pos( *mouse_pos );

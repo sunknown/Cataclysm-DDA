@@ -72,6 +72,7 @@
 #include "messages.h"
 #include "monster.h"
 #include "move_mode.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "options.h"
@@ -2180,8 +2181,8 @@ static void do_deathcam_action( const action_id &act, avatar &player_character )
 {
     switch( act ) {
         case ACTION_CENTER:
-            player_character.view_offset.x() = g->driving_view_offset.x();
-            player_character.view_offset.y() = g->driving_view_offset.y();
+            player_character.view_offset.x() = mp_active_context().driving_view_offset.x();
+            player_character.view_offset.y() = mp_active_context().driving_view_offset.y();
             player_character.view_offset.z() = 0;
             break;
 
@@ -3400,7 +3401,7 @@ bool game::handle_action()
             }
 
             const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates( w_terrain,
-                    ter_view_p.raw().xy(),
+                    mp_active_context().ter_view_p.raw().xy(),
                     true );
             if( !mouse_pos ) {
                 return false;

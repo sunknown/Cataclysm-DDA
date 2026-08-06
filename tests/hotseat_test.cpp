@@ -3,6 +3,7 @@
 #include "avatar.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "mp/mp_context.h"
 
 TEST_CASE( "single_player_has_exactly_one_slot", "[hotseat]" )
 {
@@ -51,6 +52,8 @@ TEST_CASE( "second_slot_has_own_map_memory", "[hotseat]" )
 TEST_CASE( "extra_players_survive_a_save_round_trip", "[hotseat]" )
 {
     game_test_helper::reset_player_slots();
+    // serialize_json reads the view state through the active context.
+    mp_ensure_player_context();
     const std::string slot0_name = g->player_at( 0 ).name;
     avatar &second = g->add_player_slot();
     second.name = "SlotOneProbe";
@@ -109,6 +112,8 @@ TEST_CASE( "extra_players_survive_a_save_round_trip", "[hotseat]" )
 TEST_CASE( "single_player_build_sees_only_slot_zero", "[hotseat]" )
 {
     game_test_helper::reset_player_slots();
+    // serialize_json reads the view state through the active context.
+    mp_ensure_player_context();
     g->player_at( 0 ).name = "BasePlayerName";
     avatar &second = g->add_player_slot();
     second.name = "SoloIgnoreMe";

@@ -44,6 +44,7 @@
 #include "mdarray.h"
 #include "memory_fast.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mtype.h"  // IWYU pragma: keep
 #include "npc.h"
 #include "omdata.h"
@@ -252,7 +253,7 @@ bool editmap_ui::get_direction( tripoint_rel_ms &p, const std::string &action,
         p.z() = 1;
     } else if( action == "SELECT" ) {
         const std::optional<tripoint_bub_ms> mouse_pos = ctxt.get_coordinates(
-                    g->w_terrain, g->ter_view_p.raw().xy(), true );
+                    g->w_terrain, mp_active_context().ter_view_p.raw().xy(), true );
         if( !mouse_pos ) {
             return false;
         }

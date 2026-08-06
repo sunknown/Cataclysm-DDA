@@ -52,6 +52,7 @@
 #include "messages.h"
 #include "mission.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "music.h"
 #include "npc.h"
@@ -703,7 +704,8 @@ bool game::do_turn()
         }
     }
 
-    if( driving_view_offset.x() != 0 || driving_view_offset.y() != 0 ) {
+    if( mp_active_context().driving_view_offset.x() != 0 ||
+        mp_active_context().driving_view_offset.y() != 0 ) {
         // Still have a view offset, but might not be driving anymore,
         // or the option has been deactivated,
         // might also happen when someone dives from a moving car.
