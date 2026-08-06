@@ -200,6 +200,7 @@ class game
         friend bool turn_handler::cleanup_at_end();
         friend bool mp_hotseat_do_turn();
         friend void mp_resize_active_context();
+        friend void mp_activate_player( size_t idx );
         friend global_variables &get_globals();
     public:
         game();
@@ -450,16 +451,6 @@ class game
         void set_active_slot( size_t index );
         avatar &player_at( size_t index );
         avatar &add_player_slot();
-        /**
-         * Swaps @ref u's content with player_slots[slot_index]'s, and the
-         * matching player_slots[0]/player_slots[slot_index] pointers, so that
-         * `u` (and everything elsewhere in the engine that reads it directly
-         * instead of going through get_avatar()) transparently operates on
-         * that slot. A no-op for slot_index == 0. The operation is its own
-         * inverse: call once before a non-zero slot's turn and once after to
-         * swap back. See src/mp/mp_hotseat_loop.cpp for the caller.
-         */
-        void swap_slot_into_u( size_t slot_index );
         /**
          * Destroys every player slot above index 0, ending hotseat co-op (which
          * mp_mode_active() derives from the slot count). The extra avatars are
@@ -1327,6 +1318,17 @@ class game
 
         catacurses::window w_terrain_ptr; // NOLINT(cata-serialize)
         catacurses::window w_minimap_ptr; // NOLINT(cata-serialize)
+
+        /**
+         * Swaps @ref u's content with player_slots[slot_index]'s, and the
+         * matching player_slots[0]/player_slots[slot_index] pointers, so that
+         * `u` (and everything elsewhere in the engine that reads it directly
+         * instead of going through get_avatar()) transparently operates on
+         * that slot. A no-op for slot_index == 0. The operation is its own
+         * inverse and is only valid as a swap-in/swap-out pair, so it is
+         * private; the only caller is the friend mp_activate_player().
+         */
+        void swap_slot_into_u( size_t slot_index );
 
         // a member so that it's remembered over time
         std::string sFilter; // NOLINT(cata-serialize)

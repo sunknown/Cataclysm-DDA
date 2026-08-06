@@ -40,6 +40,12 @@ void mp_apply_viewport_params( const player_context &ctx );
 // active. Always sets an active context, even when contexts was already non-empty
 // (otherwise after contexts.clear() the active pointer would dangle).
 void mp_ensure_player_context();
+// The single writer of the global aliases: swaps the current slot out of u and
+// slot idx in, then re-points stdscr, the seven game windows, the TERMX/TERMY
+// metrics, the active ui stack and the active player context from contexts[0].
+// Callers must have called mp_ensure_player_context() first (which itself ends
+// with mp_activate_player( 0 )).
+void mp_activate_player( size_t idx );
 // Re-reads the viewport from TERMX/TERMY, applies the metrics, creates the
 // context's windows, re-points game's window aliases to them and repositions
 // the main ui_adaptor from the context's stdscr.

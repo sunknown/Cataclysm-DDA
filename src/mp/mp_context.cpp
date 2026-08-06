@@ -72,7 +72,55 @@ void mp_ensure_player_context()
     mp_apply_viewport_params( ctx );
     ctx.stdscr = catacurses::stdscr;
     mp_set_active_context( &ctx );
-    // Task 5 will add mp_activate_player( 0 ) here -- see task 5, step 6.
+    // Activating player 0 here makes the context mechanism run through the
+    // ordinary single-player build: the main ui_adaptor registers into the
+    // context's stack instead of world_stack, and every alias points at the
+    // context. The first redraw then runs mp_resize_active_context, which
+    // creates the windows and re-points the aliases again (resize-before-
+    // activation ordering, task 3).
+    mp_activate_player( 0 );
+}
+
+void mp_activate_player( size_t idx )
+{
+    // No ensure here: mp_ensure_player_context() itself ends with
+    // mp_activate_player( 0 ), otherwise this would recurse forever. Callers
+    // must have already called ensure (setup() / create_or_get_main_ui_adaptor
+    // / tests).
+    cata_assert( !g->contexts.empty() );
+    // In Phase 2 there is a single context (hotseat shares it between slots);
+    // per-player contexts (contexts[idx]) arrive with the scheduler in Phase 3.
+    player_context &ctx = g->contexts[0];
+
+    // 1. Avatar: take the current slot out of u, put the new one in.
+    // swap_slot_into_u is self-inverse and only valid as a swap-in/swap-out
+    // pair, so it is private and is called only from here.
+    const size_t current = g->active_slot();
+    if( current != 0 ) {
+        g->swap_slot_into_u( current );
+    }
+    if( idx != 0 ) {
+        g->swap_slot_into_u( idx );
+    }
+    g->set_active_slot( idx );
+    cata_assert( g->player_slots[g->active_slot()] == &g->u );
+
+    // 2. Screen.
+    catacurses::stdscr = ctx.stdscr;
+    // 3. Windows.
+    g->w_terrain = ctx.w_terrain;
+    g->w_overmap = ctx.w_overmap;
+    g->w_omlegend = ctx.w_omlegend;
+    g->w_minimap = ctx.w_minimap;
+    g->w_pixel_minimap = ctx.w_pixel_minimap;
+    g->w_terrain_ptr = ctx.w_terrain_ptr;
+    g->w_minimap_ptr = ctx.w_minimap_ptr;
+    // 4. Metrics.
+    mp_apply_viewport_params( ctx );
+    // 5. UI stack.
+    ui_manager::set_active_stack( &ctx.ui_stack );
+    // 6. View state and input.
+    mp_set_active_context( &ctx );
 }
 
 void mp_resize_active_context()

@@ -119,3 +119,53 @@ TEST_CASE( "ensure_creates_the_single_context_and_activates_it", "[mp]" )
     CHECK( &mp_active_context() == &g->contexts[0] );
     CHECK( g->contexts[0].viewport.term_cols == TERMX );
 }
+
+TEST_CASE( "activating_slots_in_sequence_preserves_each_slots_content", "[mp]" )
+{
+    restore_active_state restore;
+    game_test_helper::reset_player_slots();
+    // Do not clear g->contexts: the active pointer would then point at a freed
+    // element, and restore_active_state would restore that dangling pointer.
+    // ensure reuses the existing contexts[0] or creates a new one and in any
+    // case makes it active.
+    mp_ensure_player_context();
+
+    g->player_at( 0 ).name = "SlotZero";
+    avatar &second = g->add_player_slot();
+    second.name = "SlotOne";
+    avatar &third = g->add_player_slot();
+    third.name = "SlotTwo";
+
+    mp_activate_player( 1 );
+    CHECK( get_avatar().name == "SlotOne" );
+    get_avatar().name = "SlotOneEdited";
+
+    mp_activate_player( 2 );
+    CHECK( get_avatar().name == "SlotTwo" );
+
+    // Back to slot 1: its content is preserved (an unpaired swap would break
+    // this).
+    mp_activate_player( 1 );
+    CHECK( get_avatar().name == "SlotOneEdited" );
+
+    mp_activate_player( 0 );
+    CHECK( get_avatar().name == "SlotZero" );
+}
+
+TEST_CASE( "mp_activate_player_zero_is_the_identity_swap", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    const catacurses::window stdscr_before = catacurses::stdscr;
+    const catacurses::window terrain_before = g->w_terrain;
+    const int termx_before = TERMX;
+    const int termy_before = TERMY;
+
+    mp_activate_player( 0 );
+
+    CHECK( catacurses::stdscr == stdscr_before );
+    CHECK( g->w_terrain == terrain_before );
+    CHECK( TERMX == termx_before );
+    CHECK( TERMY == termy_before );
+    CHECK( &get_avatar() == &g->player_at( 0 ) );
+}

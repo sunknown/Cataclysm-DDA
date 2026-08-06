@@ -11,6 +11,7 @@
 #include "map.h"
 #include "map_helpers_tests.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mp/mp_hotseat_loop.h"
 #include "mp/mp_tether.h"
 #include "player_activity.h"
@@ -121,6 +122,10 @@ TEST_CASE( "monster_targets_the_closer_player", "[hotseat]" )
 
 TEST_CASE( "hotseat_turn_advances_calendar_once", "[hotseat]" )
 {
+    // The hotseat loop activates slots through mp_activate_player(), which
+    // asserts a non-empty contexts; the test harness never runs game::setup(),
+    // so ensure the context explicitly (as hotseat_test.cpp does).
+    mp_ensure_player_context();
     clear_avatar();
     build_test_map( ter_id( "t_pavement" ) );
     // The test harness never starts a game, so gamemode is null and do_turn()
@@ -152,6 +157,9 @@ TEST_CASE( "hotseat_turn_advances_calendar_once", "[hotseat]" )
 
 TEST_CASE( "hotseat_turn_drains_moves_from_every_slot", "[hotseat]" )
 {
+    // See hotseat_turn_advances_calendar_once: the hotseat loop needs the
+    // context to exist (mp_activate_player asserts a non-empty contexts).
+    mp_ensure_player_context();
     clear_avatar();
     build_test_map( ter_id( "t_pavement" ) );
     g->ensure_gamemode_for_test();

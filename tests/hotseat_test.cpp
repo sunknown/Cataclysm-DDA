@@ -162,9 +162,11 @@ TEST_CASE( "removing_slots_mid_turn_restores_slot_zero_to_u", "[hotseat]" )
     second.name = "SlotOne";
 
     // Reproduce the state the hotseat loop is in during slot 1's turn: slot 1's
-    // data swapped into u, so `u` is the acting character.
-    g->set_active_slot( 1 );
-    g->swap_slot_into_u( 1 );
+    // data swapped into u, so `u` is the acting character. The activation goes
+    // through the swap point (mp_activate_player); ensure is mandatory because
+    // it asserts a non-empty contexts.
+    mp_ensure_player_context();
+    mp_activate_player( 1 );
     REQUIRE( get_avatar().name == "SlotOne" );
 
     // Disabling from inside that turn must give slot 0's data back to u rather

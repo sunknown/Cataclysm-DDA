@@ -5,6 +5,7 @@
 #include "game.h"
 #include "map.h"
 #include "messages.h"
+#include "mp/mp_context.h"
 #include "mp/mp_tether.h"
 #include "translations.h"
 
@@ -22,16 +23,13 @@ bool mp_hotseat_do_turn()
     // Player phase: every slot acts in index order, never in speed order, so
     // the sequence is reproducible and matches section 5.5 of the design spec.
     for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-        g->set_active_slot( i );
-        // A great deal of the engine (movement, combat, crafting, ...) reads
-        // the global `u` directly instead of get_avatar(), a leftover from
-        // single player where there was only ever one avatar to read. Rather
-        // than migrate every one of those call sites, swap the acting slot's
-        // data into u's address for the duration of its turn (a no-op for
-        // slot 0, which already lives there) -- see
-        // game::swap_slot_into_u()'s doc comment. Swapped back at the bottom
-        // of this iteration.
-        g->swap_slot_into_u( i );
+        // mp_activate_player() is the single alias-swap point: it swaps the
+        // acting slot's data into `u` for the duration of its turn (a no-op
+        // for slot 0, which already lives there), re-points the context
+        // aliases (stdscr, windows, metrics, ui stack, active context) and
+        // sets the active slot. The next iteration's activation swaps the
+        // previous slot back out.
+        mp_activate_player( i );
         avatar &who = g->player_at( i );
         while( who.get_moves() > 0 && who.activity ) {
             who.activity.do_turn( who );
@@ -72,9 +70,10 @@ bool mp_hotseat_do_turn()
                 warned = true;
             }
         }
-        g->swap_slot_into_u( i );
+        // No swap back here: the next iteration's mp_activate_player() (or the
+        // mp_activate_player( 0 ) below) takes this slot out of `u`.
     }
-    g->set_active_slot( 0 );
+    mp_activate_player( 0 );
 
     // World phase: run the single-player turn machinery. Every slot was
     // drained above, so do_turn()'s input loops are no-ops and its interactive
