@@ -150,6 +150,13 @@ TEST_CASE( "activating_slots_in_sequence_preserves_each_slots_content", "[mp]" )
 
     mp_activate_player( 0 );
     CHECK( get_avatar().name == "SlotZero" );
+
+    // Restore the single-slot layout. The extra slots created here are
+    // default-constructed avatars with no bodyparts; leaving them in
+    // player_slots made any later test that iterates every slot
+    // (weather.cpp handle_weather_effects -> wet_character) read a bodyless
+    // avatar and log an error for every weather tick.
+    game_test_helper::reset_player_slots();
 }
 
 TEST_CASE( "mp_activate_player_zero_is_the_identity_swap", "[mp]" )

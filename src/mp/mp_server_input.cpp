@@ -59,8 +59,9 @@ void dispatch( const mp_control &msg )
 {
     switch( msg.kind ) {
         case mp_control_kind::input:
-            // No context exists while the main menu runs before game::setup();
-            // there is no queue to deliver the keystroke to, so drop it.
+            // mp_ensure_player_context() runs at game startup, before the main
+            // menu, so the queue is live from the start; the null check is
+            // defensive for tests that run without a context.
             if( player_context *ctx = mp_active_context_ptr() ) {
                 ctx->input_queue.push_back( msg.event );
             }
@@ -114,8 +115,8 @@ void dispatch_frame( const std::vector<uint8_t> &payload )
 
 bool take_queued( input_event &out )
 {
-    // No context exists while the main menu runs before game::setup(), and the
-    // queue lives on the context; with none set there is nothing queued yet.
+    // The context is ensured before the main menu, so the queue is live from
+    // startup; the null check is defensive for tests without a context.
     player_context *ctx = mp_active_context_ptr();
     if( ctx == nullptr ) {
         return false;

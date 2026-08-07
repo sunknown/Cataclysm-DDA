@@ -44,6 +44,7 @@
 #include "json.h"
 #include "map.h"
 #include "messages.h"
+#include "mp/mp_context.h"
 #include "options.h"
 #include "overmap.h"
 #include "overmapbuffer.h"
@@ -133,6 +134,12 @@ static void init_global_game_state( const std::vector<mod_id> &mods,
     init_colors();
 
     g = std::make_unique<game>( );
+    // The context must exist before any test drives the game loop: do_turn()
+    // and the serialization paths read the view state through the active
+    // context (mp_active_context() asserts a non-null one), and tests that call
+    // do_turn() directly never go through game::setup(). Ensuring it here
+    // covers the whole harness.
+    mp_ensure_player_context();
     g->new_game = true;
     g->load_static_data();
 

@@ -44,6 +44,7 @@
 #include "event_bus.h"
 #include "filesystem.h"
 #include "game.h"
+#include "mp/mp_context.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_client_main.h"
 #include "mp/mp_hotseat_loop.h"
@@ -601,6 +602,16 @@ static int run_game( cli_opts &cli )
     game_ui::init_ui();
 
     g = std::make_unique<game>();
+
+    // The context must exist before the main menu runs: the menu's ui_adaptors
+    // register into the active stack at construction time, and game::setup()
+    // (called from the menu when a new game starts or a save loads) switches
+    // that stack to the context's. Ensuring the context here keeps those
+    // adaptors under the same stack for their whole lifetime instead of
+    // orphaning them mid-destruction (cata_assert owner == active_stack).
+    // It is also what makes the server's input queue (which lives on the
+    // context) reachable before setup().
+    mp_ensure_player_context();
 
     // First load and initialize everything that does not
     // depend on the mods.

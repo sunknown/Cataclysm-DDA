@@ -154,8 +154,8 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                            ( length.empty() ? std::string() : " after " + length ) );
             mp_server_request_exit();
         }
-        // No player context exists during startup (main-menu input runs before
-        // game::setup()); the -1 default matches the old file-local value.
+        // The context is ensured at startup, so the queue is live during the
+        // main menu; the -1 fallback is defensive for tests without one.
         const int timeout = mp_active_context_ptr() ?
                             mp_active_context().input_timeout_ms : -1;
         const input_event ev = mp_server_wait_for_input( timeout );

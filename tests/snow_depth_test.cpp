@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "calendar.h"
+#include "cata_scope_helpers.h"
 #include "character.h"
 #include "coordinates.h"
 #include "map.h"
@@ -253,6 +254,14 @@ TEST_CASE( "snow_movement_penalty", "[snow][movement]" )
     clear_character( get_player_character() );
     weather_manager &weather = get_weather();
     weather.snow_depth_map.clear();
+
+    // Restore the weather state this test modifies: the "no penalty indoors"
+    // section leaves 600 mm of snow behind, which leaks a +100 run_cost
+    // penalty into any later test that computes the avatar's run cost (e.g.
+    // monster_speed_description) and shifts every speed bucket.
+    restore_on_out_of_scope restore_snow( weather.snow_depth_map );
+    restore_on_out_of_scope restore_weather( weather.weather_id );
+    restore_on_out_of_scope restore_temperature( weather.temperature );
 
     Character &player = get_player_character();
     map &here = get_map();
