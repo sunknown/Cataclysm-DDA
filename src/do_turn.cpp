@@ -699,8 +699,9 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
-    // The world half: no player is active, so nothing here may open a window.
-    // task 5 replaces this with mp_activate_world()
+    // The world half: no player is meant to be active here, so nothing here
+    // may open a window. mp_activate_player( 0 ) is a stand-in until task 5
+    // replaces this with mp_activate_world().
     mp_activate_player( 0 );
     world_turn_pre();
 
@@ -721,6 +722,11 @@ bool game::do_turn()
             // mirroring its own top-of-function is_game_over() check: this
             // runs on the orchestrating thread, never inside one player's
             // worker while others may still be live (task 6+).
+            //
+            // This path is deliberately untested: cleanup_at_end() performs
+            // global teardown (graveyard save, MAPBUFFER/overmap_buffer clear,
+            // audio fade) that a unit test cannot exercise honestly. Coverage
+            // here is by review, not by test -- do not assume a test backs it.
             return turn_handler::cleanup_at_end();
         }
     }
@@ -812,8 +818,10 @@ void game::world_turn_post()
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
     // This runs once for the world half, not once per slot: mon_info_update()
-    // reads game::u, and no player is active here for it to read. A per-slot
-    // pass needs mon_info_update() to take the avatar as a parameter instead.
+    // reads game::u, and no player is meant to be active here for it to read
+    // (mp_activate_player( 0 ) is a stand-in until task 5's
+    // mp_activate_world()). A per-slot pass also needs mon_info_update() to
+    // take the avatar as a parameter instead.
     mon_info_update();
 
     // handle_weather_effects() never reads the avatar it's passed: it decays

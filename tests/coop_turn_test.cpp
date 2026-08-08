@@ -176,6 +176,13 @@ TEST_CASE( "every_slot_gets_its_moves_back", "[coop]" )
     CHECK( a.get_moves() > 0 );
     CHECK( b.get_moves() > 0 );
 
+    // get_moves() alone cannot fail this test: the test set both slots' moves
+    // to 100 itself, and a reverted orchestrator that only ever touches slot 0
+    // would leave b untouched, still positive. avatar_turn_pre() drains a
+    // running activity (do_turn.cpp), so this only passes if slot 1 actually
+    // went through avatar_turn_pre()/player_act(), not just slot 0.
+    CHECK( b.activity.moves_left < 500 );
+
     game_test_helper::reset_player_slots();
 }
 
