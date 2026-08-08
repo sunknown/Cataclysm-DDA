@@ -109,7 +109,7 @@ void glare( const weather_type_id &w )
 {
     //todo npcs, also
     // Sun exposure is per-avatar-instance (position, sleep state, worn
-    // items, traits), so every hotseat slot is checked independently rather
+    // items, traits), so every co-op player slot is checked independently rather
     // than just the active one.
     for( avatar *pc : g->get_players() ) {
         Character &player_character = *pc;
@@ -489,7 +489,7 @@ void handle_weather_effects( const weather_type_id &w )
         // Precipitation is vertical - only roofs/floors block it, not walls.
         // is_roofed() walks upward through all z-levels for a complete check.
         if( calendar::once_every( 6_seconds ) ) {
-            // Each hotseat slot is drenched independently, based on its own
+            // Each co-op player slot is drenched independently, based on its own
             // roofed status, since being rained on is per-avatar-instance.
             for( avatar *pc : g->get_players() ) {
                 if( !here.is_roofed( pc->pos_bub() ) ) {
@@ -1142,7 +1142,7 @@ void weather_manager::update_snow_depth()
         return;
     }
 
-    // Ensure every hotseat player's current OMT is tracked, seeded from
+    // Ensure every co-op player's current OMT is tracked, seeded from
     // nearest neighbor -- both avatars can be in different OMTs, so both
     // need their own seed, not just the active slot's.
     for( avatar *pc : g->get_players() ) {

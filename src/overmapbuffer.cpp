@@ -719,7 +719,7 @@ void overmapbuffer::process_mongroups()
     // arbitrary radius to include nearby overmaps (aside from the current one)
     const int radius = MAPSIZE * 2;
     // Mongroup decay/despawn is shared overmap state, not per-avatar-owned
-    // data, and widening it to scan near every hotseat slot risks double
+    // data, and widening it to scan near every co-op player slot risks double
     // processing (and, less certainly, RNG-order/test-count drift) that
     // hasn't been verified safe here, so this stays scoped to the
     // active/local avatar like the rest of this file's sites.
@@ -1640,7 +1640,7 @@ std::vector<shared_ptr_fast<npc>> overmapbuffer::get_npcs_near_player( int radiu
 {
     // Many callers outside this migration batch (do_turn.cpp, mission.cpp,
     // overmap_ui.cpp, etc.) still assume this returns NPCs near a single
-    // reference player; widening it to a union across hotseat slots would
+    // reference player; widening it to a union across co-op player slots would
     // change their behavior without those call sites being reviewed for it,
     // so this intentionally stays scoped to the active/local avatar.
     return get_npcs_near( get_avatar_legacy().pos_abs_sm(), radius );

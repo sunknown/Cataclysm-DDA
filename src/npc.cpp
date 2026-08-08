@@ -3304,7 +3304,7 @@ void npc::die( map *here, Creature *nkiller )
                 myclass.c_str() );
         // Character::apply_murder_penalties() asserts the killer is the local
         // player avatar (src/character_health.cpp) and has no support for
-        // crediting/penalizing a non-active hotseat slot; a real multi-slot
+        // crediting/penalizing a non-active co-op player slot; a real multi-slot
         // fix belongs there, not here.
         if( ch == &get_avatar_legacy() ) {
             ch->apply_murder_penalties( this );

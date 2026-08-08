@@ -1339,10 +1339,10 @@ std::string display::overmap_position_text( const tripoint_abs_omt &loc )
     return loc.to_string();
 }
 
-std::string display::hotseat_player_text( const Character &u )
+std::string display::coop_player_text( const Character &u )
 {
 #if defined(MULTIPLAYER)
-    if( !mp_mode_active() ) {
+    if( !mp_coop_active() ) {
         // Single player: nothing to disambiguate, so the widget stays blank
         // rather than showing a slot number that means nothing.
         return std::string();

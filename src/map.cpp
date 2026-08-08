@@ -472,7 +472,7 @@ void map::memory_clear_vehicle_points( const vehicle &veh ) const
             continue;
         }
         memory_cache_dec_set_dirty( get_bub( p ), true );
-        // Every hotseat slot keeps its own map memory, so a stale decoration
+        // Every co-op player slot keeps its own map memory, so a stale decoration
         // bit must be cleared from all of them, not just the active slot.
         for( avatar *pc : g->get_players() ) {
             pc->memorize_clear_decoration( p, "vp_" );
@@ -728,7 +728,7 @@ std::unique_ptr<vehicle> map::detach_vehicle( vehicle *veh )
                 if( inbounds( pt ) ) {
                     memory_cache_dec_set_dirty( get_bub( pt ), true );
                 }
-                // Every hotseat slot keeps its own map memory, so the stale
+                // Every co-op player slot keeps its own map memory, so the stale
                 // decoration bit must be cleared from all of them.
                 for( avatar *pc : g->get_players() ) {
                     pc->memorize_clear_decoration( pt, "vp_" );
@@ -2073,7 +2073,7 @@ bool map::furn_set( const tripoint_bub_ms &p, const furn_id &new_furniture, cons
     }
 
     // If a player has grabbed this furniture and it's no longer grabbable,
-    // release the grab. Grab state is per-avatar-instance, so every hotseat
+    // release the grab. Grab state is per-avatar-instance, so every co-op player
     // slot needs to be checked, not just the active one.
     for( avatar *pc : g->get_players() ) {
         if( pc->get_grab_type() == object_type::FURNITURE &&
@@ -2128,7 +2128,7 @@ bool map::furn_set( const tripoint_bub_ms &p, const furn_id &new_furniture, cons
     // KNOWN LIMITATION: Character::sees() dispatches an avatar to
     // map::pl_sees(), which is hard-wired to the active slot's seen/camera
     // cache (see game::build_map_cache()) — so this condition evaluates
-    // identically for every slot rather than truly per-slot. In hotseat, a
+    // identically for every slot rather than truly per-slot. With more than one player, a
     // non-active slot that genuinely sees a tile the active slot cannot may
     // keep stale decoration memory. Single-player is unaffected (there is
     // only ever the active slot). A real per-slot fix needs a per-slot seen
@@ -2634,7 +2634,7 @@ bool map::ter_set( const tripoint_bub_ms &p, const ter_id &new_terrain, bool avo
     memory_cache_ter_set_dirty( p, true );
     // See the KNOWN LIMITATION note on the identical pattern in furn_set():
     // sees() is hard-wired to the active slot's cache, so this isn't truly
-    // per-slot in hotseat yet.
+    // per-slot with more than one player yet.
     for( avatar *pc : g->get_players() ) {
         if( pc->sees( *this, p ) ) {
             pc->memorize_clear_decoration( get_abs( p ), "t_" );
@@ -4382,7 +4382,7 @@ void map::smash_items( const tripoint_bub_ms &p, int power, const std::string &c
     }
 
     // is_avatar() identifies any player-controlled driver, regardless of
-    // which hotseat slot is currently active.
+    // which co-op player slot is currently active.
     Character *driver = veh != nullptr ? veh->get_driver( *this ) : nullptr;
     const bool player_is_driver = driver != nullptr && driver->is_avatar();
     // Note: any_player_sees() checks each slot's sees() against the current
@@ -7549,7 +7549,7 @@ void map::add_camp( const tripoint_abs_omt &omt_pos, const std::string &name, bo
     overmap_buffer.add_camp( temp_camp );
     // camps is tracked per-avatar-instance (like followers/known camps
     // elsewhere in the codebase), so this only records against the active
-    // hotseat slot; there's no established toolkit helper to merge known-camp
+    // co-op player slot; there's no established toolkit helper to merge known-camp
     // sets across slots.
     get_avatar_legacy().camps.insert( omt_pos );
     // Mapgen-spawned camps never need or want to validate, since they'll always be on newly generated OMTs
@@ -8811,7 +8811,7 @@ void map::reconcile_item_wakeups()
             }
         }
     };
-    // Every hotseat slot's inventory needs indexing, not just the active one.
+    // Every co-op player slot's inventory needs indexing, not just the active one.
     for( avatar *pc : g->get_players() ) {
         walk_character( *pc );
     }
@@ -9847,7 +9847,7 @@ void map::spawn_monsters_submap_group( const tripoint_rel_sm &gp, mongroup &grou
                                        bool ignore_sight )
 {
     // Player proximity governs the spawn-visibility avoidance below; use
-    // whichever hotseat slot is closest to this submap as the reference,
+    // whichever co-op player slot is closest to this submap as the reference,
     // matching the "target nearest player" idiom used elsewhere in Ф6.
     const tripoint_bub_ms gp_origin{ SEEX * gp.x(), SEEY * gp.y(), gp.z() };
     Character *nearest_pc = g->nearest_player( get_abs( gp_origin ) );
@@ -10726,7 +10726,7 @@ void map::build_map_cache( const int zlev, bool skip_lightmap )
 
         static std::vector<char_light_state> cached_char_lights;
         std::vector<char_light_state> current_lights;
-        // Every hotseat slot's light state can affect the lightmap, not just
+        // Every co-op player slot's light state can affect the lightmap, not just
         // the active viewpoint's.
         for( avatar *pc : g->get_players() ) {
             current_lights.push_back( compute( *pc ) );

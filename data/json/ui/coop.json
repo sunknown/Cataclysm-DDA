@@ -1,0 +1,9 @@
+[
+  {
+    "id": "coop_player_desc",
+    "type": "widget",
+    "label": { "str": "Playing", "ctxt": "UI sidebar" },
+    "style": "text",
+    "var": "coop_player_text"
+  }
+]

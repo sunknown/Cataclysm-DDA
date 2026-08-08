@@ -715,7 +715,7 @@ bool Creature::sees( const map &here, const tripoint_bub_ms &t, bool is_avatar,
             // `t` is the specific avatar's own position (is_avatar was computed from
             // the target Creature at t), so resolve to whichever player slot is
             // actually there rather than a single hardcoded avatar -- otherwise a
-            // second hotseat avatar's visibility check would silently borrow the
+            // second co-op avatar's visibility check would silently borrow the
             // first avatar's visibility() value.
             Character *target_pc = g->nearest_player( here.get_abs( t ) );
             const float player_visibility_factor = target_pc ? target_pc->visibility() / 100.0f : 1.0f;
@@ -1099,7 +1099,7 @@ void projectile::apply_effects_damage( Creature &target, Creature *source,
                 target.add_effect( effect_source( source ), effect_onfire, rng( 1_turns, 2_turns ) * amount,
                                    dealt_dam.bp_hit );
             }
-            // Pyromania is a per-avatar trait/morale state, so every hotseat
+            // Pyromania is a per-avatar trait/morale state, so every co-op player
             // slot that has it unfulfilled and can see the fire reacts.
             for( avatar *pc : g->get_players() ) {
                 if( pc->has_unfulfilled_pyromania() ) {
@@ -1281,7 +1281,7 @@ void Creature::messaging_projectile_attack( const Creature *source,
     const tripoint_bub_ms pos = pos_bub( here );
     const tripoint_bub_ms source_pos = source->pos_bub( here );
     // Message-worthy visibility is inherently about whoever is at the
-    // keyboard right now (the active hotseat slot), not any player.
+    // keyboard right now (the active co-op player slot), not any player.
     const viewer &player_view = get_avatar_legacy();
     const bool u_see_this = player_view.sees( here, *this );
 
@@ -1405,7 +1405,7 @@ void Creature::deal_projectile_attack( map *here, Creature *source, dealt_projec
     const auto &proj_effects = proj.proj_effects;
 
     // Message-worthy visibility is inherently about whoever is at the
-    // keyboard right now (the active hotseat slot), not any player.
+    // keyboard right now (the active co-op player slot), not any player.
     viewer &player_view = get_avatar_legacy();
     Character *guy = as_character();
     if( !magic ) {
@@ -1585,7 +1585,7 @@ void Creature::deal_damage_handle_type( const effect_source &source, const damag
         if( rng( 0, 100 ) < adjusted_damage ) {
             add_effect( source, effect_onfire, rng( 1_turns, 3_turns ), bp );
 
-            // Pyromania is a per-avatar trait/morale state, so every hotseat
+            // Pyromania is a per-avatar trait/morale state, so every co-op player
             // slot that has it unfulfilled and can see the fire reacts.
             for( avatar *pc : g->get_players() ) {
                 if( pc->has_unfulfilled_pyromania() ) {
@@ -2345,7 +2345,7 @@ Creature *Creature::get_summoner() const
     if( !summoner ) {
         return nullptr;
     }
-    // The summoner may be either hotseat player slot, not just whichever one
+    // The summoner may be either co-op player slot, not just whichever one
     // is currently active, so check every player slot's ID rather than only
     // the active avatar's. getID() is a trivial accessor, so this widening
     // doesn't route through anything identity-sensitive.

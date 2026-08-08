@@ -118,7 +118,7 @@ enum class debug_menu_index : int {
     WISHPROFICIENCY,
     RELOAD_GPU_SHADERS,
 #if defined(MULTIPLAYER)
-    TOGGLE_HOTSEAT,
+    TOGGLE_COOP_SLOT,
 #endif
     last
 };

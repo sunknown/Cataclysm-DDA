@@ -1175,7 +1175,7 @@ bool avatar::is_ally( const Character &p ) const
         return true;
     }
     if( p.is_avatar() ) {
-        // Hotseat co-op has no PvP concept: every player-controlled avatar
+        // Co-op has no PvP concept: every player-controlled avatar
         // is an ally of every other one. Checked before the npc cast below,
         // mirroring npc::is_ally()'s is_avatar() guard — without it, a
         // second live avatar reaching this function unconditionally

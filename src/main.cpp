@@ -47,7 +47,6 @@
 #include "mp/mp_context.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_client_main.h"
-#include "mp/mp_hotseat_loop.h"
 #include "mp/mp_mode.h"
 #endif
 #if defined(MP_SERVER)
@@ -709,13 +708,7 @@ static int run_game( cli_opts &cli )
                        "\" as \"" + get_avatar().get_name() + "\"" );
 #endif
         while( true ) {
-            bool done;
-#if defined(MULTIPLAYER)
-            done = mp_mode_active() ? mp_hotseat_do_turn() : g->do_turn();
-#else
-            done = g->do_turn();
-#endif
-            if( done ) {
+            if( g->do_turn() ) {
                 break;
             }
         }

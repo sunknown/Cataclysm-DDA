@@ -1530,7 +1530,7 @@ void Character::mount_creature( monster &z )
     mons->mounted_player = this;
     // `this` -- not some other, unrelated avatar -- is the one mounting up,
     // so cast `this` to avatar rather than pulling in get_avatar() (which,
-    // with two hotseat avatars, need not be `this` at all).
+    // with two co-op avatars, need not be `this` at all).
     avatar *player_avatar = as_avatar();
     if( player_avatar && player_avatar->get_grab_type() != object_type::NONE ) {
         add_msg( m_warning, _( "You let go of the grabbed object." ) );
@@ -1771,7 +1771,7 @@ void Character::forced_dismount()
         // that reference selects only the source coordinates the shift is
         // computed from. get_avatar_legacy() is NOT a safe substitute here:
         // it returns the ACTIVE slot, which is `this` during that slot's
-        // own turn (mp_hotseat_loop.cpp sets active_slot() to the acting
+        // own turn (mp_activate_player() sets active_slot() to the acting
         // slot's index for the whole player phase) -- reintroducing the
         // exact mismatch this fix targets whenever a non-zero slot's own
         // mount forces a dismount via check_mount_is_spooked() or
@@ -1920,7 +1920,7 @@ bool Character::uncanny_dodge()
 
     bool is_u = is_avatar();
     // Message-worthy visibility is inherently about whoever is at the
-    // keyboard right now (the active hotseat slot), not any player.
+    // keyboard right now (the active co-op player slot), not any player.
     bool seen = get_avatar_legacy().sees( here, *this );
 
     const units::energy trigger_cost = bio_uncanny_dodge->power_trigger;
@@ -5090,7 +5090,7 @@ void Character::on_hit( map *here, Creature *source, bodypart_id bp_hit,
     }
 
     // Message-worthy visibility is inherently about whoever is at the
-    // keyboard right now (the active hotseat slot), not any player.
+    // keyboard right now (the active co-op player slot), not any player.
     bool u_see = get_avatar_legacy().sees( *here, *this );
     const units::energy trigger_cost_base = bio_ods->power_trigger;
     if( has_active_bionic( bio_ods ) && get_power_level() > ( 5 * trigger_cost_base ) ) {

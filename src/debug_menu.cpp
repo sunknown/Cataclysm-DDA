@@ -310,7 +310,7 @@ std::string enum_to_string<debug_menu::debug_menu_index>( debug_menu::debug_menu
         case debug_menu::debug_menu_index::WISHPROFICIENCY: return "WISHPROFICIENCY";
         case debug_menu::debug_menu_index::RELOAD_GPU_SHADERS: return "RELOAD_GPU_SHADERS";
 #if defined(MULTIPLAYER)
-        case debug_menu::debug_menu_index::TOGGLE_HOTSEAT: return "TOGGLE_HOTSEAT";
+        case debug_menu::debug_menu_index::TOGGLE_COOP_SLOT: return "TOGGLE_COOP_SLOT";
 #endif
         // *INDENT-ON*
         case debug_menu::debug_menu_index::last:
@@ -633,7 +633,7 @@ static int player_uilist()
         { uilist_entry( debug_menu_index::SET_AUTOMOVE, true, 'a', _( "Set auto move route" ) ) },
         { uilist_entry( debug_menu_index::CONTROL_NPC, true, 'x', _( "Control NPC follower" ) ) },
 #if defined(MULTIPLAYER)
-        { uilist_entry( debug_menu_index::TOGGLE_HOTSEAT, true, 'H', _( "Toggle hotseat co-op" ) ) },
+        { uilist_entry( debug_menu_index::TOGGLE_COOP_SLOT, true, 'H', _( "Add/remove a co-op player slot" ) ) },
 #endif
         { uilist_entry( debug_menu_index::IMPORT_FOLLOWER, true, 'i', _( "Import follower" ) ) },
         { uilist_entry( debug_menu_index::EXPORT_FOLLOWER, true, 'e', _( "Export follower" ) ) },
@@ -1964,25 +1964,24 @@ static void control_npc_menu()
 }
 
 #if defined(MULTIPLAYER)
-void toggle_hotseat( const std::string &template_name )
+void toggle_coop_slot( const std::string &template_name )
 {
-    if( mp_mode_active() ) {
-        // Disabling means destroying the extra slots -- mp_mode_active() is
+    if( mp_coop_active() ) {
+        // Disabling means destroying the extra slots -- mp_coop_active() is
         // derived from the slot count, so there is no "off with two avatars"
         // state to fall back to. This permanently deletes those characters;
-        // the interactive entry point (toggle_hotseat_menu) confirms first.
+        // the interactive entry point (toggle_coop_slot_menu) confirms first.
         g->remove_extra_player_slots();
-        // Drain slot 0's remaining moves so mp_hotseat_do_turn()'s enclosing
-        // phase loop -- which is still testing the acting slot's move budget,
-        // and now reads slot 0 because remove_extra_player_slots() undid any
-        // in-progress swap -- exits immediately instead of continuing to
-        // prompt for input.
+        // Drain slot 0's remaining moves so the current turn's input phase
+        // ends immediately rather than prompting again now that the extra
+        // slots are gone (remove_extra_player_slots() undid any in-progress
+        // swap, so slot 0's data is back in `u`).
         g->player_at( 0 ).set_moves( 0 );
-        // Re-center the view/bubble on slot 0: mp_hotseat_do_turn() may have
-        // last centered the reality bubble on the hotseat midpoint, and
-        // nothing else re-centers it once hotseat mode turns off.
+        // Re-center the view/bubble on slot 0: co-op may have last centered
+        // the reality bubble on the midpoint between players, and nothing
+        // else re-centers it once co-op mode turns off.
         g->update_map( g->player_at( 0 ) );
-        add_msg( m_info, _( "Hotseat co-op disabled." ) );
+        add_msg( m_info, _( "Co-op disabled." ) );
         return;
     }
 
@@ -2006,7 +2005,7 @@ void toggle_hotseat( const std::string &template_name )
         }
         // Every avatar needs a valid character ID: without one, a passive
         // craft this slot starts crashes on finalization (see the comment
-        // in game_test_helper::reset_player_slots(), tests/hotseat_test.cpp).
+        // in game_test_helper::reset_player_slots(), tests/coop_slots_test.cpp).
         second.setID( g->assign_npc_id() );
         // A default-constructed avatar sits at (0,0,0), which
         // mp_bubble_anchor() would average against the real player's
@@ -2016,19 +2015,19 @@ void toggle_hotseat( const std::string &template_name )
         second.setpos( get_map(), g->player_at( 0 ).pos_bub( get_map() ) );
     }
 
-    // Adding the slot above is what enables hotseat: mp_mode_active() is
+    // Adding the slot above is what enables co-op: mp_coop_active() is
     // derived from the slot count.
-    add_msg( m_good, _( "Hotseat co-op enabled." ) );
+    add_msg( m_good, _( "Co-op enabled." ) );
 }
 
-static void toggle_hotseat_menu()
+static void toggle_coop_slot_menu()
 {
-    if( mp_mode_active() ) {
+    if( mp_coop_active() ) {
         if( !query_yn(
-                _( "Disable hotseat co-op?  This permanently deletes the other character." ) ) ) {
+                _( "Remove the other co-op character?  This permanently deletes them." ) ) ) {
             return;
         }
-        toggle_hotseat( "" );
+        toggle_coop_slot( "" );
         return;
     }
 
@@ -2052,7 +2051,7 @@ static void toggle_hotseat_menu()
     if( smenu.ret < 0 ) {
         return;
     }
-    toggle_hotseat( smenu.ret == 0 ? "" : templates[smenu.ret - 1] );
+    toggle_coop_slot( smenu.ret == 0 ? "" : templates[smenu.ret - 1] );
 }
 #endif
 
@@ -4337,9 +4336,9 @@ const std::vector<debug_action_entry> &all_actions()
         },
 #if defined(MULTIPLAYER)
         {
-            debug_menu_index::TOGGLE_HOTSEAT, translate_marker( "Toggle hotseat co-op" ), "hotseat multiplayer coop toggle", "Player", []()
+            debug_menu_index::TOGGLE_COOP_SLOT, translate_marker( "Add/remove a co-op player slot" ), "coop multiplayer slot toggle", "Player", []()
             {
-                toggle_hotseat_menu();
+                toggle_coop_slot_menu();
             }
         },
 #endif

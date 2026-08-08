@@ -198,7 +198,6 @@ class game
         friend memorial_logger &get_memorial();
         friend class game_test_helper;
         friend bool turn_handler::cleanup_at_end();
-        friend bool mp_hotseat_do_turn();
         friend void mp_resize_active_context();
         friend void mp_activate_player( size_t idx );
         friend global_variables &get_globals();
@@ -452,11 +451,11 @@ class game
         avatar &player_at( size_t index );
         avatar &add_player_slot();
         /**
-         * Destroys every player slot above index 0, ending hotseat co-op (which
-         * mp_mode_active() derives from the slot count). The extra avatars are
+         * Destroys every player slot above index 0, ending co-op (which
+         * mp_coop_active() derives from the slot count). The extra avatars are
          * discarded outright, so this permanently deletes those characters.
          *
-         * Safe to call mid-turn from inside the hotseat loop: a slot whose turn
+         * Safe to call mid-turn from inside the co-op turn loop: a slot whose turn
          * is in progress has its data swapped into @ref u, so that swap is undone
          * first and slot 0's data is restored to `u` before the extra avatar
          * objects are freed. Callers already holding `avatar &` references
@@ -741,7 +740,7 @@ class game
         point_rel_sm update_map( int &x, int &y, bool z_level_changed = false );
         // Shift the reality bubble so that @p target sits near its centre,
         // without moving any player slot. Unlike update_map(), which relocates
-        // the active avatar to the target, this is used by the hotseat loop to
+        // the active avatar to the target, this is used by the co-op turn loop to
         // keep the bubble anchored on the midpoint between players.
         void shift_map_center( const tripoint_abs_ms &target );
         // Shift the reality bubble to z-level @p z_after without moving any

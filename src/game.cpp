@@ -713,13 +713,13 @@ void game::setup()
     m = map();
 
 #if defined(MULTIPLAYER)
-    // A hotseat second slot is process-global state, not tied to the
+    // A co-op second slot is process-global state, not tied to the
     // world/save being torn down above. Left alone, a slot created in a
     // previous game survives into this one with a position that means nothing
     // on the freshly constructed map, corrupting the new game as soon as
-    // anything (mp_bubble_anchor(), nearest_player(), the hotseat turn loop)
-    // reads it. Clearing the slots also turns hotseat back off, since
-    // mp_mode_active() is derived from the slot count.
+    // anything (mp_bubble_anchor(), nearest_player(), the co-op turn loop)
+    // reads it. Clearing the slots also turns co-op back off, since
+    // mp_coop_active() is derived from the slot count.
     owned_extra_players.clear();
     player_slots.clear();
     player_slots.push_back( &u );
@@ -1878,7 +1878,7 @@ void game::validate_camps()
 std::set<character_id> game::get_follower_list()
 {
     // follower_ids is tracked per-avatar-instance, so this only reports the
-    // currently active hotseat slot's followers, not every player's; there is
+    // currently active co-op player slot's followers, not every player's; there is
     // no established toolkit helper to merge follower sets across slots.
     return get_avatar_legacy().get_followers();
 }
@@ -3548,11 +3548,11 @@ void game::draw_ter( const tripoint_bub_ms &center, const bool looking, const bo
         draw_critter( critter, center );
     }
 
-    // Inactive hotseat slots are deliberately not part of all_creatures():
+    // Inactive co-op player slots are deliberately not part of all_creatures():
     // plenty of monster AI / vision code assumes exactly one avatar exists
     // there. Draw them here instead, purely cosmetic and unconditional (no
     // fog-of-war/vision check -- you always know where your own other
-    // character is), so a hotseat partner isn't invisible on screen.
+    // character is), so a co-op partner isn't invisible on screen.
     for( avatar *slot : get_players() ) {
         if( slot == &you ) {
             continue;
@@ -4077,7 +4077,7 @@ void game::cleanup_dead()
     if( npc_is_dead ) {
         for( auto it = critter_tracker->active_npc.begin(); it != critter_tracker->active_npc.end(); ) {
             if( ( *it )->is_dead() ) {
-                // Every hotseat slot keeps its own monster_visible_info cache,
+                // Every co-op player slot keeps its own monster_visible_info cache,
                 // so the dead npc pointer must be purged from all of them, not
                 // just the currently active slot.
                 for( avatar *slot : g->get_players() ) {
@@ -10903,7 +10903,7 @@ std::vector<Character *> game::get_characters_if( const std::function<bool( cons
         &pred )
 {
     std::vector<Character *> result;
-    // Every hotseat player slot is a live Character; a caller filtering by
+    // Every co-op player slot is a live Character; a caller filtering by
     // predicate (e.g. crafting-group membership) needs to see all of them,
     // not just the currently active one.
     for( avatar *slot : g->get_players() ) {
@@ -11750,7 +11750,7 @@ void avatar_moves( const tripoint_abs_ms &old_abs_pos, const avatar &u, const ma
             // NOTE: this function receives the moved avatar as `u` (const
             // avatar &), which would be the semantically precise talker, but
             // get_talker_for() requires a non-const avatar& and all current
-            // call sites pass the active hotseat slot anyway; using
+            // call sites pass the active co-op player slot anyway; using
             // get_avatar_legacy() here matches existing behavior without a
             // signature change to the `u` parameter.
             dialogue d( get_talker_for( get_avatar_legacy() ), nullptr );

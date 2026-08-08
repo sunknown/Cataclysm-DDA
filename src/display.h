@@ -207,9 +207,9 @@ std::string colorized_overmap_text( const avatar &u, int width, int height );
 std::string overmap_position_text( const tripoint_abs_omt &loc );
 
 std::string current_position_text( const tripoint_abs_omt &loc );
-// Which hotseat slot currently holds the keyboard, e.g. "P2: Wilburn Longoria".
-// Empty string in single player and in builds without MULTIPLAYER.
-std::string hotseat_player_text( const Character &u );
+// Which co-op slot currently holds the keyboard, e.g. "P2: Wilburn Longoria".
+// Empty in single player.
+std::string coop_player_text( const Character &u );
 
 // Functions returning colorized string
 // gets the string that describes your weight

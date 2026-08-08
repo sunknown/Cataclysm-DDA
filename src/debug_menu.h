@@ -71,12 +71,14 @@ void prompt_map_reveal( const std::optional<tripoint_abs_omt> &p = std::nullopt 
 void map_reveal( int reveal_level_int, const std::optional<tripoint_abs_omt> &p = std::nullopt );
 
 #if defined(MULTIPLAYER)
-// Creates the second hotseat player slot (once per session, from a saved
-// character template if template_name names one, or bare if empty) and
-// enables hotseat mode. If hotseat mode is already active, disables it
-// instead and template_name is ignored. Safe to call repeatedly: a second
-// slot is never created more than once per session.
-void toggle_hotseat( const std::string &template_name );
+// Creates the second co-op player slot (once per session, from a saved
+// character template when `template_name` is non-empty), which is what
+// enables co-op mode. If co-op mode is already active, disables it instead by
+// destroying every slot above index 0.
+//
+// This is the only way to seed a second avatar into a world until Phase 3b
+// gives each client a join menu of its own.
+void toggle_coop_slot( const std::string &template_name );
 #endif
 
 /* Merges iterable elements into std::string with

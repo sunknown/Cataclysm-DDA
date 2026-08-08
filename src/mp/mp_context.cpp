@@ -87,7 +87,7 @@ void mp_activate_player( size_t idx )
     // must have already called ensure (setup() / create_or_get_main_ui_adaptor
     // / tests).
     cata_assert( !g->contexts.empty() );
-    // In Phase 2 there is a single context (hotseat shares it between slots);
+    // In Phase 2 there is a single context (co-op shares it between slots);
     // per-player contexts (contexts[idx]) arrive with the scheduler in Phase 3.
     player_context &ctx = g->contexts[0];
 
