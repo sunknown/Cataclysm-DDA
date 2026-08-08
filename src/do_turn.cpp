@@ -520,12 +520,8 @@ void game::handle_progress_ui()
     }
 }
 
-bool game::do_turn()
+void game::world_turn_pre()
 {
-    if( is_game_over() ) {
-        return turn_handler::cleanup_at_end();
-    }
-
     drain_renderer_recovery();
 
     weather_manager &weather = get_weather();
@@ -557,6 +553,54 @@ bool game::do_turn()
     mission::process_all();
     avatar &u = get_avatar();
     map &m = get_map();
+    if( calendar::once_every( 1_days ) ) {
+        overmap_buffer.process_mongroups();
+    }
+
+    // Move hordes every turn, move_hordes has its own rate limiting
+    overmap_buffer.move_hordes();
+    if( calendar::once_every( time_duration::from_minutes( 2.5 ) ) ) {
+        if( u.has_trait( trait_HAS_NEMESIS ) ) {
+            overmap_buffer.move_nemesis();
+        }
+    }
+
+    debug_hour_timer.print_time();
+
+    // Auto-save if autosave is enabled. With more than one player the guard is
+    // "nobody is dead": a save taken while one of them is dying would restore
+    // into a half-finished death.
+    bool anyone_dead = false;
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        anyone_dead = anyone_dead || player_at( i ).is_dead_state();
+    }
+    if( get_option<bool>( "AUTOSAVE" ) &&
+        calendar::once_every( 1_turns * get_option<int>( "AUTOSAVE_TURNS" ) ) &&
+        !anyone_dead ) {
+        autosave();
+    }
+
+    weather.update_weather();
+
+    reset_light_level();
+    for( int z = -OVERMAP_DEPTH; z <= OVERMAP_HEIGHT; z++ ) {
+        m.set_lightmap_cache_dirty( z );
+    }
+
+    perhaps_add_random_npc( /* ignore_spawn_timers_and_rates = */ false );
+}
+
+bool game::do_turn()
+{
+    if( is_game_over() ) {
+        return turn_handler::cleanup_at_end();
+    }
+
+    world_turn_pre();
+
+    weather_manager &weather = get_weather();
+    avatar &u = get_avatar();
+    map &m = get_map();
     // If controlling a vehicle that is owned by someone else
     if( u.in_vehicle && u.controlling_vehicle ) {
         vehicle *veh = veh_pointer_or_null( m.veh_at( u.pos_bub() ) );
@@ -575,37 +619,8 @@ bool game::do_turn()
     if( u.is_mounted() ) {
         u.check_mount_is_spooked();
     }
-    if( calendar::once_every( 1_days ) ) {
-        overmap_buffer.process_mongroups();
-    }
-
-    // Move hordes every turn, move_hordes has its own rate limiting
-    overmap_buffer.move_hordes();
-    if( calendar::once_every( time_duration::from_minutes( 2.5 ) ) ) {
-        if( u.has_trait( trait_HAS_NEMESIS ) ) {
-            overmap_buffer.move_nemesis();
-        }
-    }
-
-    debug_hour_timer.print_time();
 
     u.update_body();
-
-    // Auto-save if autosave is enabled
-    if( get_option<bool>( "AUTOSAVE" ) &&
-        calendar::once_every( 1_turns * get_option<int>( "AUTOSAVE_TURNS" ) ) &&
-        !u.is_dead_state() ) {
-        autosave();
-    }
-
-    weather.update_weather();
-
-    reset_light_level();
-    for( int z = -OVERMAP_DEPTH; z <= OVERMAP_HEIGHT; z++ ) {
-        m.set_lightmap_cache_dirty( z );
-    }
-
-    perhaps_add_random_npc( /* ignore_spawn_timers_and_rates = */ false );
 
     // process avatar activities (ignoring user input)
     while( u.get_moves() > 0 && u.activity ) {
@@ -714,40 +729,9 @@ bool game::do_turn()
         calc_driving_offset( veh );
     }
 
-    scent_map &scent = get_scent();
-    // No-scent debug mutation has to be processed here or else it takes time to start working
-    if( !u.has_flag( json_flag_NO_SCENT ) ) {
-        scent.set( u.pos_bub(), u.scent, u.get_type_of_scent() );
-        overmap_buffer.set_scent( u.pos_abs_omt(),  u.scent );
-    }
-    scent.update( u.pos_bub(), m );
+    world_turn_post();
 
-    // We need floor cache before checking falling 'n stuff
-    m.build_floor_caches();
-
-    m.process_falling();
-    m.vehmove();
-    m.process_fields();
-    m.process_items();
-    explosion_handler::process_explosions();
-    m.creature_in_field( u );
-
-    // Apply sounds from previous turn to monster and NPC AI.
-    sounds::process_sounds();
     const int levz = m.get_abs_sub().z();
-    // Update vision caches for monsters. If this turns out to be expensive,
-    // consider a stripped down cache just for monsters.
-    m.build_map_cache( levz, true );
-
-    // process monster and npc turn
-    monmove();
-
-    if( calendar::once_every( time_between_npc_OM_moves ) ) {
-        overmap_npc_move();
-    }
-    m.furniture_terrain_emit_fields();
-    // required after monsters move and fields emit
-    mon_info_update();
 
     // replenish avatar moves
     u.process_turn();
@@ -804,4 +788,51 @@ bool game::do_turn()
 
     debug_menu::debug_capture::tick_if_active();
     return false;
+}
+
+void game::world_turn_post()
+{
+    map &m = get_map();
+    scent_map &scent = get_scent();
+    // Every player leaves a scent trail, not just whoever holds the baton.
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        avatar &ava = player_at( i );
+        if( !ava.has_flag( json_flag_NO_SCENT ) ) {
+            scent.set( ava.pos_bub(), ava.scent, ava.get_type_of_scent() );
+            overmap_buffer.set_scent( ava.pos_abs_omt(), ava.scent );
+        }
+    }
+    scent.update( player_at( 0 ).pos_bub(), m );
+
+    // We need floor cache before checking falling 'n stuff
+    m.build_floor_caches();
+
+    m.process_falling();
+    m.vehmove();
+    m.process_fields();
+    m.process_items();
+    explosion_handler::process_explosions();
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        avatar &ava = player_at( i );
+        m.creature_in_field( ava );
+    }
+
+    // Apply sounds from previous turn to monster and NPC AI.
+    sounds::process_sounds();
+    const int levz = m.get_abs_sub().z();
+    // Update vision caches for monsters. If this turns out to be expensive,
+    // consider a stripped down cache just for monsters.
+    m.build_map_cache( levz, true );
+
+    // process monster and npc turn
+    monmove();
+
+    if( calendar::once_every( time_between_npc_OM_moves ) ) {
+        overmap_npc_move();
+    }
+    m.furniture_terrain_emit_fields();
+    // required after monsters move and fields emit
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        mon_info_update();
+    }
 }

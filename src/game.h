@@ -214,6 +214,23 @@ class game
         *
         * @return true if game is over (death, saved, quit, etc)
         */
+        /**
+         * The half of a turn that belongs to the world and reads no particular
+         * avatar: calendar, weather, hordes, timed events, missions, autosave,
+         * NPC spawning, light. Runs once per turn on the orchestrating thread
+         * with no active player (see mp_activate_world()).
+         */
+        void world_turn_pre();
+        /**
+         * The half of a turn that moves the world after the players have acted:
+         * falling, vehicles, fields, items, explosions, sounds, the map cache,
+         * monsters and overmap NPCs. Runs once per turn with no active player.
+         *
+         * Deliberately does not replenish anybody's moves: in single player the
+         * avatar's process_turn() runs after monmove, and the co-op barrier
+         * depends on that ordering staying true (see avatar_turn_post).
+         */
+        void world_turn_post();
         bool do_turn();
 
         /** Loads static data that does not depend on mods or similar. */
