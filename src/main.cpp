@@ -47,7 +47,6 @@
 #include "mp/mp_context.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_client_main.h"
-#include "mp/mp_mode.h"
 #endif
 #if defined(MP_SERVER)
 #include "avatar.h"

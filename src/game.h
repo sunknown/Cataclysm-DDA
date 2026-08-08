@@ -205,20 +205,18 @@ class game
         game();
         ~game();
 
-        /*
-        * MAIN GAME LOOP
-        *
-        * Process a `turn`, equal to one in-game second, by doing two things:
-        * 1. spend and replenish Creature::moves -- for `avatar`, `npc`, `monster`
-        * 2. handle game systems (weather, missions, fields, see below)
-        *
-        * @return true if game is over (death, saved, quit, etc)
-        */
         /**
          * The half of a turn that belongs to the world and reads no particular
          * avatar: calendar, weather, hordes, timed events, missions, autosave,
          * NPC spawning, light. Runs once per turn on the orchestrating thread
          * with no active player (see mp_activate_world()).
+         *
+         * A few reads still resolve through the avatar aliases (get_avatar(),
+         * get_avatar_legacy()): the HAS_NEMESIS check, perhaps_add_random_npc(),
+         * overmapbuffer::process_mongroups() and get_npcs_near_player(). During
+         * the world phase those aliases point at slot 0, so this is a slot-0
+         * read, not a genuine no-player state; it stays until those call sites
+         * are converted to slot passes.
          */
         void world_turn_pre();
         /**
@@ -231,6 +229,16 @@ class game
          * depends on that ordering staying true (see avatar_turn_post).
          */
         void world_turn_post();
+
+        /*
+        * MAIN GAME LOOP
+        *
+        * Process a `turn`, equal to one in-game second, by doing two things:
+        * 1. spend and replenish Creature::moves -- for `avatar`, `npc`, `monster`
+        * 2. handle game systems (weather, missions, fields, see below)
+        *
+        * @return true if game is over (death, saved, quit, etc)
+        */
         bool do_turn();
 
         /** Loads static data that does not depend on mods or similar. */

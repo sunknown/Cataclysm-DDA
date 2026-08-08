@@ -4,17 +4,14 @@
 #include <vector>
 
 #include "avatar.h"
-#include "calendar.h"
 #include "coordinates.h"
 #include "debug.h"
 #include "game.h"
-#include "game_test_helper.h"   // restore_active_state
 #include "map.h"
 #include "map_helpers_tests.h"
 #include "monster.h"
 #include "mp/mp_context.h"
 #include "mp/mp_tether.h"
-#include "player_activity.h"
 #include "player_helpers.h"
 #include "type_id.h"
 

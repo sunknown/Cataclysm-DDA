@@ -794,6 +794,7 @@ void game::world_turn_post()
 {
     map &m = get_map();
     scent_map &scent = get_scent();
+    // No-scent debug mutation has to be processed here or else it takes time to start working.
     // Every player leaves a scent trail, not just whoever holds the baton.
     for( size_t i = 0; i < player_slot_count(); ++i ) {
         avatar &ava = player_at( i );
@@ -832,7 +833,7 @@ void game::world_turn_post()
     }
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
-    for( size_t i = 0; i < player_slot_count(); ++i ) {
-        mon_info_update();
-    }
+    // A real per-slot pass needs a signature change (mon_info_update reads
+    // game::u); the orchestrator activates each slot in task 4.
+    mon_info_update();
 }

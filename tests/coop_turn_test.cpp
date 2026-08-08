@@ -4,7 +4,6 @@
 #include "calendar.h"
 #include "game.h"
 #include "game_test_helper.h"
-#include "map_helpers.h"
 #include "map_helpers_tests.h"
 #include "mp/mp_context.h"
 #include "player_activity.h"
@@ -49,5 +48,5 @@ TEST_CASE( "world_turn_post_does_not_replenish_moves", "[coop]" )
     // Moves come back in avatar_turn_post, which the orchestrator runs after
     // this. Replenishing here would let a player act again before the monsters
     // had moved, and would make the barrier meaningless.
-    CHECK( u.get_moves() <= 0 );
+    CHECK( u.get_moves() == 0 );
 }
