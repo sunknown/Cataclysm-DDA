@@ -53,6 +53,7 @@
 #include "mission.h"
 #include "monster.h"
 #include "mp/mp_context.h"
+#include "mp/mp_tether.h"
 #include "mtype.h"
 #include "music.h"
 #include "npc.h"
@@ -590,23 +591,14 @@ void game::world_turn_pre()
     perhaps_add_random_npc( /* ignore_spawn_timers_and_rates = */ false );
 }
 
-bool game::do_turn()
+bool game::player_act( avatar &ava )
 {
-    if( is_game_over() ) {
-        return turn_handler::cleanup_at_end();
-    }
-
-    world_turn_pre();
-
-    avatar &u = get_avatar();
     map &m = get_map();
 
-    avatar_turn_pre( u );
-
     // avatar processes human input through handle_action()
-    if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
-        if( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
-            while( u.get_moves() > 0 || uquit == QUIT_WATCH ) {
+    if( !ava.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
+        if( ava.get_moves() > 0 || uquit == QUIT_WATCH ) {
+            while( ava.get_moves() > 0 || uquit == QUIT_WATCH ) {
 
                 // handle_action() may cause map updates, creatures to die
                 m.process_falling();
@@ -615,14 +607,14 @@ bool game::do_turn()
                 mon_info_update();
                 // Process any new sounds the player caused during their turn.
                 for( npc &guy : all_npcs() ) {
-                    if( rl_dist( guy.pos_bub(), u.pos_bub() ) < MAX_VIEW_DISTANCE ) {
+                    if( rl_dist( guy.pos_bub(), ava.pos_bub() ) < MAX_VIEW_DISTANCE ) {
                         sounds::process_sound_markers( &guy );
                     }
                 }
                 explosion_handler::process_explosions();
-                sounds::process_sound_markers( &u );
-                if( !u.activity && uquit != QUIT_WATCH
-                    && ( !u.has_distant_destination() || calendar::once_every( 10_seconds ) ) ) {
+                sounds::process_sound_markers( &ava );
+                if( !ava.activity && uquit != QUIT_WATCH
+                    && ( !ava.has_distant_destination() || calendar::once_every( 10_seconds ) ) ) {
                     wait_popup_reset();
                     ui_manager::redraw();
                 }
@@ -634,11 +626,11 @@ bool game::do_turn()
 
                 if( handle_action() ) {
                     ++moves_since_last_save;
-                    u.action_taken();
+                    ava.action_taken();
                 }
 
                 if( is_game_over() ) {
-                    return turn_handler::cleanup_at_end();
+                    return true;
                 }
 
                 if( uquit == QUIT_WATCH ) {
@@ -646,8 +638,8 @@ bool game::do_turn()
                 }
 
                 // avatar processes moves for activities started by handle_action()
-                while( u.get_moves() > 0 && u.activity ) {
-                    u.activity.do_turn( u );
+                while( ava.get_moves() > 0 && ava.activity ) {
+                    ava.activity.do_turn( ava );
                 }
             }
             // Reset displayed sound markers now that the turn is over.
@@ -669,8 +661,9 @@ bool game::do_turn()
             // If player is performing a task, a monster is dangerously close,
             // and monster can reach to the player or it has some sort of a ranged attack,
             // warn them regardless of previous safemode warnings
-            if( u.activity ) {
-                for( std::pair<const distraction_type, std::string> &dist : u.activity.get_distractions() ) {
+            if( ava.activity ) {
+                for( std::pair<const distraction_type, std::string> &dist :
+                     ava.activity.get_distractions() ) {
                     if( cancel_activity_or_ignore_query( dist.first, dist.second ) ) {
                         break;
                     }
@@ -679,19 +672,82 @@ bool game::do_turn()
         }
     }
 
+    // Deviation from the brief's literal Step 4: this block used to sit in
+    // do_turn() between the action loop and world_turn_post(), reading only
+    // slot 0. It reads mp_active_context().driving_view_offset -- per-player
+    // context state -- so it has to run under its owner's context, which is
+    // exactly what player_act() guarantees (the orchestrator activates the
+    // player before calling this). Folding it into avatar_turn_post() would
+    // put it in the upkeep tail instead of the acting half it conceptually
+    // belongs to.
     if( mp_active_context().driving_view_offset.x() != 0 ||
         mp_active_context().driving_view_offset.y() != 0 ) {
         // Still have a view offset, but might not be driving anymore,
         // or the option has been deactivated,
         // might also happen when someone dives from a moving car.
         // or when using the handbrake.
-        vehicle *veh = veh_pointer_or_null( m.veh_at( u.pos_bub() ) );
+        vehicle *veh = veh_pointer_or_null( m.veh_at( ava.pos_bub() ) );
         calc_driving_offset( veh );
     }
 
+    return false;
+}
+
+bool game::do_turn()
+{
+    if( is_game_over() ) {
+        return turn_handler::cleanup_at_end();
+    }
+
+    // The world half: no player is active, so nothing here may open a window.
+    // task 5 replaces this with mp_activate_world()
+    mp_activate_player( 0 );
+    world_turn_pre();
+
+    // The player half. With one player there is no scheduler and no thread:
+    // the orchestrator runs the loop inline, which is what makes the ordinary
+    // single-player build walk this same code and every test exercise it.
+    // mp_sched replaces this branch for more than one player (task 6).
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        mp_activate_player( i );
+        avatar &ava = player_at( i );
+        avatar_turn_pre( ava );
+        if( player_act( ava ) ) {
+            // Deviation from the brief's literal Step 4: player_act() returning
+            // true only means "the session must end" -- it never calls
+            // cleanup_at_end() itself, so that global teardown (death screen,
+            // graveyard save, achievements, MAPBUFFER/overmap_buffer clear,
+            // audio fade) still has to run somewhere. do_turn() is that place,
+            // mirroring its own top-of-function is_game_over() check: this
+            // runs on the orchestrating thread, never inside one player's
+            // worker while others may still be live (task 6+).
+            return turn_handler::cleanup_at_end();
+        }
+    }
+
+    // task 5 replaces this with mp_activate_world()
+    mp_activate_player( 0 );
     world_turn_post();
 
-    avatar_turn_post( u );
+    // Moves come back here, after monmove, exactly as in single player. The
+    // baton goes back to each player for this because handle_progress_ui and
+    // the morale paths can draw.
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        mp_activate_player( i );
+        avatar_turn_post( player_at( i ) );
+    }
+
+    mp_activate_player( 0 );
+
+    // Keep the reality bubble centred between the players. A single player is
+    // his own midpoint, so this is identical to the single-player behaviour.
+    if( player_slot_count() > 1 ) {
+        const tripoint_abs_ms anchor = mp_bubble_anchor();
+        shift_map_center( anchor );
+        if( anchor.z() != get_map().get_abs_sub().z() ) {
+            shift_map_z( anchor.z() );
+        }
+    }
 
 #if defined(EMSCRIPTEN)
     // This will cause a prompt to be shown if the window is closed, until the
@@ -755,8 +811,9 @@ void game::world_turn_post()
     }
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
-    // A real per-slot pass needs a signature change (mon_info_update reads
-    // game::u); the orchestrator activates each slot in task 4.
+    // This runs once for the world half, not once per slot: mon_info_update()
+    // reads game::u, and no player is active here for it to read. A per-slot
+    // pass needs mon_info_update() to take the avatar as a parameter instead.
     mon_info_update();
 
     // handle_weather_effects() never reads the avatar it's passed: it decays

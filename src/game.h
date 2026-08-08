@@ -222,7 +222,13 @@ class game
         /**
          * The half of a turn that moves the world after the players have acted:
          * falling, vehicles, fields, items, explosions, sounds, the map cache,
-         * monsters and overmap NPCs. Runs once per turn with no active player.
+         * monsters and overmap NPCs, weather effects and the once-a-minute NPC
+         * morale update. Runs once per turn with no active player.
+         *
+         * Weather effects and NPC morale live here rather than in
+         * avatar_turn_post() because neither belongs to one player: both loop
+         * every player slot (or every NPC) internally, so calling them once per
+         * avatar would apply them N times per turn.
          *
          * Deliberately does not replenish anybody's moves: in single player the
          * avatar's process_turn() runs after monmove, and the co-op barrier
@@ -258,6 +264,16 @@ class game
          * plays sound effects for the wrong character.
          */
         void avatar_turn_post( avatar &ava );
+        /**
+         * One player's action loop: keeps asking for actions while they have
+         * moves. Every wait for input inside here is where the baton changes
+         * hands (task 6), so this always runs in that player's own thread under
+         * that player's context.
+         *
+         * Returns true when the session must end (the game is over, or the
+         * player quit) -- do_turn propagates that to main().
+         */
+        bool player_act( avatar &ava );
 
         /*
         * MAIN GAME LOOP

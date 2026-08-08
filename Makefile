@@ -1112,8 +1112,10 @@ ifeq ($(HEADERPOPULARITY), 1)
 else
   SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
 endif
-# The player context ships in every build; the rest of src/mp/ is MULTIPLAYER-only.
+# The modules that are pure multi-avatar logic with no transport dependency
+# ship in every build; the rest of src/mp/ is MULTIPLAYER-only.
 SOURCES += $(SRC_DIR)/mp/mp_context.cpp
+SOURCES += $(SRC_DIR)/mp/mp_tether.cpp
 ifeq ($(MULTIPLAYER), 1)
   DEFINES += -DMULTIPLAYER
   SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)

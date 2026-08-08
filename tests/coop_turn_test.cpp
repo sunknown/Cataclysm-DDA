@@ -123,3 +123,80 @@ TEST_CASE( "avatar_turn_post_runs_for_every_slot_independently", "[coop]" )
 
     game_test_helper::reset_player_slots();
 }
+
+TEST_CASE( "calendar_advances_once_per_turn", "[coop]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    g->ensure_gamemode_for_test();
+
+    // With no moves and no activity a slot's action loop is skipped, which is
+    // what makes this headless: handle_action() would read real input.
+    auto idle_all_slots = [&]() {
+        for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+            avatar &idle = g->player_at( i );
+            idle.set_moves( 0 );
+            idle.activity = player_activity();
+        }
+    };
+
+    idle_all_slots();
+    g->do_turn();          // one-time new_game pass
+
+    idle_all_slots();
+    const int before = to_turn<int>( calendar::turn );
+    g->do_turn();
+    CHECK( to_turn<int>( calendar::turn ) == before + 1 );
+}
+
+TEST_CASE( "every_slot_gets_its_moves_back", "[coop]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    g->ensure_gamemode_for_test();
+    game_test_helper::reset_player_slots();
+
+    avatar &a = g->player_at( 0 );
+    avatar &b = g->add_player_slot();
+    b.set_body();
+
+    // Both slots spend their turn on an activity: the action loop reads real
+    // input and cannot run headless, the activity branch can.
+    a.set_moves( 100 );
+    b.set_moves( 100 );
+    a.activity = player_activity( activity_id( "ACT_HACKING" ), 500, 0 );
+    b.activity = player_activity( activity_id( "ACT_HACKING" ), 500, 0 );
+
+    g->do_turn();
+
+    CHECK( a.get_moves() > 0 );
+    CHECK( b.get_moves() > 0 );
+
+    game_test_helper::reset_player_slots();
+}
+
+TEST_CASE( "moves_come_back_only_after_the_world_moved", "[coop]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    g->ensure_gamemode_for_test();
+
+    avatar &u = g->player_at( 0 );
+    u.set_moves( 0 );
+    u.activity = player_activity();
+
+    // The single-player ordering the whole barrier rests on: world_turn_post
+    // (monmove) happens while the player is still out of moves.
+    g->world_turn_pre();
+    CHECK( u.get_moves() <= 0 );
+    g->world_turn_post();
+    CHECK( u.get_moves() <= 0 );
+    g->avatar_turn_post( u );
+    CHECK( u.get_moves() > 0 );
+}
