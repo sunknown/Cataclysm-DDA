@@ -229,6 +229,23 @@ class game
          * depends on that ordering staying true (see avatar_turn_post).
          */
         void world_turn_post();
+        /**
+         * The per-avatar head of a turn: the checks and upkeep that read one
+         * character, plus draining whatever activity they already had running.
+         *
+         * Runs in that player's own thread under that player's context, because
+         * an activity can open a window (crafting asks for confirmation) and
+         * windows only exist inside their owner's context.
+         */
+        void avatar_turn_pre( avatar &ava );
+        /**
+         * The per-avatar tail of a turn: move replenishment, weather effects,
+         * body temperature, wetness, morale, sound effects, bionic power.
+         *
+         * Runs after world_turn_post(), never before: process_turn() hands
+         * moves back, and in single player that happens after monmove.
+         */
+        void avatar_turn_post( avatar &ava );
 
         /*
         * MAIN GAME LOOP

@@ -598,50 +598,10 @@ bool game::do_turn()
 
     world_turn_pre();
 
-    weather_manager &weather = get_weather();
     avatar &u = get_avatar();
     map &m = get_map();
-    // If controlling a vehicle that is owned by someone else
-    if( u.in_vehicle && u.controlling_vehicle ) {
-        vehicle *veh = veh_pointer_or_null( m.veh_at( u.pos_bub() ) );
-        if( veh && !veh->handle_potential_theft( u, true ) ) {
-            veh->handle_potential_theft( u, false, false );
-        }
-    }
 
-    // If you're inside a wall or something and haven't been telefragged, let's get you out.
-    if( ( m.impassable( u.pos_bub() ) && !m.impassable_field_at( u.pos_bub() ) ) &&
-        !m.has_flag( ter_furn_flag::TFLAG_CLIMBABLE, u.pos_bub() ) ) {
-        u.stagger();
-    }
-
-    // If riding a horse - chance to spook
-    if( u.is_mounted() ) {
-        u.check_mount_is_spooked();
-    }
-
-    u.update_body();
-
-    // process avatar activities (ignoring user input)
-    while( u.get_moves() > 0 && u.activity ) {
-        u.activity.do_turn( u );
-    }
-
-    // Process NPC sound events before they move or they hear themselves talking
-    for( npc &guy : all_npcs() ) {
-        if( rl_dist( guy.pos_bub(), u.pos_bub() ) < MAX_VIEW_DISTANCE ) {
-            sounds::process_sound_markers( &guy );
-        }
-    }
-
-    music::deactivate_music_id( music::music_id::sound );
-
-    // Process sound events into sound markers for display to the player.
-    sounds::process_sound_markers( &u );
-
-    if( u.is_deaf() ) {
-        sfx::do_hearing_loss();
-    }
+    avatar_turn_pre( u );
 
     // avatar processes human input through handle_action()
     if( !u.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
@@ -731,54 +691,7 @@ bool game::do_turn()
 
     world_turn_post();
 
-    const int levz = m.get_abs_sub().z();
-
-    // replenish avatar moves
-    u.process_turn();
-
-    if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
-        ui_manager::redraw();
-        refresh_display();
-    }
-
-    if( levz >= 0 && !u.is_underwater() ) {
-        handle_weather_effects( weather.weather_id );
-    }
-
-    handle_progress_ui();
-
-    m.invalidate_visibility_cache();
-
-    u.update_bodytemp();
-    u.update_body_wetness( *weather.weather_precise );
-    u.apply_wetness_morale( weather.temperature );
-
-    if( calendar::once_every( 1_minutes ) ) {
-        u.update_morale();
-        for( npc &guy : all_npcs() ) {
-            guy.update_morale();
-            guy.check_and_recover_morale();
-        }
-    }
-
-    if( calendar::once_every( 9_turns ) ) {
-        u.check_and_recover_morale();
-    }
-
-    if( !u.is_deaf() ) {
-        sfx::remove_hearing_loss();
-    }
-    sfx::do_danger_music();
-    sfx::do_vehicle_engine_sfx();
-    sfx::do_vehicle_exterior_engine_sfx();
-    sfx::do_low_stamina_sfx();
-
-    // reset player noise
-    u.volume = 0;
-
-    // Calculate bionic power balance
-    u.power_balance = u.get_power_level() - u.power_prev_turn;
-    u.power_prev_turn = u.get_power_level();
+    avatar_turn_post( u );
 
 #if defined(EMSCRIPTEN)
     // This will cause a prompt to be shown if the window is closed, until the
@@ -836,4 +749,107 @@ void game::world_turn_post()
     // A real per-slot pass needs a signature change (mon_info_update reads
     // game::u); the orchestrator activates each slot in task 4.
     mon_info_update();
+
+    // Neither of these reads a particular avatar: the progress UI reads
+    // whichever activity is currently displayed, and the visibility cache is
+    // shared map state.
+    handle_progress_ui();
+    m.invalidate_visibility_cache();
+}
+
+void game::avatar_turn_pre( avatar &ava )
+{
+    map &m = get_map();
+
+    // If controlling a vehicle that is owned by someone else
+    if( ava.in_vehicle && ava.controlling_vehicle ) {
+        vehicle *veh = veh_pointer_or_null( m.veh_at( ava.pos_bub() ) );
+        if( veh && !veh->handle_potential_theft( ava, true ) ) {
+            veh->handle_potential_theft( ava, false, false );
+        }
+    }
+
+    // If you're inside a wall or something and haven't been telefragged, let's get you out.
+    if( ( m.impassable( ava.pos_bub() ) && !m.impassable_field_at( ava.pos_bub() ) ) &&
+        !m.has_flag( ter_furn_flag::TFLAG_CLIMBABLE, ava.pos_bub() ) ) {
+        ava.stagger();
+    }
+
+    // If riding a horse - chance to spook
+    if( ava.is_mounted() ) {
+        ava.check_mount_is_spooked();
+    }
+
+    ava.update_body();
+
+    // process avatar activities (ignoring user input)
+    while( ava.get_moves() > 0 && ava.activity ) {
+        ava.activity.do_turn( ava );
+    }
+
+    // Process NPC sound events before they move or they hear themselves talking
+    for( npc &guy : all_npcs() ) {
+        if( rl_dist( guy.pos_bub(), ava.pos_bub() ) < MAX_VIEW_DISTANCE ) {
+            sounds::process_sound_markers( &guy );
+        }
+    }
+
+    music::deactivate_music_id( music::music_id::sound );
+
+    // Process sound events into sound markers for display to the player.
+    sounds::process_sound_markers( &ava );
+
+    if( ava.is_deaf() ) {
+        sfx::do_hearing_loss();
+    }
+}
+
+void game::avatar_turn_post( avatar &ava )
+{
+    map &m = get_map();
+    weather_manager &weather = get_weather();
+    const int levz = m.get_abs_sub().z();
+
+    // replenish avatar moves
+    ava.process_turn();
+
+    if( ava.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
+        ui_manager::redraw();
+        refresh_display();
+    }
+
+    if( levz >= 0 && !ava.is_underwater() ) {
+        handle_weather_effects( weather.weather_id );
+    }
+
+    ava.update_bodytemp();
+    ava.update_body_wetness( *weather.weather_precise );
+    ava.apply_wetness_morale( weather.temperature );
+
+    if( calendar::once_every( 1_minutes ) ) {
+        ava.update_morale();
+        for( npc &guy : all_npcs() ) {
+            guy.update_morale();
+            guy.check_and_recover_morale();
+        }
+    }
+
+    if( calendar::once_every( 9_turns ) ) {
+        ava.check_and_recover_morale();
+    }
+
+    if( !ava.is_deaf() ) {
+        sfx::remove_hearing_loss();
+    }
+    sfx::do_danger_music();
+    sfx::do_vehicle_engine_sfx();
+    sfx::do_vehicle_exterior_engine_sfx();
+    sfx::do_low_stamina_sfx();
+
+    // reset player noise
+    ava.volume = 0;
+
+    // Calculate bionic power balance
+    ava.power_balance = ava.get_power_level() - ava.power_prev_turn;
+    ava.power_prev_turn = ava.get_power_level();
 }
