@@ -744,11 +744,37 @@ void game::world_turn_post()
     if( calendar::once_every( time_between_npc_OM_moves ) ) {
         overmap_npc_move();
     }
+    // NPC morale is world work, not per-avatar: an NPC's morale doesn't belong
+    // to any one player slot, so it updates once per turn here rather than once
+    // per avatar_turn_post() call.
+    if( calendar::once_every( 1_minutes ) ) {
+        for( npc &guy : all_npcs() ) {
+            guy.update_morale();
+            guy.check_and_recover_morale();
+        }
+    }
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
     // A real per-slot pass needs a signature change (mon_info_update reads
     // game::u); the orchestrator activates each slot in task 4.
     mon_info_update();
+
+    // handle_weather_effects() never reads the avatar it's passed: it decays
+    // fields/scent, fills water collectors, wets every player slot, applies
+    // glare to every slot and clears lightning_active, all by looping
+    // g->get_players() internally (see weather.cpp:494 and :114). It runs once
+    // per turn from the world half, not once per avatar. The guard reads
+    // "weather processes unless every player is underwater" rather than a
+    // single avatar's state: weather is world state, so one player diving must
+    // not suspend rain for everybody. At N=1 this is identical to the original
+    // `!ava.is_underwater()` check by construction.
+    bool anyone_not_underwater = false;
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        anyone_not_underwater = anyone_not_underwater || !player_at( i ).is_underwater();
+    }
+    if( levz >= 0 && anyone_not_underwater ) {
+        handle_weather_effects( get_weather().weather_id );
+    }
 
     // Neither of these reads a particular avatar: the progress UI reads
     // whichever activity is currently displayed, and the visibility cache is
@@ -806,9 +832,7 @@ void game::avatar_turn_pre( avatar &ava )
 
 void game::avatar_turn_post( avatar &ava )
 {
-    map &m = get_map();
     weather_manager &weather = get_weather();
-    const int levz = m.get_abs_sub().z();
 
     // replenish avatar moves
     ava.process_turn();
@@ -818,20 +842,12 @@ void game::avatar_turn_post( avatar &ava )
         refresh_display();
     }
 
-    if( levz >= 0 && !ava.is_underwater() ) {
-        handle_weather_effects( weather.weather_id );
-    }
-
     ava.update_bodytemp();
     ava.update_body_wetness( *weather.weather_precise );
     ava.apply_wetness_morale( weather.temperature );
 
     if( calendar::once_every( 1_minutes ) ) {
         ava.update_morale();
-        for( npc &guy : all_npcs() ) {
-            guy.update_morale();
-            guy.check_and_recover_morale();
-        }
     }
 
     if( calendar::once_every( 9_turns ) ) {

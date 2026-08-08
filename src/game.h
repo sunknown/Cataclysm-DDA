@@ -236,14 +236,26 @@ class game
          * Runs in that player's own thread under that player's context, because
          * an activity can open a window (crafting asks for confirmation) and
          * windows only exist inside their owner's context.
+         *
+         * Must be called with that context's own avatar: sfx::do_hearing_loss()
+         * reaches get_player_character() implicitly rather than reading `ava`,
+         * so passing another player's avatar here plays the sound for the
+         * wrong character.
          */
         void avatar_turn_pre( avatar &ava );
         /**
-         * The per-avatar tail of a turn: move replenishment, weather effects,
-         * body temperature, wetness, morale, sound effects, bionic power.
+         * The per-avatar tail of a turn: move replenishment, body temperature,
+         * wetness, morale, sound effects, bionic power. Weather effects are
+         * NOT here: handle_weather_effects() loops every player slot itself
+         * and must run once per turn, so it lives in world_turn_post() instead.
          *
          * Runs after world_turn_post(), never before: process_turn() hands
          * moves back, and in single player that happens after monmove.
+         *
+         * Must be called with that context's own avatar: sfx::do_danger_music()
+         * and sfx::do_low_stamina_sfx() reach get_player_character() implicitly
+         * rather than reading `ava`, so passing another player's avatar here
+         * plays sound effects for the wrong character.
          */
         void avatar_turn_post( avatar &ava );
 
