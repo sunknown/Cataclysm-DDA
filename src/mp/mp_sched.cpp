@@ -10,9 +10,13 @@
 
 namespace
 {
-mp_sched *g_active_sched = nullptr;
-std::thread g_watchdog;
-std::atomic<bool> g_watchdog_stop{ false };
+// Written by the world thread (mp_set_active_sched) and read by every player
+// thread (mp_sched_stopping, mp_assert_holds call sites). A plain pointer here
+// would be a data race in the strict sense the moment a player thread starts
+// reading it concurrently with the world thread's write; atomic with the
+// default (sequentially consistent) ordering avoids inventing a weaker one
+// that would need its own separate justification.
+std::atomic<mp_sched *> g_active_sched{ nullptr };
 } // namespace
 
 mp_sched::mp_sched( const size_t players ) : players_( players ),
@@ -46,6 +50,7 @@ void mp_sched::yield_to( const size_t from, const size_t to )
         // them the same way everywhere keeps that from being load-bearing.
         waiting_for_baton_[from] = 1;
     }
+    ++parked_;
     cv_.notify_all();
     cv_.wait( lock, [this, from] {
         return holder_ == from || stopping_;
@@ -53,19 +58,33 @@ void mp_sched::yield_to( const size_t from, const size_t to )
     if( from != world ) {
         waiting_for_baton_[from] = 0;
     }
+    // Past this point nothing here touches the object again except releasing
+    // the lock, so decrementing under the lock -- before shut_down() can ever
+    // observe parked_ == 0 -- is what makes that wait meaningful.
+    --parked_;
+    cv_.notify_all();
 }
 
 void mp_sched::wait_for_turn( const size_t who )
 {
+    // world (SIZE_MAX) is not a legal argument here -- unlike yield_to's and
+    // release_to's `to`, which check_target() lets be world. Without this,
+    // wait_for_turn(world) would index waiting_for_baton_ at SIZE_MAX: a
+    // heap write far out of bounds, silently, in the one class whose whole
+    // point is to fail loudly.
+    cata_assert( who < players_ );
     std::unique_lock<std::mutex> lock( mutex_ );
     // Flag first, notify second: a world parked in wait_for_request must wake
     // and see that a requester appeared, or it would sleep out its whole poll.
     waiting_for_baton_[who] = 1;
+    ++parked_;
     cv_.notify_all();
     cv_.wait( lock, [this, who] {
         return holder_ == who || stopping_;
     } );
     waiting_for_baton_[who] = 0;
+    --parked_;
+    cv_.notify_all();
 }
 
 void mp_sched::release_to( const size_t from, const size_t to )
@@ -86,7 +105,13 @@ bool mp_sched::waiting_for_baton( const size_t who ) const
 bool mp_sched::wait_for_request( const int timeout_ms )
 {
     std::unique_lock<std::mutex> lock( mutex_ );
-    return cv_.wait_for( lock, std::chrono::milliseconds( timeout_ms ), [this] {
+    ++parked_;
+    const bool ready = cv_.wait_for( lock, std::chrono::milliseconds( timeout_ms ), [this] {
+        // Without this, a world parked here at shutdown sleeps out whatever
+        // is left of timeout_ms instead of unwinding immediately.
+        if( stopping_ ) {
+            return true;
+        }
         for( const char flag : waiting_for_baton_ ) {
             if( flag != 0 ) {
                 return true;
@@ -94,6 +119,9 @@ bool mp_sched::wait_for_request( const int timeout_ms )
         }
         return false;
     } );
+    --parked_;
+    cv_.notify_all();
+    return ready;
 }
 
 void mp_sched::set_world_waiting( const bool waiting )
@@ -122,15 +150,26 @@ bool mp_sched::holds( const size_t who ) const
 
 void mp_sched::shut_down()
 {
-    {
-        std::lock_guard<std::mutex> lock( mutex_ );
-        stopping_ = true;
-    }
+    std::unique_lock<std::mutex> lock( mutex_ );
+    stopping_ = true;
     cv_.notify_all();
-    g_watchdog_stop = true;
-    if( g_watchdog.joinable() ) {
-        g_watchdog.join();
+    // Every caller parked in wait_for_turn/yield_to/wait_for_request must
+    // reacquire mutex_ and touch waiting_for_baton_ (or, for wait_for_request,
+    // just the lock) before it is done. If the destructor let mutex_ and
+    // waiting_for_baton_ be destroyed first, that touch would be a
+    // use-after-free. Waiting here for parked_ == 0 means every SUCH caller --
+    // one already inside the wait when this ran, or one that parks while this
+    // is waiting -- has fully left before this call returns. It does NOT wait
+    // for a caller that has not yet entered any of those three functions; see
+    // the destructor's comment.
+    cv_.wait( lock, [this] { return parked_ == 0; } );
+    lock.unlock();
+
+    watchdog_stop_ = true;
+    if( watchdog_.joinable() ) {
+        watchdog_.join();
     }
+    watchdog_started_ = false;
 }
 
 bool mp_sched::stopping() const
@@ -139,14 +178,19 @@ bool mp_sched::stopping() const
     return stopping_;
 }
 
+int mp_sched::watchdog_report_count() const
+{
+    return watchdog_reports_.load();
+}
+
 mp_sched *mp_active_sched()
 {
-    return g_active_sched;
+    return g_active_sched.load();
 }
 
 void mp_set_active_sched( mp_sched *const sched )
 {
-    g_active_sched = sched;
+    g_active_sched.store( sched );
 }
 
 bool mp_sched_stopping()
@@ -171,12 +215,17 @@ void mp_assert_holds( const size_t who )
 
 void mp_sched_start_watchdog( mp_sched &sched, const int threshold_ms )
 {
-    g_watchdog_stop = false;
-    g_watchdog = std::thread( [&sched, threshold_ms]() {
+    // A second start without an intervening shut_down() would assign over a
+    // still-joinable std::thread, which calls std::terminate. That is a
+    // programming error at the call site, not a race worth surviving quietly.
+    cata_assert( !sched.watchdog_started_ );
+    sched.watchdog_started_ = true;
+    sched.watchdog_stop_ = false;
+    sched.watchdog_ = std::thread( [&sched, threshold_ms]() {
         size_t last = sched.holder();
         auto since = std::chrono::steady_clock::now();
         bool reported = false;
-        while( !g_watchdog_stop ) {
+        while( !sched.watchdog_stop_ ) {
             std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
             const size_t now_holder = sched.holder();
             if( now_holder != last ) {
@@ -198,11 +247,13 @@ void mp_sched_start_watchdog( mp_sched &sched, const int threshold_ms )
                 // Report once per stall, not once per poll: a genuinely stuck
                 // participant would otherwise fill the log faster than anyone
                 // could read it.
-                DebugLog( D_WARNING, D_MAIN ) << "mp sched: participant "
-                                              << ( last == mp_sched::world ? std::string( "world" ) :
-                                                   std::to_string( last ) )
-                                              << " has held the baton for " << held << " ms";
+                DebugLog( D_WARNING, D_MAIN )
+                        << "mp sched: participant "
+                        << ( last == mp_sched::world ? std::string( "world" ) :
+                             std::to_string( last ) )
+                        << " has held the baton for " << held << " ms";
                 reported = true;
+                sched.watchdog_reports_.fetch_add( 1 );
             }
         }
     } );

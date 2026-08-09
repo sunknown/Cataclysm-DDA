@@ -179,4 +179,168 @@ TEST_CASE( "mp_sched_stopping_is_false_without_a_scheduler", "[mp]" )
     mp_set_active_sched( nullptr );
 }
 
+TEST_CASE( "wait_for_request_wakes_when_a_player_parks_after_the_world_is_already_waiting",
+           "[mp]" )
+{
+    // a_parked_player_reports_waiting_for_the_baton only exercises
+    // wait_for_request's initial predicate check: the player is already
+    // parked before the world calls it, so seeing the flag set never has to
+    // rely on being woken. This is the reverse and more interesting
+    // ordering -- the world blocks first, on an empty waiting_for_baton_,
+    // and only later does a player arrive and set it -- so wait_for_request
+    // must actually be woken by wait_for_turn's notify, not merely observe a
+    // flag that was already set when it first checked.
+    mp_sched sched( 1 );
+    std::atomic<bool> world_parked{ false };
+    std::atomic<bool> ready{ false };
+
+    std::thread world_side( [&]() {
+        world_parked = true;
+        ready = sched.wait_for_request( 5000 );
+    } );
+
+    while( !world_parked.load() ) {
+        std::this_thread::yield();
+    }
+    // Not a correctness requirement -- wait_for_request would still be
+    // correct if the player beat it to the mutex -- but gives the world a
+    // real chance to be inside cv_.wait_for before the player arrives, which
+    // is the ordering this test is aimed at.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+
+    std::thread player( [&]() {
+        sched.wait_for_turn( 0 );
+    } );
+
+    world_side.join();
+    CHECK( ready.load() );
+
+    // The player is still parked (nobody ever handed it the baton); shut_down
+    // is what lets it leave.
+    sched.shut_down();
+    player.join();
+}
+
+TEST_CASE( "mp_set_active_sched_is_visible_to_a_different_thread", "[mp]" )
+{
+    // Finding 3: mp_set_active_sched is called by the world thread while
+    // mp_active_sched/mp_sched_stopping are read by player threads, with no
+    // mutex between them -- only std::atomic<mp_sched *> makes that legal.
+    // mp_sched_stopping_is_false_without_a_scheduler exercises the same
+    // functions but entirely on one thread, so it could not have exercised
+    // the cross-thread race that made the plain pointer a bug: this test
+    // creates that race on purpose so a TSAN run actually covers it.
+    mp_sched sched( 1 );
+    mp_set_active_sched( nullptr );
+
+    std::atomic<bool> reader_saw_it{ false };
+    std::atomic<bool> stop_reader{ false };
+
+    std::thread reader( [&]() {
+        while( !stop_reader.load() ) {
+            if( mp_active_sched() == &sched ) {
+                reader_saw_it = true;
+            }
+            // The function a player thread actually calls every loop
+            // iteration in the real integration -- exercise that path, not
+            // just the raw accessor.
+            mp_sched_stopping();
+        }
+    } );
+
+    // Racing with the reader's loop above on purpose: this is the write half
+    // of the exact cross-thread access finding 3 was about.
+    mp_set_active_sched( &sched );
+
+    // Generous, not tight: this isn't asserting a particular interleaving,
+    // only that the write becomes visible to the concurrently-spinning
+    // reader within a bound loose enough not to flake under load.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 2 );
+    while( !reader_saw_it.load() && std::chrono::steady_clock::now() < deadline ) {
+        std::this_thread::yield();
+    }
+    stop_reader = true;
+    reader.join();
+
+    CHECK( reader_saw_it.load() );
+    mp_set_active_sched( nullptr );
+}
+
+TEST_CASE( "shut_down_does_not_return_until_a_parked_waiter_has_left", "[mp]" )
+{
+    // Regression test for finding 1: shut_down() (and so the destructor)
+    // must not return -- and the object must not start being destroyed --
+    // while a wait_for_turn caller is still between waking inside cv_.wait
+    // and actually leaving the function. Destroying sched at the end of the
+    // inner scope, before player is joined, is exactly the ordering finding
+    // 1 flagged as a use-after-free: without shut_down() draining parked_,
+    // the woken player could reacquire a destroyed mutex_ or write through a
+    // destroyed waiting_for_baton_. Repeated, to give a race that only shows
+    // up intermittently more chances in one run.
+    for( int rep = 0; rep < 20; ++rep ) {
+        std::atomic<bool> started{ false };
+        std::thread player;
+        {
+            mp_sched sched( 1 );
+            player = std::thread( [&sched, &started]() {
+                started = true;
+                sched.wait_for_turn( 0 );
+            } );
+            while( !started.load() ) {
+                std::this_thread::yield();
+            }
+            while( !sched.waiting_for_baton( 0 ) ) {
+                std::this_thread::yield();
+            }
+            // sched's destructor runs here, at the end of this scope, before
+            // player is joined below.
+        }
+        player.join();
+    }
+    SUCCEED( "every destructor returned only after its parked waiter had left" );
+}
+
+TEST_CASE( "the_watchdog_reports_a_stall_once_not_repeatedly", "[mp]" )
+{
+    // Finding 4: nothing exercised the watchdog before this. threshold_ms is
+    // small to keep the test fast; watchdog_report_count() is a
+    // test-observable counter (mp_sched.h) so this does not need to scrape
+    // DebugLog's output stream to know whether a report fired.
+    mp_sched sched( 1 );
+    mp_sched_start_watchdog( sched, /*threshold_ms=*/10 );
+
+    // Nobody ever takes the baton: the world holds it from construction,
+    // unmoving, which is exactly a stall. Generous bound, not a tight
+    // margin -- the watchdog's own poll cadence is a fixed 100 ms, so this
+    // just needs to outlast a couple of polls.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 2 );
+    while( sched.watchdog_report_count() == 0 && std::chrono::steady_clock::now() < deadline ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+    }
+    REQUIRE( sched.watchdog_report_count() == 1 );
+
+    // Wait through several more of the watchdog's 100 ms poll cycles. The
+    // holder still has not moved, so a watchdog that reported on every poll
+    // instead of once per stall would have incremented by now; one that
+    // reports once per stall stays at 1.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 350 ) );
+    CHECK( sched.watchdog_report_count() == 1 );
+
+    sched.shut_down();
+}
+
+TEST_CASE( "a_declared_wait_suppresses_the_watchdogs_report", "[mp]" )
+{
+    mp_sched sched( 1 );
+    sched.set_world_waiting( true );
+    mp_sched_start_watchdog( sched, /*threshold_ms=*/10 );
+
+    // Same stall as above -- the world holds the baton, unmoving -- but
+    // declared on purpose this time, so it must never be reported.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
+    CHECK( sched.watchdog_report_count() == 0 );
+
+    sched.shut_down();
+}
+
 #endif // defined(MULTIPLAYER)
