@@ -1116,6 +1116,7 @@ endif
 # ship in every build; the rest of src/mp/ is MULTIPLAYER-only.
 SOURCES += $(SRC_DIR)/mp/mp_context.cpp
 SOURCES += $(SRC_DIR)/mp/mp_tether.cpp
+SOURCES += $(SRC_DIR)/mp/mp_sched.cpp
 ifeq ($(MULTIPLAYER), 1)
   DEFINES += -DMULTIPLAYER
   SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)
