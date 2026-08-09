@@ -603,6 +603,11 @@ void set_active_stack( ui_stack_t *stack )
     active_stack = stack;
 }
 
+void activate_world_stack()
+{
+    active_stack = &world_stack;
+}
+
 ui_stack_t *get_active_stack()
 {
     return active_stack;

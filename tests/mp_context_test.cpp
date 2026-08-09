@@ -1,6 +1,7 @@
 #include "cata_catch.h"
 
 #include <memory>
+#include <vector>
 
 #include "cata_scope_helpers.h"
 #include "game_test_helper.h"
@@ -135,18 +136,37 @@ TEST_CASE( "activating_slots_in_sequence_preserves_each_slots_content", "[mp]" )
     second.name = "SlotOne";
     avatar &third = g->add_player_slot();
     third.name = "SlotTwo";
+    // Callers that add a slot must sync contexts before activating it:
+    // mp_activate_player() indexes contexts[idx] directly now and asserts idx
+    // is in range, instead of always using contexts[0] as it did in Phase 2.
+    mp_sync_context_count();
 
     mp_activate_player( 1 );
     CHECK( get_avatar().name == "SlotOne" );
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
     get_avatar().name = "SlotOneEdited";
+    // Content is the context's own state, not just the swapped-in avatar:
+    // write through slot 1's context so the later re-activation can prove it
+    // survives, not merely that the avatar swap does.
+    mp_active_context().driving_view_offset = point_rel_ms( 3, 5 );
 
     mp_activate_player( 2 );
     CHECK( get_avatar().name == "SlotTwo" );
+    CHECK( mp_active_context_ptr() == &g->contexts[2] );
+    // Slot 2's context is a separate object: it must not see what was just
+    // written through slot 1's.
+    CHECK( mp_active_context().driving_view_offset != point_rel_ms( 3, 5 ) );
+    mp_active_context().driving_view_offset = point_rel_ms( 8, 1 );
 
-    // Back to slot 1: its content is preserved (an unpaired swap would break
-    // this).
+    // Back to slot 1: both the avatar swap and the context content are
+    // preserved (an unpaired swap, or activation that still reads contexts[0]
+    // regardless of idx, would break this).
     mp_activate_player( 1 );
     CHECK( get_avatar().name == "SlotOneEdited" );
+    CHECK( mp_active_context().driving_view_offset == point_rel_ms( 3, 5 ) );
+
+    mp_activate_player( 2 );
+    CHECK( mp_active_context().driving_view_offset == point_rel_ms( 8, 1 ) );
 
     mp_activate_player( 0 );
     CHECK( get_avatar().name == "SlotZero" );
@@ -157,6 +177,7 @@ TEST_CASE( "activating_slots_in_sequence_preserves_each_slots_content", "[mp]" )
     // (weather.cpp handle_weather_effects -> wet_character) read a bodyless
     // avatar and log an error for every weather tick.
     game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 TEST_CASE( "mp_activate_player_zero_is_the_identity_swap", "[mp]" )
@@ -175,4 +196,99 @@ TEST_CASE( "mp_activate_player_zero_is_the_identity_swap", "[mp]" )
     CHECK( TERMX == termx_before );
     CHECK( TERMY == termy_before );
     CHECK( &get_avatar() == &g->player_at( 0 ) );
+}
+
+TEST_CASE( "contexts_track_the_slot_count", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 1 );
+
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    CHECK( g->contexts.size() == 2 );
+    // A fresh context inherits the terminal size of context 0 until its client
+    // reports its own.
+    CHECK( g->contexts[1].viewport.term_cols == g->contexts[0].viewport.term_cols );
+    CHECK( g->contexts[1].viewport.term_rows == g->contexts[0].viewport.term_rows );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    CHECK( g->contexts.size() == 1 );
+}
+
+TEST_CASE( "activating_a_player_selects_that_players_context", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+
+    mp_activate_player( 0 );
+    CHECK( mp_active_context_ptr() == &g->contexts[0] );
+    CHECK( ui_manager::get_active_stack() == &g->contexts[0].ui_stack );
+
+    mp_activate_player( 1 );
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
+    CHECK( ui_manager::get_active_stack() == &g->contexts[1].ui_stack );
+
+    // View state is per-context, not shared: writing through one player's
+    // context must not be visible through the other's.
+    mp_active_context().driving_view_offset = point_rel_ms( 7, 9 );
+    mp_activate_player( 0 );
+    CHECK( mp_active_context().driving_view_offset != point_rel_ms( 7, 9 ) );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+TEST_CASE( "the_world_phase_has_no_active_player", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    mp_activate_player( 0 );
+
+    mp_activate_world();
+
+    // The world stack is a real object: debugmsg can raise a UI during the
+    // world phase, and it must land somewhere rather than dereference null.
+    CHECK( ui_manager::get_active_stack() != nullptr );
+    CHECK( ui_manager::get_active_stack() != &g->contexts[0].ui_stack );
+
+    mp_activate_player( 0 );
+}
+
+TEST_CASE( "for_each_context_visits_every_player_and_restores", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_activate_player( 1 );
+
+    std::vector<player_context *> seen;
+    mp_for_each_context( [&seen]( player_context & ctx ) {
+        seen.push_back( &ctx );
+    } );
+
+    CHECK( seen.size() == 2 );
+    CHECK( seen[0] == &g->contexts[0] );
+    CHECK( seen[1] == &g->contexts[1] );
+    // The caller's context is restored: broadcast drawing must not leave the
+    // baton holder pointing at somebody else's windows.
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }

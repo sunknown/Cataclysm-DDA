@@ -87,9 +87,9 @@ void mp_activate_player( size_t idx )
     // must have already called ensure (setup() / create_or_get_main_ui_adaptor
     // / tests).
     cata_assert( !g->contexts.empty() );
-    // In Phase 2 there is a single context (co-op shares it between slots);
-    // per-player contexts (contexts[idx]) arrive with the scheduler in Phase 3.
-    player_context &ctx = g->contexts[0];
+    cata_assert( idx < g->contexts.size() );
+    player_context &ctx = g->contexts[idx];
+    ctx.slot_index = idx;
 
     // 1. Avatar: take the current slot out of u, put the new one in.
     // swap_slot_into_u is self-inverse and only valid as a swap-in/swap-out
@@ -155,4 +155,53 @@ void mp_resize_active_context()
     if( const shared_ptr_fast<ui_adaptor> ui = ctx.main_ui_adaptor.lock() ) {
         ui->position_from_window( ctx.stdscr );
     }
+}
+
+void mp_sync_context_count()
+{
+    const size_t want = g->player_slot_count();
+    cata_assert( want >= 1 );
+    // A shrink can free the element the active pointer names, so drop the
+    // pointer first and re-point below.
+    const size_t active = g->contexts.empty() ? 0 : g->active_slot();
+    while( g->contexts.size() < want ) {
+        g->contexts.emplace_back();
+        player_context &fresh = g->contexts.back();
+        fresh.slot_index = g->contexts.size() - 1;
+        // Until this player's client reports its own terminal, borrow slot 0's:
+        // a context with a zero-sized viewport would compute degenerate metrics.
+        fresh.viewport = g->contexts[0].viewport;
+        fresh.stdscr = g->contexts[0].stdscr;
+    }
+    while( g->contexts.size() > want ) {
+        g->contexts.pop_back();
+    }
+    mp_activate_player( active < want ? active : 0 );
+}
+
+void mp_activate_world()
+{
+    // No player is acting. The ui stack becomes the world stack, so UI raised
+    // here (debugmsg, and nothing else by design) lands somewhere real instead
+    // of in a player's window set.
+    //
+    // The active context is NOT cleared, for the same reason the avatar aliases
+    // are not: world code that still reads them must see live state rather than
+    // a dangling one. Serialization is the proven case -- the autosave inside
+    // world_turn_pre() writes mp_active_context().driving_view_offset -- and
+    // roughly two dozen other call sites read the context without knowing which
+    // phase they are in. "World phase" means nobody is acting, not that the
+    // per-player state ceases to exist, so it stays on slot 0.
+    ui_manager::activate_world_stack();
+    mp_set_active_context( &g->contexts[0] );
+}
+
+void mp_for_each_context( const std::function<void( player_context & )> &fn )
+{
+    const size_t restore = g->active_slot();
+    for( size_t i = 0; i < g->contexts.size(); ++i ) {
+        mp_activate_player( i );
+        fn( g->contexts[i] );
+    }
+    mp_activate_player( restore );
 }

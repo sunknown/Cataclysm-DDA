@@ -47,6 +47,13 @@ TEST_CASE( "world_turn_post_does_not_replenish_moves", "[coop]" )
     u.set_moves( 0 );
     u.activity = player_activity();
 
+    // world_turn_post() is the world half: do_turn() always calls it under
+    // mp_activate_world(). handle_progress_ui(), which it calls at the end,
+    // owns a UI object (wait_popup) that outlives this call and must always be
+    // created or torn down under the same stack -- calling world_turn_post()
+    // under a player's own stack, as this used to, could tear that object
+    // down under the wrong stack and trip ui_adaptor's ownership assert.
+    mp_activate_world();
     g->world_turn_post();
 
     // Moves come back in avatar_turn_post, which the orchestrator runs after
@@ -163,6 +170,7 @@ TEST_CASE( "every_slot_gets_its_moves_back", "[coop]" )
     avatar &a = g->player_at( 0 );
     avatar &b = g->add_player_slot();
     b.set_body();
+    mp_sync_context_count();
 
     // Both slots spend their turn on an activity: the action loop reads real
     // input and cannot run headless, the activity branch can.
@@ -183,7 +191,22 @@ TEST_CASE( "every_slot_gets_its_moves_back", "[coop]" )
     // went through avatar_turn_pre()/player_act(), not just slot 0.
     CHECK( b.activity.moves_left < 500 );
 
+    // The activity is deliberately left running (the moves_left check above is
+    // the proof), which leaves wait_popup -- a `game` member that persists
+    // across turns, lazily built by handle_progress_ui() under
+    // mp_activate_world() inside world_turn_post() -- alive with its
+    // ui_adaptor owned by the world stack. Nothing else in this process is
+    // going to run another turn to flush it naturally, and do_turn() always
+    // leaves a player's stack active between turns (never the world stack),
+    // so if wait_popup survived to game::~game() it would be torn down while
+    // the wrong stack is active and trip ui_adaptor's ownership assert at
+    // process exit. Tear it down here, under the same stack it was built
+    // under.
+    mp_activate_world();
+    g->wait_popup_reset();
+
     game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 TEST_CASE( "moves_come_back_only_after_the_world_moved", "[coop]" )
@@ -200,10 +223,20 @@ TEST_CASE( "moves_come_back_only_after_the_world_moved", "[coop]" )
 
     // The single-player ordering the whole barrier rests on: world_turn_post
     // (monmove) happens while the player is still out of moves.
+    //
+    // world_turn_pre/world_turn_post are the world half, and do_turn() always
+    // runs them under mp_activate_world(): world_turn_post() ends by calling
+    // handle_progress_ui(), which owns a UI object (wait_popup) that persists
+    // across turns and must always be created or torn down under the same
+    // stack. Calling these directly under the player's own stack, as this
+    // test used to, could tear wait_popup down under the wrong stack and trip
+    // ui_adaptor's ownership assert on a later turn.
+    mp_activate_world();
     g->world_turn_pre();
     CHECK( u.get_moves() <= 0 );
     g->world_turn_post();
     CHECK( u.get_moves() <= 0 );
+    mp_activate_player( 0 );
     g->avatar_turn_post( u );
     CHECK( u.get_moves() > 0 );
 }

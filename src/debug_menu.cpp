@@ -112,6 +112,7 @@
 #include "overmap_ui.h"
 #include "overmapbuffer.h"
 #include "path_info.h"
+#include "mp/mp_context.h"
 #include "mp/mp_mode.h"
 #include "player_difficulty.h"
 #include "pathfinding.h"
@@ -1972,6 +1973,9 @@ void toggle_coop_slot( const std::string &template_name )
         // state to fall back to. This permanently deletes those characters;
         // the interactive entry point (toggle_coop_slot_menu) confirms first.
         g->remove_extra_player_slots();
+        // A slot without a matching context would trip mp_activate_player's
+        // assert the next time anything activates slot 0.
+        mp_sync_context_count();
         // Drain slot 0's remaining moves so the current turn's input phase
         // ends immediately rather than prompting again now that the extra
         // slots are gone (remove_extra_player_slots() undid any in-progress
@@ -1987,6 +1991,9 @@ void toggle_coop_slot( const std::string &template_name )
 
     if( g->player_slot_count() == 1 ) {
         avatar &second = g->add_player_slot();
+        // A slot without a matching context would trip mp_activate_player's
+        // assert the next time anything activates slot 1.
+        mp_sync_context_count();
         bool got_template = false;
         if( !template_name.empty() ) {
             pool_type pool = pool_type::FREEFORM;

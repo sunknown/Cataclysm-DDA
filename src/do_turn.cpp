@@ -646,9 +646,11 @@ bool game::player_act( avatar &ava )
             // We only want this to happen if the player had a chance to examine the sounds.
             sounds::reset_markers();
         } else {
-            // Rate limit key polling to 10 times a second.
-            static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() );
+            // Rate limit key polling to 10 times a second. The timestamp lives in
+            // this player's context (player_context::last_key_poll) rather than a
+            // function-local static: see that field's comment for why a shared
+            // static was wrong once every player got their own context.
+            auto &start = mp_active_context().last_key_poll;
             const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() );
             if( ( now - start ).count() > 100 ) {
@@ -699,10 +701,9 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
-    // The world half: no player is meant to be active here, so nothing here
-    // may open a window. mp_activate_player( 0 ) is a stand-in until task 5
-    // replaces this with mp_activate_world().
-    mp_activate_player( 0 );
+    // The world half: no player is active here, so nothing here may open a
+    // window that isn't the world stack's own (debugmsg's emergency UI).
+    mp_activate_world();
     world_turn_pre();
 
     // The player half. With one player there is no scheduler and no thread:
@@ -731,8 +732,9 @@ bool game::do_turn()
         }
     }
 
-    // task 5 replaces this with mp_activate_world()
-    mp_activate_player( 0 );
+    // Back to the world half: nobody is active while the world-side
+    // post-processing (monster moves, weather, scent) runs.
+    mp_activate_world();
     world_turn_post();
 
     // Moves come back here, after monmove, exactly as in single player. The
@@ -818,10 +820,10 @@ void game::world_turn_post()
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
     // This runs once for the world half, not once per slot: mon_info_update()
-    // reads game::u, and no player is meant to be active here for it to read
-    // (mp_activate_player( 0 ) is a stand-in until task 5's
-    // mp_activate_world()). A per-slot pass also needs mon_info_update() to
-    // take the avatar as a parameter instead.
+    // reads game::u, and the world phase leaves u aliased to slot 0's avatar
+    // (mp_activate_world() clears the active context, not the avatar aliases),
+    // so this still reads something live. A per-slot pass also needs
+    // mon_info_update() to take the avatar as a parameter instead.
     mon_info_update();
 
     // handle_weather_effects() never reads the avatar it's passed: it decays

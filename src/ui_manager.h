@@ -313,6 +313,11 @@ void invalidate_all_ui_adaptors();
  * mp_activate_world (Phase 3).
  */
 void set_active_stack( ui_stack_t *stack );
+// Points the active stack at the world stack -- the stack that owns the UI
+// raised while no player is active (debugmsg, and nothing else by design).
+// It is a separate entry point rather than a getter because the world stack
+// must never be handed out as if it were a player's.
+void activate_world_stack();
 /** Get the active stack. Never null. Used by tests to restore it on scope exit. */
 ui_stack_t *get_active_stack();
 void reset();
