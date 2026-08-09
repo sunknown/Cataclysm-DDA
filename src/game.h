@@ -92,7 +92,6 @@ class save_t;
 class scenario;
 class scent_map;
 class spell_events;
-class static_popup;
 class stats_tracker;
 class timed_event_manager;
 class item_wakeup_manager;
@@ -200,6 +199,10 @@ class game
         friend bool turn_handler::cleanup_at_end();
         friend void mp_resize_active_context();
         friend void mp_activate_player( size_t idx );
+        // Needs swap_slot_into_u()/player_slots to bring slot 0 back into u
+        // before switching to the world stack -- see mp_activate_world()'s
+        // own comment for why.
+        friend void mp_activate_world();
         friend global_variables &get_globals();
     public:
         game();
@@ -1425,8 +1428,6 @@ class game
         bool npcs_dirty = false; // NOLINT(cata-serialize)
         /** Has anything died in this turn and needs to be cleaned up? */
         bool critter_died = false; // NOLINT(cata-serialize)
-        /** Is this the first redraw since waiting (sleeping or activity) started */
-        bool first_redraw_since_waiting_started = true; // NOLINT(cata-serialize)
         /** Is Zone manager open or not - changes graphics of some zone tiles */
         bool zones_manager_open = false; // NOLINT(cata-serialize)
 
@@ -1450,8 +1451,10 @@ class game
         std::pair<tripoint_rel_omt, tripoint_rel_omt> mouse_edge_scrolling( input_context &ctxt, int speed,
                 const tripoint_rel_omt &last, bool iso );
 
-        std::unique_ptr<static_popup> wait_popup; // NOLINT(cata-serialize)
     public:
+        // Resets the ACTIVE player's progress/wait popup (player_context::
+        // wait_popup). Every call site runs in the player phase, so
+        // mp_active_context() names the right one.
         void wait_popup_reset();
 
         /** Used to implement mouse "edge scrolling". Returns a

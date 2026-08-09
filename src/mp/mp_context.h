@@ -4,12 +4,15 @@
 #include <cstddef>
 #include <deque>
 #include <functional>
+#include <memory>
 
 #include "coordinates.h"    // tripoint_bub_ms, point_rel_ms
 #include "cursesdef.h"      // catacurses::window
 #include "input_enums.h"    // input_event
 #include "ui_manager.h"     // ui_stack_t, ui_adaptor
 #include "memory_fast.h"    // weak_ptr_fast
+
+class static_popup;
 
 struct viewport_params {
     int term_cols = 0, term_rows = 0;
@@ -36,6 +39,23 @@ struct player_context {
     // would race once player_act() runs on per-player threads.
     std::chrono::time_point<std::chrono::steady_clock, std::chrono::milliseconds> last_key_poll =
         std::chrono::time_point_cast<std::chrono::milliseconds>( std::chrono::steady_clock::now() );
+    // This player's progress/wait popup (crafting, sleeping...) and the flag
+    // that decides whether the next handle_progress_ui() forces a full
+    // redraw. Both used to live on `game` -- a single instance shared by every
+    // player -- which is wrong on two counts: the popup's ui_adaptor has to be
+    // created and destroyed under the same ui stack (this player's own,
+    // enforced by ui_adaptor's owner == active_stack assert), and a shared
+    // "first redraw" flag would let one player's redraw suppress another's.
+    std::unique_ptr<static_popup> wait_popup; // NOLINT(cata-serialize)
+    bool first_redraw_since_waiting_started = true; // NOLINT(cata-serialize)
+
+    // Declared (not defaulted inline) because wait_popup needs the complete
+    // definition of static_popup to construct/destroy, and this header only
+    // forward-declares it -- exactly the reason `game` itself declares
+    // game()/~game() instead of defaulting them (game.h/game.cpp). Defined in
+    // mp_context.cpp, which includes popup.h.
+    player_context();
+    ~player_context();
 };
 
 player_context &mp_active_context();       // asserts a non-null active context

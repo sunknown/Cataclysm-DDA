@@ -479,7 +479,6 @@ game::game() :
     // Slot 0 aliases the pimpl-owned avatar that game::u refers to.
     // Ownership stays with u_ptr; this vector only observes.
     player_slots.push_back( &u );
-    first_redraw_since_waiting_started = true;
     reset_light_level();
     events().subscribe( &*stats_tracker_ptr );
     events().subscribe( &*kill_tracker_ptr );
@@ -10733,7 +10732,7 @@ void game::display_om_pathfinding_progress( size_t /* open_set */, size_t /* kno
 
 void game::wait_popup_reset()
 {
-    wait_popup.reset();
+    mp_active_context().wait_popup.reset();
 }
 
 bool game::display_overlay_state( const action_id action )

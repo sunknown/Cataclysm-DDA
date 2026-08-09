@@ -466,6 +466,11 @@ void overmap_npc_move()
 void game::handle_progress_ui()
 {
     avatar &u = get_avatar();
+    // The popup and its "first redraw" flag are this player's own
+    // (player_context::wait_popup): the caller (avatar_turn_post(), below)
+    // has already activated this player, so mp_active_context() is `u`'s own
+    // context, and the popup's ui_adaptor registers into `u`'s own ui stack.
+    player_context &ctx = mp_active_context();
 
     // handle activity/progress/waiting UI
     const bool player_is_sleeping = u.has_effect( effect_sleep );
@@ -491,9 +496,9 @@ void game::handle_progress_ui()
         }
     }
     if( wait_redraw ) {
-        if( first_redraw_since_waiting_started ||
+        if( ctx.first_redraw_since_waiting_started ||
             calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) {
-            if( first_redraw_since_waiting_started || calendar::once_every( wait_refresh_rate ) ) {
+            if( ctx.first_redraw_since_waiting_started || calendar::once_every( wait_refresh_rate ) ) {
                 ui_manager::redraw();
             }
 
@@ -506,18 +511,18 @@ void game::handle_progress_ui()
             }
 #endif
             ui_adaptor dummy( ui_adaptor::disable_uis_below {} );
-            if( !wait_popup ) {
-                wait_popup = std::make_unique<static_popup>();
+            if( !ctx.wait_popup ) {
+                ctx.wait_popup = std::make_unique<static_popup>();
             }
-            wait_popup->on_top( true ).wait_message( "%s", wait_message );
+            ctx.wait_popup->on_top( true ).wait_message( "%s", wait_message );
             ui_manager::redraw();
             refresh_display();
-            first_redraw_since_waiting_started = false;
+            ctx.first_redraw_since_waiting_started = false;
         }
     } else {
         // Nothing to wait for now
         wait_popup_reset();
-        first_redraw_since_waiting_started = true;
+        ctx.first_redraw_since_waiting_started = true;
     }
 }
 
@@ -738,8 +743,8 @@ bool game::do_turn()
     world_turn_post();
 
     // Moves come back here, after monmove, exactly as in single player. The
-    // baton goes back to each player for this because handle_progress_ui and
-    // the morale paths can draw.
+    // baton goes back to each player for this because avatar_turn_post()
+    // (handle_progress_ui() first, then the morale paths) can draw.
     for( size_t i = 0; i < player_slot_count(); ++i ) {
         mp_activate_player( i );
         avatar_turn_post( player_at( i ) );
@@ -820,10 +825,11 @@ void game::world_turn_post()
     m.furniture_terrain_emit_fields();
     // required after monsters move and fields emit
     // This runs once for the world half, not once per slot: mon_info_update()
-    // reads game::u, and the world phase leaves u aliased to slot 0's avatar
-    // (mp_activate_world() clears the active context, not the avatar aliases),
-    // so this still reads something live. A per-slot pass also needs
-    // mon_info_update() to take the avatar as a parameter instead.
+    // reads game::u, and mp_activate_world() (top of the world half) swaps u
+    // back to slot 0's avatar before switching the ui stack, so this reads a
+    // single, well-defined viewpoint instead of whichever slot the player loop
+    // happened to leave active. A per-slot pass also needs mon_info_update()
+    // to take the avatar as a parameter instead.
     mon_info_update();
 
     // handle_weather_effects() never reads the avatar it's passed: it decays
@@ -843,10 +849,11 @@ void game::world_turn_post()
         handle_weather_effects( get_weather().weather_id );
     }
 
-    // Neither of these reads a particular avatar: the progress UI reads
-    // whichever activity is currently displayed, and the visibility cache is
-    // shared map state.
-    handle_progress_ui();
+    // The visibility cache is shared map state, not tied to a particular
+    // avatar. The progress UI used to be called here too, but it reads and
+    // opens UI for a particular avatar (get_avatar()) and now runs from
+    // avatar_turn_post() instead, in the per-player tail loop below -- see
+    // the comment there.
     m.invalidate_visibility_cache();
 }
 
@@ -900,6 +907,16 @@ void game::avatar_turn_pre( avatar &ava )
 void game::avatar_turn_post( avatar &ava )
 {
     weather_manager &weather = get_weather();
+
+    // Runs first, before anything below: this is the single-player order
+    // world_turn_post()/avatar_turn_post( u ) always had, since
+    // handle_progress_ui() used to be the last statement of world_turn_post()
+    // and avatar_turn_post( u ) ran immediately after it. handle_progress_ui()
+    // opens a UI and reads get_avatar(), so it has to run in this player's
+    // own half: do_turn()'s tail loop calls mp_activate_player( i ) right
+    // before this, so get_avatar() reads `ava` itself, and the popup it may
+    // build registers into `ava`'s own ui stack, not the world stack.
+    handle_progress_ui();
 
     // replenish avatar moves
     ava.process_turn();

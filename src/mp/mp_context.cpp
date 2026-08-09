@@ -7,6 +7,13 @@
 #include "game_ui.h"
 #include "output.h"
 #include "panels.h"
+#include "popup.h" // static_popup's complete definition, for wait_popup
+
+// Out-of-line so the compiler-generated bodies (including the exception-
+// unwind logic the constructor may need) are emitted only here, where
+// static_popup is complete -- see the comment on the declarations.
+player_context::player_context() = default;
+player_context::~player_context() = default;
 
 static player_context *active_context = nullptr;
 
@@ -174,6 +181,12 @@ void mp_sync_context_count()
         fresh.stdscr = g->contexts[0].stdscr;
     }
     while( g->contexts.size() > want ) {
+        // A context whose ui_stack is non-empty still has live ui_adaptors
+        // whose owner points at it. Popping it out from under them (reachable
+        // from toggle_coop_slot(), debug_menu.cpp) would leave owner dangling;
+        // state the invariant here, loudly and locally, rather than let it
+        // manifest later as a dangling-pointer read inside ~ui_adaptor().
+        cata_assert( g->contexts.back().ui_stack.empty() );
         g->contexts.pop_back();
     }
     mp_activate_player( active < want ? active : 0 );
@@ -181,6 +194,23 @@ void mp_sync_context_count()
 
 void mp_activate_world()
 {
+    // Bring slot 0's avatar back into u before leaving the player phase. This
+    // mirrors step 1 of mp_activate_player( 0 ) -- the avatar swap only, not
+    // the screen/window/ui-stack steps, which must stay pointed at the world
+    // stack rather than a player's. Without this, if the player loop's last
+    // iteration left u on a different slot (do_turn()'s second call site does,
+    // at N > 1), the world half would see two different players: g->u (last
+    // slot) and mp_active_context() (forced to slot 0 below). mon_info_update()
+    // is the proven case -- it reads get_avatar() to rebuild the shared
+    // monster-visibility cache -- and roughly two dozen other call sites read
+    // one alias or the other without knowing which phase they are in.
+    const size_t current = g->active_slot();
+    if( current != 0 ) {
+        g->swap_slot_into_u( current );
+    }
+    g->set_active_slot( 0 );
+    cata_assert( g->player_slots[g->active_slot()] == &g->u );
+
     // No player is acting. The ui stack becomes the world stack, so UI raised
     // here (debugmsg, and nothing else by design) lands somewhere real instead
     // of in a player's window set.
@@ -198,10 +228,31 @@ void mp_activate_world()
 
 void mp_for_each_context( const std::function<void( player_context & )> &fn )
 {
-    const size_t restore = g->active_slot();
+    // Capture the actual phase (which ui stack, and which player if any),
+    // not just the active slot index: the world phase also rests on slot 0
+    // (mp_activate_world() above), so the slot index alone cannot tell a
+    // world-phase caller apart from a caller that had activated player 0.
+    // Restoring by slot only would activate a player after a world-phase
+    // call, silently leaving the world phase.
+    ui_stack_t *const restore_stack = ui_manager::get_active_stack();
+    bool restore_is_world = true;
+    size_t restore_slot = 0;
+    for( size_t i = 0; i < g->contexts.size(); ++i ) {
+        if( restore_stack == &g->contexts[i].ui_stack ) {
+            restore_is_world = false;
+            restore_slot = i;
+            break;
+        }
+    }
+
     for( size_t i = 0; i < g->contexts.size(); ++i ) {
         mp_activate_player( i );
         fn( g->contexts[i] );
     }
-    mp_activate_player( restore );
+
+    if( restore_is_world ) {
+        mp_activate_world();
+    } else {
+        mp_activate_player( restore_slot );
+    }
 }

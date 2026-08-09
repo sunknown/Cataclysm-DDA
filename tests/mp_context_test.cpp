@@ -265,6 +265,40 @@ TEST_CASE( "the_world_phase_has_no_active_player", "[mp]" )
     mp_activate_player( 0 );
 }
 
+TEST_CASE( "the_world_phase_brings_slot_zero_back_into_u", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+
+    g->player_at( 0 ).name = "SlotZero";
+    b.name = "SlotOne";
+
+    // Leave slot 1 active, the way do_turn()'s player loop does right before
+    // its second mp_activate_world() call at N > 1 (the last iteration
+    // activates the last slot).
+    mp_activate_player( 1 );
+    REQUIRE( get_avatar().name == "SlotOne" );
+
+    mp_activate_world();
+
+    // The world half must see one consistent player: g->u and
+    // mp_active_context() both name slot 0, not two different players. Before
+    // this was fixed, mp_activate_world() forced mp_active_context() to slot 0
+    // but never touched g->u, so a caller like mon_info_update() that reads
+    // get_avatar() would see the last-active player instead.
+    CHECK( get_avatar().name == "SlotZero" );
+    CHECK( &mp_active_context() == &g->contexts[0] );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
 TEST_CASE( "for_each_context_visits_every_player_and_restores", "[mp]" )
 {
     restore_active_state restore;
@@ -287,6 +321,20 @@ TEST_CASE( "for_each_context_visits_every_player_and_restores", "[mp]" )
     // The caller's context is restored: broadcast drawing must not leave the
     // baton holder pointing at somebody else's windows.
     CHECK( mp_active_context_ptr() == &g->contexts[1] );
+
+    // Called from the world phase -- the broadcast paths' actual caller --
+    // mp_for_each_context() must restore the world phase, not silently leave
+    // a player active. The active slot alone cannot distinguish the two: the
+    // world phase also rests on slot 0 (mp_activate_world()), same as a
+    // caller that had activated player 0 directly.
+    mp_activate_world();
+    seen.clear();
+    mp_for_each_context( [&seen]( player_context & ctx ) {
+        seen.push_back( &ctx );
+    } );
+    CHECK( seen.size() == 2 );
+    CHECK( ui_manager::get_active_stack() != &g->contexts[0].ui_stack );
+    CHECK( ui_manager::get_active_stack() != &g->contexts[1].ui_stack );
 
     mp_activate_player( 0 );
     game_test_helper::reset_player_slots();
