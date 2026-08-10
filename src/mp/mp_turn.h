@@ -2,6 +2,14 @@
 
 #include <cstddef>
 
+#include "action.h"
+
+// Long enough to finish reading a screen, short enough that a partner does not
+// go and make tea. Tuned against the Phase 3a gate; configurable in Phase 4.
+constexpr int MP_HURRY_MS = 15000;
+// A fight is not the moment to read anything.
+constexpr int MP_HURRY_COMBAT_MS = 4000;
+
 // What a player is doing from the turn loop's point of view. Derived from game
 // state on every query rather than stored: two pieces of state that could
 // disagree is exactly the bug the co-op mode fixed once already.
@@ -77,3 +85,47 @@ void mp_set_turn_open( bool open );
 // turns it into do_turn()'s `true` for main().
 void mp_request_session_end();
 bool mp_session_end_requested();
+
+// Starts the hurry countdown, if one is not already running. Any player who has
+// already acted may call it. The countdown is visible to everyone; when it
+// expires the server stops waiting for whoever is still holding -- it does not
+// reach into their UI or close anything. Their character stands still and skips
+// the turn; their menu stays open and they confirm when they are ready.
+void mp_request_hurry();
+
+// Milliseconds left on the countdown, or -1 when none is running. Read by the
+// sidebar widget and by the tests.
+int mp_hurry_remaining_ms();
+
+// Advances the countdown and, when it expires, drops every holding player from
+// the barrier for this turn. Called once per orchestrator poll.
+//
+// Also starts the countdown by itself, on the shorter combat length, while a
+// hostile creature in the bubble can see any player: nobody spends a keystroke
+// on "hurry up" when something is running at them.
+void mp_tick_hurry();
+
+// Spends the turn's moves of every player the world stopped waiting for.
+// Called by the orchestrator once per closed turn, immediately before
+// avatar_turn_post hands moves back.
+//
+// Not an optimisation and not cosmetic: moves accumulate (Character::
+// process_turn does `moves += get_speed()`), and a dropped player never spends
+// theirs, because they are reading a menu. Without this, a partner who read a
+// recipe list for a minute comes back holding a minute's worth of moves and
+// takes sixty actions inside one tick, which is both an exploit and exactly
+// what "their character stands still and skips the turn" says does not happen.
+void mp_forfeit_dropped_moves();
+
+// Whether `act` may be taken by a player who has already acted this turn.
+//
+// The default is "no": the list below is a whitelist, not a classification of
+// all 153 action ids. Classifying every one of them would be both expensive and
+// dangerous -- a mistake in the "free" direction lets a player act outside
+// their turn. Inverted, a mistake merely refuses something harmless, which is
+// annoying and fixed by one line.
+bool mp_action_is_free( action_id act );
+
+// Moves the countdown's start point back by `ms`, so a test can expire a
+// fifteen-second countdown without sleeping for fifteen seconds.
+void mp_advance_hurry_for_test( int ms );

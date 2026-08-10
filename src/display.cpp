@@ -22,6 +22,7 @@
 #include "game.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_mode.h"
+#include "mp/mp_turn.h"
 #endif
 #include "game_constants.h"
 #include "map.h"
@@ -1343,13 +1344,24 @@ std::string display::coop_player_text( const Character &u )
 {
 #if defined(MULTIPLAYER)
     if( !mp_coop_active() ) {
-        // Single player: nothing to disambiguate, so the widget stays blank
-        // rather than showing a slot number that means nothing.
         return std::string();
     }
-    // 1-based to match how the debug menu and the design spec talk about
-    // "slot 2" being the second player.
-    return string_format( _( "P%d: %s" ), g->active_slot() + 1, u.get_name() );
+    // Who is being waited on, and for how much longer. Without this the only
+    // signal that the session has not frozen is that it has not frozen.
+    std::string waiting;
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( mp_player_holds_barrier( i ) ) {
+            waiting += ( waiting.empty() ? std::string() : ", " ) + g->player_at( i ).name;
+        }
+    }
+    if( waiting.empty() ) {
+        return string_format( _( "P%d: %s" ), g->active_slot() + 1, u.get_name() );
+    }
+    const int left = mp_hurry_remaining_ms();
+    if( left < 0 ) {
+        return string_format( _( "waiting: %s" ), waiting );
+    }
+    return string_format( _( "waiting: %s (%d)" ), waiting, ( left + 999 ) / 1000 );
 #else
     ( void )u;
     return std::string();

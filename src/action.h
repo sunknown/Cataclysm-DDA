@@ -358,6 +358,9 @@ enum action_id : int {
     ACTION_TOGGLE_HOUR_TIMER,
     /** Interact with the current or nearby tile */
     ACTION_INTERACT,
+    /** Ask everyone still thinking to hurry up: starts a visible countdown,
+     *  after which the world moves on without them. Co-op only. */
+    ACTION_COOP_HURRY,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/

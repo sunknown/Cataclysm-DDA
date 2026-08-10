@@ -73,6 +73,8 @@
 #include "monster.h"
 #include "move_mode.h"
 #include "mp/mp_context.h"
+#include "mp/mp_mode.h"
+#include "mp/mp_turn.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "options.h"
@@ -3460,6 +3462,18 @@ bool game::handle_action()
         }
         return false;
     }
+
+#if defined(MULTIPLAYER)
+    if( mp_coop_active() && !mp_action_is_free( act ) &&
+        mp_player_state_of( g->active_slot() ) == mp_player_state::acted ) {
+        add_msg( m_info, _( "You have already acted this turn." ) );
+        return false;
+    }
+    if( act == ACTION_COOP_HURRY ) {
+        mp_request_hurry();
+        return false;
+    }
+#endif
 
     // This has no action unless we're in a special game mode.
     gamemode->pre_action( act );

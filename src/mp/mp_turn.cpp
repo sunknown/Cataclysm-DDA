@@ -1,9 +1,13 @@
 #include "mp/mp_turn.h"
 
+#include <chrono>
+#include <optional>
 #include <vector>
 
 #include "avatar.h"
 #include "game.h"
+#include "map.h"
+#include "monster.h"
 #include "player_activity.h"
 
 namespace
@@ -23,6 +27,29 @@ void ensure_sized()
     const size_t n = g->player_slot_count();
     g_waiting_for_input.resize( n, false );
     g_dropped_by_countdown.resize( n, false );
+}
+
+// When the countdown started, or nullopt when none is running. A time point
+// rather than a remaining count: the orchestrator polls at whatever rate the
+// session runs at, and a decrementing counter would drift with it.
+std::optional<std::chrono::steady_clock::time_point> g_hurry_started;
+int g_hurry_length_ms = MP_HURRY_MS;
+
+// True while a hostile creature inside the bubble can see any player.
+bool anyone_is_seen_by_a_hostile()
+{
+    for( Creature &critter : g->all_creatures() ) {
+        monster *const mon = dynamic_cast<monster *>( &critter );
+        if( mon == nullptr || mon->friendly != 0 ) {
+            continue;
+        }
+        for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+            if( mon->sees( get_map(), g->player_at( i ) ) ) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 } // namespace
 
@@ -84,11 +111,13 @@ void mp_turn_reset()
         // still sitting at the same input wait stays dropped, or one press of
         // "hurry up" would buy exactly one tick and the next turn would stop on
         // them again. The input-wait flags themselves are never cleared here
-        // (see the header). The hurry countdown is reset in task 8.
+        // (see the header).
         if( i >= g_waiting_for_input.size() || !g_waiting_for_input[i] ) {
             g_dropped_by_countdown[i] = false;
         }
     }
+    g_hurry_started.reset();
+    g_hurry_length_ms = MP_HURRY_MS;
 }
 
 void mp_turn_reset_all()
@@ -97,6 +126,8 @@ void mp_turn_reset_all()
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
     g_turn_open = false;
     g_session_end = false;
+    g_hurry_started.reset();
+    g_hurry_length_ms = MP_HURRY_MS;
 }
 
 bool mp_turn_is_open()
@@ -117,4 +148,104 @@ void mp_request_session_end()
 bool mp_session_end_requested()
 {
     return g_session_end;
+}
+
+void mp_request_hurry()
+{
+    if( g_hurry_started ) {
+        return;
+    }
+    g_hurry_started = std::chrono::steady_clock::now();
+    g_hurry_length_ms = MP_HURRY_MS;
+}
+
+int mp_hurry_remaining_ms()
+{
+    if( !g_hurry_started ) {
+        return -1;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - *g_hurry_started ).count();
+    const int left = g_hurry_length_ms - static_cast<int>( elapsed );
+    return left > 0 ? left : 0;
+}
+
+void mp_advance_hurry_for_test( const int ms )
+{
+    if( g_hurry_started ) {
+        *g_hurry_started -= std::chrono::milliseconds( ms );
+    }
+}
+
+void mp_tick_hurry()
+{
+    ensure_sized();
+    // Nobody spends a keystroke on "hurry up" when something is running at
+    // them, so combat starts its own countdown, and a shorter one.
+    if( !g_hurry_started && anyone_is_seen_by_a_hostile() ) {
+        g_hurry_started = std::chrono::steady_clock::now();
+        g_hurry_length_ms = MP_HURRY_COMBAT_MS;
+    }
+    if( !g_hurry_started || mp_hurry_remaining_ms() > 0 ) {
+        return;
+    }
+    // Expired. Drop everyone still holding -- for this turn only. Their UI is
+    // untouched: their character stands still and skips the turn, their menu
+    // stays open, and they confirm their choice when they are ready.
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( mp_player_state_of( i ) == mp_player_state::holding ) {
+            g_dropped_by_countdown[i] = true;
+        }
+    }
+    g_hurry_started.reset();
+}
+
+void mp_forfeit_dropped_moves()
+{
+    ensure_sized();
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( mp_player_state_of( i ) == mp_player_state::not_waited ) {
+            // Standing still is what the drop means. Taken at the end of the
+            // turn rather than at the moment of the drop, because a drop lasts
+            // as long as the player sits in the same menu while every closed
+            // turn hands out another turn's worth of moves.
+            g->player_at( i ).set_moves( 0 );
+        }
+    }
+}
+
+bool mp_action_is_free( const action_id act )
+{
+    switch( act ) {
+        // Reading and looking: what a player actually wants to do while their
+        // partner thinks.
+        case ACTION_INVENTORY:
+        case ACTION_PL_INFO:
+        case ACTION_MAP:
+        case ACTION_SKY:
+        case ACTION_LOOK:
+        case ACTION_MESSAGES:
+        case ACTION_MISSIONS:
+        case ACTION_FACTIONS:
+        case ACTION_MORALE:
+        case ACTION_MEDICAL:
+        // Client-side and bookkeeping.
+        case ACTION_OPTIONS:
+        case ACTION_HELP:
+        case ACTION_KEYBINDINGS:
+        case ACTION_ZOOM_IN:
+        case ACTION_ZOOM_OUT:
+        case ACTION_TOGGLE_PANEL_ADM:
+        case ACTION_TOGGLE_SAFEMODE:
+        case ACTION_TOGGLE_AUTOSAFE:
+        // The escape hatch itself, and leaving.
+        case ACTION_COOP_HURRY:
+        case ACTION_SAVE:
+            return true;
+        default:
+            // Everything else costs time, or might. Refusing is the safe
+            // direction: a gap here is an annoyance, a gap the other way is a
+            // free action outside the turn.
+            return false;
+    }
 }
