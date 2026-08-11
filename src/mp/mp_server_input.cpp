@@ -14,6 +14,7 @@
 #include "mp/mp_protocol.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_session.h"
 #include "mp/mp_transport.h"
 
 // Defined here, called by the screen module's reset (mp_server_screen.cpp) so
@@ -23,11 +24,6 @@ void mp_server_input_reset_for_test();
 
 namespace
 {
-
-// The resize the client asked for but the curses backend has not yet acted on.
-// Process-wide for the same reason the screen state is. Keystrokes live in the
-// active player context's input_queue (mp_active_context()).
-std::optional<mp_resize> g_pending_resize;
 
 using clock = std::chrono::steady_clock;
 
@@ -57,6 +53,12 @@ void send_hello_ack( mp_transport &transport, const bool accepted, const std::st
 // are ignored here.
 void dispatch( const mp_control &msg )
 {
+    mp_session *const s = mp_active_session();
+    if( s == nullptr ) {
+        // No client is addressed: the world phase never reads the wire, and a
+        // test without a session has nowhere to put this.
+        return;
+    }
     switch( msg.kind ) {
         case mp_control_kind::input:
             // mp_ensure_player_context() runs at game startup, before the main
@@ -77,15 +79,14 @@ void dispatch( const mp_control &msg )
             // any caller that bypasses dispatch (e.g. resize_term).
             if( msg.resize.width <= MP_MAX_TERMINAL_WIDTH &&
                 msg.resize.height <= MP_MAX_TERMINAL_HEIGHT ) {
-                g_pending_resize = msg.resize;
+                s->pending_resize = msg.resize;
             }
             break;
         case mp_control_kind::bye:
-            // The peer is leaving. Closing the transport is what makes the
-            // next recv return, so wait_for_input unblocks and reports a
-            // timeout event rather than hanging on a dead wire.
-            if( std::shared_ptr<mp_transport> t = mp_server_shared_transport() ) {
-                t->close();
+            // Closing this client's transport is what makes its own recv
+            // return; the other clients' waits are untouched.
+            if( s->transport ) {
+                s->transport->close();
             }
             break;
         default:
@@ -132,7 +133,8 @@ bool take_queued( input_event &out )
 
 } // namespace
 
-bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
+bool mp_server_handshake( mp_transport &transport, mp_session &session,
+                          std::string &reject_reason )
 {
     reject_reason.clear();
 
@@ -200,11 +202,13 @@ bool mp_server_handshake( mp_transport &transport, std::string &reject_reason )
         return false;
     }
 
-    // Accepted: size the screen to what the client can show, then let them in.
-    mp_server_set_terminal_size( hello.hello.width, hello.hello.height );
+    // Accepted: size the session's grid to what the client can show, record
+    // the name, then let them in.
+    session.grid.resize( hello.hello.width, hello.hello.height );
+    session.name = hello.hello.name;
     send_hello_ack( transport, true, std::string() );
     mp_server_log_mark_connected();
-    mp_server_log( "client \"" + hello.hello.name + "\" connected from " +
+    mp_server_log( "client \"" + session.name + "\" connected from " +
                    transport.peer_description() + " (terminal " +
                    std::to_string( hello.hello.width ) + "x" +
                    std::to_string( hello.hello.height ) + ", " +
@@ -220,7 +224,10 @@ void mp_server_input_reset_for_test()
     if( player_context *ctx = mp_active_context_ptr() ) {
         ctx->input_queue.clear();
     }
-    g_pending_resize.reset();
+    // Clear pending resize on the active session if there is one.
+    if( mp_session *s = mp_active_session() ) {
+        s->pending_resize.reset();
+    }
 }
 
 input_event mp_server_wait_for_input( const int timeout_ms )
@@ -235,16 +242,24 @@ input_event mp_server_wait_for_input( const int timeout_ms )
         return buffered;
     }
 
+    mp_session *const s = mp_active_session();
+    std::shared_ptr<mp_transport> t;
+    if( s ) {
+        t = s->transport;
+    }
+    if( !t || !t->connected() ) {
+        // No wire at all, or the peer closed it: there is nothing to wait
+        // on, so the game sees a timeout event rather than a spin or a
+        // crash.
+        return make_timeout_event();
+    }
+
     const clock::time_point deadline = timeout_ms < 0
                                        ? clock::time_point::max()
                                        : clock::now() + std::chrono::milliseconds( timeout_ms );
 
     while( true ) {
-        std::shared_ptr<mp_transport> t = mp_server_shared_transport();
-        if( !t || !t->connected() ) {
-            // No wire at all, or the peer closed it: there is nothing to wait
-            // on, so the game sees a timeout event rather than a spin or a
-            // crash.
+        if( !t->connected() ) {
             return make_timeout_event();
         }
 
@@ -270,7 +285,7 @@ input_event mp_server_wait_for_input( const int timeout_ms )
         if( take_queued( buffered ) ) {
             return buffered;
         }
-        if( g_pending_resize ) {
+        if( s && s->pending_resize ) {
             // A resize is not a keystroke, but it still has to end the wait:
             // the curses backend applies it on the way back in, redraws at the
             // new size and flushes that redraw. Blocking on here would leave
@@ -285,27 +300,32 @@ input_event mp_server_wait_for_input( const int timeout_ms )
 
 void mp_server_pump()
 {
-    std::shared_ptr<mp_transport> t = mp_server_shared_transport();
-    if( !t || !t->connected() ) {
+    mp_session *const s = mp_active_session();
+    if( !s || !s->transport || !s->transport->connected() ) {
         return;
     }
-    while( const std::optional<std::vector<uint8_t>> msg = t->recv( 0 ) ) {
+    while( const std::optional<std::vector<uint8_t>> msg = s->transport->recv( 0 ) ) {
         dispatch_frame( *msg );
     }
 }
 
 bool mp_server_take_resize_request( int &width, int &height )
 {
-    if( !g_pending_resize ) {
+    mp_session *const s = mp_active_session();
+    if( !s || !s->pending_resize ) {
         return false;
     }
-    width = g_pending_resize->width;
-    height = g_pending_resize->height;
-    g_pending_resize.reset();
+    width = s->pending_resize->width;
+    height = s->pending_resize->height;
+    s->pending_resize.reset();
     return true;
 }
 
 bool mp_server_resize_pending()
 {
-    return g_pending_resize.has_value();
+    mp_session *const s = mp_active_session();
+    if( !s ) {
+        return false;
+    }
+    return s->pending_resize.has_value();
 }

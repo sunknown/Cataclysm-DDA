@@ -7,6 +7,7 @@
 #include "input_enums.h"
 
 class mp_transport;
+struct mp_session;
 
 // The largest terminal a peer may declare, in either dimension. The server's
 // screen grid multiplies width by height (mp_screen_grid::resize), so an
@@ -23,13 +24,19 @@ constexpr int MP_MAX_TERMINAL_HEIGHT = 1000;
 // client's first message (a `hello` control), checks its protocol version and
 // the terminal size it wants, and sends a `hello_ack` verdict either way.
 //
+// Fills `session.name` and sizes `session.grid` from the accepted hello instead
+// of writing process-wide state. The transport parameter stays separate from
+// the session because the handshake runs before the session is worth keeping:
+// a refused peer never becomes one.
+//
 // Returns true and sizes the screen grid when the client is accepted, in which
 // case `reject_reason` is left empty. Returns false on any refusal -- a silent
 // client, a message that is not a parseable `hello`, a protocol mismatch, or a
 // terminal size outside the accepted range (too small to run the game, or too
 // large for the server to allocate) -- with a human-readable reason in
 // `reject_reason` that is also sent to the client in the ack.
-bool mp_server_handshake( mp_transport &transport, std::string &reject_reason );
+bool mp_server_handshake( mp_transport &transport, mp_session &session,
+                          std::string &reject_reason );
 
 // Blocks until the connected player presses something, a resize arrives, the
 // timeout expires, or the connection drops. Flushes the pending screen first:

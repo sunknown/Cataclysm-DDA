@@ -6,7 +6,10 @@
 #include <string>
 #include <vector>
 
+#include "avatar.h"
+#include "game.h"
 #include "game_constants.h"
+#include "game_test_helper.h"
 #include "input_enums.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_context.h"
@@ -15,6 +18,7 @@
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_session.h"
 
 // Server input lives in the active player context (its input_queue), so every
 // test must set one before any input call or reset. Static, not a stack local,
@@ -65,11 +69,23 @@ static void blit_full_screen( const int seed )
     }
 }
 
+// Creates a default session (context_index == 0) with the given transport so
+// mp_active_session() returns it. Replaces the old mp_server_set_transport().
+static void set_test_transport( std::shared_ptr<mp_transport> transport )
+{
+    mp_sessions_reset_for_test();
+    auto s = std::make_unique<mp_session>();
+    s->transport = std::move( transport );
+    s->context_index = 0;
+    mp_sessions().push_back( std::move( s ) );
+}
+
 TEST_CASE( "server_blits_a_row_into_the_screen_grid", "[mp]" )
 {
     mp_set_active_context( &test_input_ctx );
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
+    set_test_transport( nullptr );
     mp_server_set_terminal_size( 40, 10 );
 
     mp_server_blit_row( 2, 1, text_row( "hello" ) );
@@ -85,8 +101,8 @@ TEST_CASE( "server_sends_nothing_when_nothing_changed", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_server_flush_screen();
     REQUIRE( pair.b->recv( 0 ).has_value() );
@@ -101,8 +117,8 @@ TEST_CASE( "server_sends_a_delta_far_smaller_than_a_full_screen", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 80, 24 );
-    mp_server_set_transport( pair.a );
 
     mp_server_flush_screen();
     const std::optional<std::vector<uint8_t>> full = pair.b->recv( 0 );
@@ -121,8 +137,8 @@ TEST_CASE( "a_client_can_reconstruct_the_server_screen_from_the_wire", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_server_blit_row( 5, 3, text_row( "reconstruct me" ) );
     mp_server_flush_screen();
@@ -150,8 +166,8 @@ TEST_CASE( "server_returns_a_queued_keystroke", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_control key;
     key.kind = mp_control_kind::input;
@@ -170,8 +186,8 @@ TEST_CASE( "server_flushes_the_screen_before_blocking_for_input", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
     mp_server_flush_screen();
     while( pair.b->recv( 0 ) ) {
     }
@@ -202,8 +218,8 @@ TEST_CASE( "server_returns_a_timeout_event_when_no_input_arrives", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     const input_event got = mp_server_wait_for_input( 10 );
     CHECK( got.type == input_event_t::timeout );
@@ -217,8 +233,8 @@ TEST_CASE( "server_records_a_resize_request_without_touching_the_grid_itself", "
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_control resize;
     resize.kind = mp_control_kind::resize;
@@ -249,8 +265,8 @@ TEST_CASE( "a_resize_wakes_the_input_wait", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_control resize;
     resize.kind = mp_control_kind::resize;
@@ -278,8 +294,8 @@ TEST_CASE( "a_keystroke_outranks_a_resize_that_arrived_with_it", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_control key;
     key.kind = mp_control_kind::input;
@@ -315,8 +331,8 @@ TEST_CASE( "server_rejects_an_oversized_resize", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_control resize;
     resize.kind = mp_control_kind::resize;
@@ -339,8 +355,8 @@ TEST_CASE( "server_sends_the_cursor_position_with_the_screen", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
 
     mp_server_set_cursor( 4, 5, true );
     mp_server_flush_screen();
@@ -371,8 +387,8 @@ TEST_CASE( "server_survives_a_dropped_transport", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 40, 10 );
-    mp_server_set_transport( pair.a );
     pair.b->close();
 
     mp_server_blit_row( 0, 0, text_row( "gone" ) );
@@ -396,11 +412,13 @@ TEST_CASE( "handshake_accepts_a_matching_protocol_version", "[mp]" )
     hello.hello.height = 30;
     send_control( *pair.b, hello );
 
+    mp_session session;
     std::string reason;
-    CHECK( mp_server_handshake( *pair.a, reason ) );
+    CHECK( mp_server_handshake( *pair.a, session, reason ) );
     CHECK( reason.empty() );
-    CHECK( mp_server_grid().width() == 100 );
-    CHECK( mp_server_grid().height() == 30 );
+    CHECK( session.grid.width() == 100 );
+    CHECK( session.grid.height() == 30 );
+    CHECK( session.name == "serg" );
 }
 
 TEST_CASE( "handshake_refuses_a_protocol_mismatch_with_an_explanation", "[mp]" )
@@ -418,8 +436,9 @@ TEST_CASE( "handshake_refuses_a_protocol_mismatch_with_an_explanation", "[mp]" )
     hello.hello.height = 30;
     send_control( *pair.b, hello );
 
+    mp_session session;
     std::string reason;
-    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( mp_server_handshake( *pair.a, session, reason ) );
     CHECK_THAT( reason, Catch::Contains( "protocol" ) );
 }
 
@@ -438,8 +457,9 @@ TEST_CASE( "handshake_refuses_a_terminal_below_the_game_s_minimum", "[mp]" )
     hello.hello.height = EVEN_MINIMUM_TERM_HEIGHT;
     send_control( *pair.b, hello );
 
+    mp_session session;
     std::string reason;
-    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( mp_server_handshake( *pair.a, session, reason ) );
     CHECK_THAT( reason, Catch::Contains( "terminal" ) );
 }
 
@@ -461,8 +481,9 @@ TEST_CASE( "handshake_refuses_an_oversized_terminal", "[mp]" )
     hello.hello.height = MP_MAX_TERMINAL_HEIGHT;
     send_control( *pair.b, hello );
 
+    mp_session session;
     std::string reason;
-    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( mp_server_handshake( *pair.a, session, reason ) );
     CHECK_FALSE( reason.empty() );
     CHECK_THAT( reason, Catch::Contains( "terminal" ) );
 
@@ -494,8 +515,9 @@ TEST_CASE( "handshake_sends_its_verdict_to_the_client_either_way", "[mp]" )
     hello.hello.height = 30;
     send_control( *pair.b, hello );
 
+    mp_session session;
     std::string reason;
-    mp_server_handshake( *pair.a, reason );
+    mp_server_handshake( *pair.a, session, reason );
 
     const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 100 );
     REQUIRE( msg.has_value() );
@@ -517,8 +539,9 @@ TEST_CASE( "handshake_gives_up_when_the_client_says_nothing", "[mp]" )
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
 
+    mp_session session;
     std::string reason;
-    CHECK_FALSE( mp_server_handshake( *pair.a, reason ) );
+    CHECK_FALSE( mp_server_handshake( *pair.a, session, reason ) );
     CHECK_FALSE( reason.empty() );
 }
 
@@ -535,8 +558,8 @@ TEST_CASE( "a_backlogged_client_gets_one_full_redraw_instead_of_a_history", "[mp
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 80, 24 );
-    mp_server_set_transport( pair.a );
 
     for( int i = 0; i < 400; ++i ) {
         blit_full_screen( i );
@@ -582,8 +605,8 @@ TEST_CASE( "the_coalesced_redraw_still_describes_the_whole_screen", "[mp]" )
     test_input_ctx.input_queue.clear();
     mp_server_reset_for_test();
     mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
     mp_server_set_terminal_size( 80, 24 );
-    mp_server_set_transport( pair.a );
 
     // The peer never reads, so the queue only grows.
     int fills = 0;
@@ -618,5 +641,68 @@ TEST_CASE( "the_coalesced_redraw_still_describes_the_whole_screen", "[mp]" )
             REQUIRE( client.at( x, y ) == mp_server_grid().at( x, y ) );
         }
     }
+}
+
+TEST_CASE( "each_session_keeps_its_own_screen", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_sessions_reset_for_test();
+
+    mp_loopback_pair wire_a = mp_make_loopback_pair();
+    mp_loopback_pair wire_b = mp_make_loopback_pair();
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions()[0]->transport = wire_a.a;
+    mp_sessions()[0]->context_index = 0;
+    mp_sessions()[0]->grid.resize( 80, 24 );
+    mp_sessions()[1]->transport = wire_b.a;
+    mp_sessions()[1]->context_index = 1;
+    mp_sessions()[1]->grid.resize( 100, 30 );
+
+    mp_activate_player( 0 );
+    REQUIRE( mp_active_session() == mp_sessions()[0].get() );
+    mp_server_blit_row( 0, 0, { mp_cell{ "A", 1, 0 } } );
+
+    mp_activate_player( 1 );
+    REQUIRE( mp_active_session() == mp_sessions()[1].get() );
+    mp_server_blit_row( 0, 0, { mp_cell{ "B", 2, 0 } } );
+
+    // The leak this guards is the one the design calls the main class of bug:
+    // player 1 seeing player 2's screen.
+    CHECK( mp_sessions()[0]->grid.at( 0, 0 ).ch == "A" );
+    CHECK( mp_sessions()[1]->grid.at( 0, 0 ).ch == "B" );
+    CHECK( mp_sessions()[0]->grid.width() == 80 );
+    CHECK( mp_sessions()[1]->grid.width() == 100 );
+
+    mp_activate_player( 0 );
+    mp_sessions_reset_for_test();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+TEST_CASE( "the_world_phase_has_no_active_session", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    mp_sessions_reset_for_test();
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions()[0]->context_index = 0;
+
+    mp_activate_player( 0 );
+    REQUIRE( mp_active_session() != nullptr );
+
+    mp_activate_world();
+    // Nothing the world phase draws belongs to one client, so there is nothing
+    // to address. Broadcast drawing goes through mp_for_each_context.
+    CHECK( mp_active_session() == nullptr );
+
+    mp_activate_player( 0 );
+    mp_sessions_reset_for_test();
 }
 #endif // MULTIPLAYER

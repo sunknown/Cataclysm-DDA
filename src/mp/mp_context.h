@@ -98,6 +98,11 @@ void mp_sync_context_count();
 // the phase is about who may act, not about which state exists.
 void mp_activate_world();
 
+// True while the world phase is active (no player is acting). The active context
+// pointer is preserved during this phase for code that reads it, so this flag is
+// the reliable way to distinguish "a player owns the turn" from "the world runs".
+bool mp_in_world_phase();
+
 // Runs `fn` once per player context, activating each in turn and restoring the
 // previously active one afterwards. Used by the broadcast paths: world-side
 // code that has to draw into every player's screen (explosions, animations).

@@ -11,6 +11,7 @@
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_session.h"
 #include "mp/mp_socket.h"
 #include "mp/mp_tcp_transport.h"
 #include "mp/mp_transport.h"
@@ -51,19 +52,26 @@ int mp_server_main( const int port, const std::string &world_name )
     // the handshake is still attributable to an address.
     mp_server_log( "connection from " + transport->peer_description() + "; shaking hands" );
 
+    // Create the session before the handshake. The handshake needs a session to
+    // fill in grid size and name on success; a refused peer is discarded.
+    auto session = std::make_unique<mp_session>();
+
     std::string reject_reason;
-    if( !mp_server_handshake( *transport, reject_reason ) ) {
+    if( !mp_server_handshake( *transport, *session, reject_reason ) ) {
         mp_server_log( "handshake rejected: " + reject_reason );
         DebugLog( D_ERROR, D_MAIN ) << "mp server: handshake rejected: " << reject_reason;
         return 1;
     }
 
-    // From here on the input and screen modules own the wire. The curses
-    // interface is initialized by main() after this returns: it falls through
-    // to the same init block as single-player, which sets the fixed minimum
-    // FULL_SCREEN sizes and calls catacurses::init_interface() -- and the mp
-    // curses backend sizes stdscr from the grid the handshake set up.
-    mp_server_set_transport( transport );
+    // Handshake succeeded: store the transport in the session and register it.
+    session->transport = std::move( transport );
+    mp_sessions().push_back( std::move( session ) );
+
+    // From here on the input and screen modules own the wire through the session.
+    // The curses interface is initialized by main() after this returns: it falls
+    // through to the same init block as single-player, which sets the fixed
+    // minimum FULL_SCREEN sizes and calls catacurses::init_interface() -- and the
+    // mp curses backend sizes stdscr from the grid the handshake set up.
 
     return 0;
 }

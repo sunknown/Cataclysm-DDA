@@ -17,6 +17,16 @@ player_context::~player_context() = default;
 
 static player_context *active_context = nullptr;
 
+// True while the world phase is active. The active context pointer is preserved
+// during this phase for code that reads it (serialization, debug UI), so this
+// flag is the way to distinguish "a player acts" from "the world runs".
+static bool g_world_phase = true; // start in world phase before any player activates
+
+bool mp_in_world_phase()
+{
+    return g_world_phase;
+}
+
 player_context &mp_active_context()
 {
     cata_assert( active_context != nullptr );
@@ -95,6 +105,7 @@ void mp_activate_player( size_t idx )
     // / tests).
     cata_assert( !g->contexts.empty() );
     cata_assert( idx < g->contexts.size() );
+    g_world_phase = false;
     player_context &ctx = g->contexts[idx];
     ctx.slot_index = idx;
 
@@ -194,6 +205,7 @@ void mp_sync_context_count()
 
 void mp_activate_world()
 {
+    g_world_phase = true;
     // Bring slot 0's avatar back into u before leaving the player phase. This
     // mirrors step 1 of mp_activate_player( 0 ) -- the avatar swap only, not
     // the screen/window/ui-stack steps, which must stay pointed at the world
