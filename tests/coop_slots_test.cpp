@@ -164,8 +164,10 @@ TEST_CASE( "removing_slots_mid_turn_restores_slot_zero_to_u", "[coop]" )
     // Reproduce the state the co-op turn loop is in during slot 1's turn: slot 1's
     // data swapped into u, so `u` is the acting character. The activation goes
     // through the swap point (mp_activate_player); ensure is mandatory because
-    // it asserts a non-empty contexts.
+    // it asserts a non-empty contexts. The sync brings slot 1's context into
+    // being before activating it.
     mp_ensure_player_context();
+    mp_sync_context_count();
     mp_activate_player( 1 );
     REQUIRE( get_avatar().name == "SlotOne" );
 
@@ -177,6 +179,9 @@ TEST_CASE( "removing_slots_mid_turn_restores_slot_zero_to_u", "[coop]" )
     CHECK( g->player_at( 0 ).name == "SlotZero" );
     CHECK( get_avatar().name == "SlotZero" );
     CHECK_FALSE( mp_coop_active() );
+
+    // Leave the contexts consistent with the single remaining slot.
+    mp_sync_context_count();
 }
 
 TEST_CASE( "coop_debug_toggle_creates_slot_and_enables_mode", "[coop]" )
