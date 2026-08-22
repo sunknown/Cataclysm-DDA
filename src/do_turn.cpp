@@ -53,7 +53,9 @@
 #include "mission.h"
 #include "monster.h"
 #include "mp/mp_context.h"
+#include "mp/mp_sched.h"
 #include "mp/mp_tether.h"
+#include "mp/mp_turn.h"
 #include "mtype.h"
 #include "music.h"
 #include "npc.h"
@@ -603,7 +605,7 @@ bool game::player_act( avatar &ava )
     // avatar processes human input through handle_action()
     if( !ava.has_effect( effect_sleep ) || uquit == QUIT_WATCH ) {
         if( ava.get_moves() > 0 || uquit == QUIT_WATCH ) {
-            while( ava.get_moves() > 0 || uquit == QUIT_WATCH ) {
+            while( ( ava.get_moves() > 0 || uquit == QUIT_WATCH ) && !mp_sched_stopping() ) {
 
                 // handle_action() may cause map updates, creatures to die
                 m.process_falling();
@@ -706,15 +708,108 @@ bool game::do_turn()
         return turn_handler::cleanup_at_end();
     }
 
-    // The world half: no player is active here, so nothing here may open a
-    // window that isn't the world stack's own (debugmsg's emergency UI).
+    if( mp_sched *const sched = mp_active_sched() ) {
+        // With more than one player the turn is resumable: world_turn_pre opens
+        // it once, and while the barrier is unsatisfied do_turn returns without
+        // closing it -- the calendar stays frozen until every living player has
+        // acted or been dropped by the hurry countdown.
+        mp_activate_world();
+        if( mp_session_end_requested() ) {
+            // A player quit or died out of the game. Their thread had nowhere
+            // to return player_act's `true` to, so it left it here.
+            return turn_handler::cleanup_at_end();
+        }
+        if( !mp_turn_is_open() ) {
+            mp_turn_reset(); // once per opened turn, not once per poll
+            world_turn_pre();
+            mp_set_turn_open( true );
+            // Release every player once for this opened turn. avatar_turn_pre
+            // (which drains a running activity) must run for each of them even
+            // if the barrier could already close: a player carrying an activity
+            // reads as 'acted' at the start of a turn and would otherwise never
+            // be handed the baton, so their activity would never advance.
+            for( size_t i = 0; i < player_slot_count(); ++i ) {
+                if( sched->waiting_for_baton( i ) ) {
+                    sched->yield_to( mp_sched::world, i );
+                }
+            }
+        }
+        while( !mp_barrier_satisfied() ) {
+            mp_tick_hurry();
+            bool moved = false;
+            for( size_t i = 0; i < player_slot_count(); ++i ) {
+                const mp_player_state state = mp_player_state_of( i );
+                // waiting_for_baton alone is not enough: a player who already
+                // acted this turn releases and immediately re-parks on
+                // wait_for_turn for the next one, so they report it too -- and
+                // yielding to them again would spin the world. Hand the baton
+                // only to someone who still owes the turn: acting (not yet
+                // released this turn) or holding (returning from an input wait).
+                if( sched->waiting_for_baton( i ) &&
+                    ( state == mp_player_state::acting || state == mp_player_state::holding ) ) {
+                    sched->yield_to( mp_sched::world, i );
+                    moved = true;
+                }
+            }
+            if( moved ) {
+                // The world ran somebody, so it is accountable again: any stall
+                // from here on is a real one and the watchdog should say so.
+                sched->set_world_waiting( false );
+            }
+            if( !moved && !sched->wait_for_request( MP_POLL_MS ) ) {
+                // Waiting turn: nobody owes the turn and nobody became ready.
+                // The world does not tick and do_turn returns; the turn stays
+                // open. The declared wait tells the watchdog that the world is
+                // holding the baton on purpose, so a partner reading a menu
+                // does not log as a stalled participant.
+                sched->set_world_waiting( true );
+                return false;
+            }
+            if( mp_session_end_requested() ) {
+                // Somebody quit from inside their own turn: stop polling for a
+                // barrier nobody is going to satisfy.
+                sched->set_world_waiting( false );
+                return turn_handler::cleanup_at_end();
+            }
+        }
+        sched->set_world_waiting( false );
+        mp_activate_world();
+        world_turn_post();
+
+        // Standing still is what being dropped means, and it has to be charged
+        // before moves are handed back: they accumulate, and a dropped player
+        // spends none of them.
+        mp_forfeit_dropped_moves();
+
+        // Moves come back after monmove, exactly as in single player. The baton
+        // goes back to each player for this because the morale paths can draw.
+        for( size_t i = 0; i < player_slot_count(); ++i ) {
+            mp_activate_player( i );
+            avatar_turn_post( player_at( i ) );
+        }
+        mp_activate_player( 0 );
+        if( player_slot_count() > 1 ) {
+            const tripoint_abs_ms anchor = mp_bubble_anchor();
+            shift_map_center( anchor );
+            if( anchor.z() != get_map().get_abs_sub().z() ) {
+                shift_map_z( anchor.z() );
+            }
+        }
+        mp_set_turn_open( false );
+#if defined(EMSCRIPTEN)
+        // This will cause a prompt to be shown if the window is closed, until the
+        // game is saved.
+        EM_ASM( window.game_unsaved = true; );
+#endif
+        debug_menu::debug_capture::tick_if_active();
+        return false;
+    }
+
+    // Single player: no scheduler and no thread -- the orchestrator runs the
+    // loop inline, which is what makes the ordinary single-player build walk
+    // this same code and every test exercise it.
     mp_activate_world();
     world_turn_pre();
-
-    // The player half. With one player there is no scheduler and no thread:
-    // the orchestrator runs the loop inline, which is what makes the ordinary
-    // single-player build walk this same code and every test exercise it.
-    // mp_sched replaces this branch for more than one player (task 6).
     for( size_t i = 0; i < player_slot_count(); ++i ) {
         mp_activate_player( i );
         avatar &ava = player_at( i );
@@ -736,24 +831,13 @@ bool game::do_turn()
             return turn_handler::cleanup_at_end();
         }
     }
-
-    // Back to the world half: nobody is active while the world-side
-    // post-processing (monster moves, weather, scent) runs.
     mp_activate_world();
     world_turn_post();
-
-    // Moves come back here, after monmove, exactly as in single player. The
-    // baton goes back to each player for this because avatar_turn_post()
-    // (handle_progress_ui() first, then the morale paths) can draw.
     for( size_t i = 0; i < player_slot_count(); ++i ) {
         mp_activate_player( i );
         avatar_turn_post( player_at( i ) );
     }
-
     mp_activate_player( 0 );
-
-    // Keep the reality bubble centred between the players. A single player is
-    // his own midpoint, so this is identical to the single-player behaviour.
     if( player_slot_count() > 1 ) {
         const tripoint_abs_ms anchor = mp_bubble_anchor();
         shift_map_center( anchor );
@@ -761,13 +845,11 @@ bool game::do_turn()
             shift_map_z( anchor.z() );
         }
     }
-
 #if defined(EMSCRIPTEN)
     // This will cause a prompt to be shown if the window is closed, until the
     // game is saved.
     EM_ASM( window.game_unsaved = true; );
 #endif
-
     debug_menu::debug_capture::tick_if_active();
     return false;
 }

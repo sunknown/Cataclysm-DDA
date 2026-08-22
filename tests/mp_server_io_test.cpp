@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "avatar.h"
@@ -18,7 +19,11 @@
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_sched.h"
+#include "mp/mp_turn.h"
 #include "mp/mp_session.h"
+#include "cata_scope_helpers.h"
+#include "input.h"
 
 // Server input lives in the active player context (its input_queue), so every
 // test must set one before any input call or reset. Static, not a stack local,
@@ -705,4 +710,52 @@ TEST_CASE( "the_world_phase_has_no_active_session", "[mp]" )
     mp_activate_player( 0 );
     mp_sessions_reset_for_test();
 }
+
+TEST_CASE( "waiting_for_input_yields_the_baton", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    mp_sessions_reset_for_test();
+    mp_loopback_pair wire = mp_make_loopback_pair( 5 );
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions()[0]->transport = wire.a;
+    mp_sessions()[0]->context_index = 0;
+    mp_activate_player( 0 );
+
+    mp_sched sched( 1 );
+    mp_set_active_sched( &sched );
+    on_out_of_scope clear_sched( []() {
+        mp_set_active_sched( nullptr );
+    } );
+
+    std::atomic<bool> world_ran{ false };
+    std::thread player( [&]() {
+        sched.wait_for_turn( 0 );
+        // get_input_event() must give the baton up while it blocks on the wire:
+        // otherwise a player thinking in a menu stops everybody else, which is
+        // the whole thing the scheduler exists to prevent.
+        inp_mngr.get_input_event( keyboard_mode::keychar );
+        if( !sched.stopping() ) {
+            sched.release_to( 0, mp_sched::world );
+        }
+    } );
+
+    sched.yield_to( mp_sched::world, 0 );
+    // Reaching here means the player thread released the baton from inside its
+    // input wait, before any key was sent.
+    world_ran = true;
+    CHECK( world_ran.load() );
+
+    // Let the player finish.
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event = input_event( static_cast<int>( ' ' ), input_event_t::keyboard_char );
+    const std::string json = mp_control_to_json( key );
+    wire.b->send( mp_wrap( mp_msg_kind::control,
+                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
+    sched.shut_down();
+    player.join();
+    mp_sessions_reset_for_test();
+}
+
 #endif // MULTIPLAYER

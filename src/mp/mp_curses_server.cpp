@@ -20,10 +20,12 @@
 #include "map.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_context.h"
+#include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_turn.h"
 #include "output.h"
 #include "point.h"
 #include "ui_manager.h"
@@ -154,11 +156,33 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                            ( length.empty() ? std::string() : " after " + length ) );
             mp_server_request_exit();
         }
-        // The context is ensured at startup, so the queue is live during the
-        // main menu; the -1 fallback is defensive for tests without one.
+        const size_t slot = mp_active_context_ptr() ? mp_active_context().slot_index : 0;
+        mp_assert_holds( slot );
+
         const int timeout = mp_active_context_ptr() ?
                             mp_active_context().input_timeout_ms : -1;
-        const input_event ev = mp_server_wait_for_input( timeout );
+
+        input_event ev;
+        if( mp_sched *const sched = mp_active_sched() ) {
+            // This is the only place in the game where the baton changes hands.
+            // The screen goes out first (inside wait_for_input), because the
+            // player must see what the game drew before anyone waits on them;
+            // then the baton is released, and this thread blocks on its own
+            // socket holding nothing. A slow wire cannot stall the simulation,
+            // because whoever holds the baton is somebody else.
+            mp_set_waiting_for_input( slot, true );
+            sched->release_to( slot, mp_sched::world );
+            ev = mp_server_wait_for_input( timeout );
+            sched->wait_for_turn( slot );
+            mp_set_waiting_for_input( slot, false );
+            if( sched->stopping() ) {
+                ev = input_event();
+                ev.type = input_event_t::timeout;
+                return ev;
+            }
+        } else {
+            ev = mp_server_wait_for_input( timeout );
+        }
         if( ev.type == input_event_t::timeout && mp_server_resize_pending() ) {
             // The wait ended on the client resizing, not on the clock. Go round
             // and apply it rather than handing the game a timeout it would sit
