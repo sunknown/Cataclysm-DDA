@@ -39,8 +39,19 @@ void mp_server_set_terminal_size( const int width, const int height )
 
 bool mp_server_peer_connected()
 {
-    std::shared_ptr<mp_transport> t = mp_server_shared_transport();
-    return t && t->connected();
+    if( mp_sessions().empty() ) {
+        return false;
+    }
+    for( const std::unique_ptr<mp_session> &s : mp_sessions() ) {
+        if( !s || !s->transport || !s->transport->connected() ) {
+            // The roster is fixed: one player leaving ends the session for
+            // everybody. Keeping the others playing would mean parking the
+            // absent context and handing their character to the AI, which is
+            // Phase 5's job, not a half-version of it here.
+            return false;
+        }
+    }
+    return true;
 }
 
 void mp_server_blit_row( const int x0, const int y, const std::vector<mp_cell> &cells )

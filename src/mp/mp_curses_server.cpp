@@ -21,10 +21,12 @@
 #include "mp/mp_cell.h"
 #include "mp/mp_context.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_session.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_transport.h"
 #include "mp/mp_turn.h"
 #include "output.h"
 #include "point.h"
@@ -151,9 +153,17 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         if( !mp_server_peer_connected() ) {
             // The stop itself is announced by exit_handler(), which also covers
             // the sessions that end without a disconnect.
+            std::string who = "a client";
+            for( const std::unique_ptr<mp_session> &s : mp_sessions() ) {
+                if( !s || !s->transport || !s->transport->connected() ) {
+                    who = "\"" + ( s ? s->name : std::string( "?" ) ) + "\"";
+                    break;
+                }
+            }
             const std::string length = mp_server_log_session_length();
-            mp_server_log( "client disconnected" +
-                           ( length.empty() ? std::string() : " after " + length ) );
+            mp_server_log( who + " disconnected" +
+                           ( length.empty() ? std::string() : " after " + length ) +
+                           "; ending the session" );
             mp_server_request_exit();
         }
         const size_t slot = mp_active_context_ptr() ? mp_active_context().slot_index : 0;

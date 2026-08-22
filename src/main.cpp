@@ -270,6 +270,7 @@ struct cli_opts {
     std::string world; /** if set try to load first save in this world on startup */
     bool disable_ascii_art = false;
     int server_port = 0; /** port to listen on as a multiplayer server; 0 disables */
+    int players = 1; /** how many clients the multiplayer server waits for before starting */
     std::string connect_to; /** host:port of a multiplayer server to join */
 };
 
@@ -435,6 +436,19 @@ cli_opts parse_commandline( int argc, const char **argv )
                     // branch does not fire; the game then starts normally and
                     // the mistake surfaces to the user there.
                     result.server_port = std::atoi( params[0] );
+                    return 1;
+                }
+            },
+            {
+                "--players", "<count>",
+                "How many clients the multiplayer server waits for before starting. "
+                "The roster is fixed: nobody joins or leaves once play begins.",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    // A malformed or absent count leaves it at one, which is the
+                    // single-client behaviour the earlier phases shipped.
+                    result.players = std::max( 1, std::atoi( params[0] ) );
                     return 1;
                 }
             },
@@ -705,6 +719,19 @@ static int run_game( cli_opts &cli )
                          ? world_generator->active_world->world_name
                          : std::string( "?" ) ) +
                        "\" as \"" + get_avatar().get_name() + "\"" );
+        if( cli.server_port > 0 ) {
+            // The world is loaded, so the avatars exist and the slots are stable:
+            // match the roster to its characters by name, then hand every player
+            // the thread that will carry their turns. Without this, do_turn's
+            // baton branch would spin with no body to park on it.
+            std::string err;
+            if( !mp_server_start_session( err ) ) {
+                mp_server_log( "cannot start the session: " + err );
+                exit_handler( -999 );
+                return 0;
+            }
+            mp_server_start_player_threads();
+        }
 #endif
         while( true ) {
             if( g->do_turn() ) {
@@ -713,6 +740,12 @@ static int run_game( cli_opts &cli )
         }
 #if defined(MP_SERVER)
         mp_server_log( "game ended; back at the main menu" );
+        if( cli.server_port > 0 ) {
+            // The session is over for everybody: stop the player threads and
+            // clear the sessions before the menu loop runs setup() again with
+            // a new world.
+            mp_server_end_session();
+        }
 #endif
     }
 
@@ -975,7 +1008,7 @@ int main( int argc, const char *argv[] )
 #endif
 
 #if defined(MP_SERVER)
-    if( cli.server_port > 0 && mp_server_main( cli.server_port, cli.world ) != 0 ) {
+    if( cli.server_port > 0 && mp_server_main( cli.server_port, cli.world, cli.players ) != 0 ) {
         return 1;
     }
 #endif
