@@ -240,7 +240,8 @@ Expected: PASS. `mp_hotseat_do_turn` больше не существует; д�
 
 - [ ] **Step 10: Проверить JSON**
 
-Run: `make -j$(nproc) CCACHE=1 TILES=0 json_formatter && tests/cata_test "[widget]" --user-dir=/tmp/cata-mp-t1b/`
+Run: `make -j$(nproc) CCACHE=1 TILES=0 tools/format/json_formatter.cgi && tests/cata_test "[widget]" --user-dir=/tmp/cata-mp-t1b/`
+(The Makefile has no `json_formatter` target; the formatter binary is `tools/format/json_formatter.cgi`.)
 Expected: PASS — виджет `coop_player_desc` резолвится в обоих сайдбарах.
 
 - [ ] **Step 11: Коммит**
@@ -769,6 +770,11 @@ Expected: FAIL — тест `every_slot_gets_its_moves_back` не проходи
 (`return turn_handler::cleanup_at_end();`) превращается в `return true;`, конец
 функции — `return false;`.
 
+Условие цикла действий остаётся прежним (`while( ava.get_moves() > 0 || uquit ==
+QUIT_WATCH )`). Слагаемое завершения сессии (`!mp_sched_stopping()`) добавится в
+задаче 10, где в `do_turn` появляется ветка планировщика: `mp_sched` тогда уже
+существует, а до неё в `do_turn.cpp` ему неоткуда взяться.
+
 - [ ] **Step 4: Собрать оркестратор**
 
 ```cpp
@@ -1190,6 +1196,30 @@ class mp_sched
         // after every resume and returns when it is set.
         bool stopping() const;
 
+        // Whether `who` is currently parked on wait_for_turn (or on the resume
+        // half of yield_to), i.e. ready to be handed the baton. The world polls
+        // this to find who wants to run next. A slot blocked on the wire inside
+        // an input wait is NOT waiting for the baton and reports false.
+        bool waiting_for_baton( size_t who ) const;
+
+        // Blocks the world participant until any player becomes ready to run, or
+        // until `timeout_ms` passes. Returns true when a player is ready. This
+        // is what replaces a spin: the world sleeps instead of burning a core
+        // while a partner reads a menu.
+        bool wait_for_request( int timeout_ms );
+
+        // Declares that the world is holding the baton on purpose: the barrier
+        // is unsatisfied and it is waiting for somebody to come back from an
+        // input wait. Set by the orchestrator when it closes out a waiting turn
+        // and cleared as soon as the barrier is satisfied.
+        //
+        // Only the watchdog reads it. Without it, "a partner read a menu for
+        // half a minute" -- the design working exactly as specified -- logs as
+        // a stalled participant, and the phase gate's log fills with false
+        // alarms until nobody reads it.
+        void set_world_waiting( bool waiting );
+        bool world_waiting() const;
+
     private:
         // Asserts that `to` names a real participant. Handing the baton to an
         // index nobody waits on parks it forever.
@@ -1200,7 +1230,20 @@ class mp_sched
         size_t players_ = 0;
         size_t holder_ = world;
         bool stopping_ = false;
+        bool world_waiting_ = false;
+        // Per-participant "parked on wait_for_turn / the resume half of
+        // yield_to" flag, indexed by player slot (0..players_-1). The world
+        // participant has no entry: it never waits for the baton, it waits for
+        // somebody to ask for it (wait_for_request).
+        std::vector<char> waiting_for_baton_;
 };
+
+// The world participant's polling cadence while the barrier is held: it sleeps
+// up to this long for a player to become ready before deciding the tick must
+// wait. A few round-trips -- the loopback test transport runs at ~5 ms latency,
+// so a keypress lands within one or two polls. Too small spins the world, too
+// large makes waiting turns sluggish.
+constexpr int MP_POLL_MS = 50;
 
 // The scheduler of the running session, or nullptr in a single-player session
 // (where there is no baton because there is nothing to pass it to).
@@ -1211,6 +1254,12 @@ void mp_set_active_sched( mp_sched *sched );
 // A no-op in release builds. Catches "running without holding", which the
 // watchdog cannot see -- the watchdog only catches "holding too long".
 void mp_assert_holds( size_t who );
+
+// Whether the session is shutting down; false when there is no scheduler at
+// all. Read by player_act's loop, which must unwind when the session ends:
+// get_input_event hands back a timeout event without the baton, and a loop that
+// kept going would call get_input_event again and trip mp_assert_holds.
+bool mp_sched_stopping();
 
 // Starts the watchdog thread. It logs the current holder whenever the baton has
 // not moved for longer than `threshold_ms`, then keeps watching. Stopped by
@@ -1226,6 +1275,7 @@ void mp_sched_start_watchdog( mp_sched &sched, int threshold_ms );
 #include "cata_catch.h"
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -1326,6 +1376,70 @@ TEST_CASE( "shut_down_wakes_every_waiting_participant", "[mp]" )
     }
     CHECK( returned.load() == 2 );
 }
+
+TEST_CASE( "a_parked_player_reports_waiting_for_the_baton", "[mp]" )
+{
+    mp_sched sched( 1 );
+
+    std::thread player( [&sched]() {
+        sched.wait_for_turn( 0 );
+    } );
+
+    // wait_for_turn sets the flag before parking, so this poll terminates.
+    while( !sched.waiting_for_baton( 0 ) ) {
+        std::this_thread::yield();
+    }
+    CHECK( sched.waiting_for_baton( 0 ) );
+    // A requester is already parked: wait_for_request sees it immediately.
+    CHECK( sched.wait_for_request( 100 ) );
+
+    sched.shut_down();
+    player.join();
+    CHECK_FALSE( sched.waiting_for_baton( 0 ) );
+}
+
+TEST_CASE( "wait_for_request_times_out_when_nobody_is_ready", "[mp]" )
+{
+    mp_sched sched( 1 );
+
+    // Nobody is parked and nobody becomes ready within the timeout: the world
+    // must not spin, it must return false so do_turn can close out a waiting
+    // turn.
+    const auto start = std::chrono::steady_clock::now();
+    CHECK_FALSE( sched.wait_for_request( 50 ) );
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    // Actually waited out the timeout rather than returning on a spurious wake.
+    CHECK( elapsed >= std::chrono::milliseconds( 45 ) );
+}
+
+TEST_CASE( "a_declared_wait_is_off_by_default", "[mp]" )
+{
+    mp_sched sched( 1 );
+
+    // Default false, so a scheduler nobody told about waiting turns still gets
+    // its stalls reported. The flag suppresses the watchdog, and a suppression
+    // that defaults to on would hide the one bug the watchdog exists to find.
+    CHECK_FALSE( sched.world_waiting() );
+    sched.set_world_waiting( true );
+    CHECK( sched.world_waiting() );
+    sched.set_world_waiting( false );
+    CHECK_FALSE( sched.world_waiting() );
+}
+
+TEST_CASE( "mp_sched_stopping_is_false_without_a_scheduler", "[mp]" )
+{
+    // player_act's loop condition calls this on every iteration in single
+    // player, where there is no scheduler at all.
+    mp_set_active_sched( nullptr );
+    CHECK_FALSE( mp_sched_stopping() );
+
+    mp_sched sched( 1 );
+    mp_set_active_sched( &sched );
+    CHECK_FALSE( mp_sched_stopping() );
+    sched.shut_down();
+    CHECK( mp_sched_stopping() );
+    mp_set_active_sched( nullptr );
+}
 ```
 
 - [ ] **Step 2: Прогнать — не собирается**
@@ -1337,7 +1451,7 @@ Expected: FAIL — `mp/mp_sched.h: No such file or directory`.
 
 Содержимое — блок **Interfaces** целиком, обёрнутый в `#pragma once` /
 `#ifndef CATA_SRC_MP_MP_SCHED_H`, с `#include <condition_variable>`, `<cstddef>`,
-`<mutex>`.
+`<mutex>`, `<vector>`.
 
 - [ ] **Step 4: Создать `src/mp/mp_sched.cpp`**
 
@@ -1359,7 +1473,8 @@ std::thread g_watchdog;
 std::atomic<bool> g_watchdog_stop{ false };
 } // namespace
 
-mp_sched::mp_sched( const size_t players ) : players_( players )
+mp_sched::mp_sched( const size_t players ) : players_( players ),
+    waiting_for_baton_( players_, 0 )
 {
 }
 
@@ -1382,18 +1497,33 @@ void mp_sched::yield_to( const size_t from, const size_t to )
     std::unique_lock<std::mutex> lock( mutex_ );
     cata_assert( holder_ == from );
     holder_ = to;
+    if( from != world ) {
+        // The caller is now parked waiting for the baton back. Flag first,
+        // notify second, exactly as in wait_for_turn: the two orders are
+        // equivalent only because the mutex is held across both, and writing
+        // them the same way everywhere keeps that from being load-bearing.
+        waiting_for_baton_[from] = 1;
+    }
     cv_.notify_all();
     cv_.wait( lock, [this, from] {
         return holder_ == from || stopping_;
     } );
+    if( from != world ) {
+        waiting_for_baton_[from] = 0;
+    }
 }
 
 void mp_sched::wait_for_turn( const size_t who )
 {
     std::unique_lock<std::mutex> lock( mutex_ );
+    // Flag first, notify second: a world parked in wait_for_request must wake
+    // and see that a requester appeared, or it would sleep out its whole poll.
+    waiting_for_baton_[who] = 1;
+    cv_.notify_all();
     cv_.wait( lock, [this, who] {
         return holder_ == who || stopping_;
     } );
+    waiting_for_baton_[who] = 0;
 }
 
 void mp_sched::release_to( const size_t from, const size_t to )
@@ -1403,6 +1533,37 @@ void mp_sched::release_to( const size_t from, const size_t to )
     cata_assert( holder_ == from );
     holder_ = to;
     cv_.notify_all();
+}
+
+bool mp_sched::waiting_for_baton( const size_t who ) const
+{
+    std::lock_guard<std::mutex> lock( mutex_ );
+    return who < waiting_for_baton_.size() && waiting_for_baton_[who] != 0;
+}
+
+bool mp_sched::wait_for_request( const int timeout_ms )
+{
+    std::unique_lock<std::mutex> lock( mutex_ );
+    return cv_.wait_for( lock, std::chrono::milliseconds( timeout_ms ), [this] {
+        for( const char flag : waiting_for_baton_ ) {
+            if( flag != 0 ) {
+                return true;
+            }
+        }
+        return false;
+    } );
+}
+
+void mp_sched::set_world_waiting( const bool waiting )
+{
+    std::lock_guard<std::mutex> lock( mutex_ );
+    world_waiting_ = waiting;
+}
+
+bool mp_sched::world_waiting() const
+{
+    std::lock_guard<std::mutex> lock( mutex_ );
+    return world_waiting_;
 }
 
 size_t mp_sched::holder() const
@@ -1446,6 +1607,12 @@ void mp_set_active_sched( mp_sched *const sched )
     g_active_sched = sched;
 }
 
+bool mp_sched_stopping()
+{
+    const mp_sched *const sched = mp_active_sched();
+    return sched && sched->stopping();
+}
+
 void mp_assert_holds( const size_t who )
 {
 #if !defined(NDEBUG)
@@ -1479,6 +1646,13 @@ void mp_sched_start_watchdog( mp_sched &sched, const int threshold_ms )
             const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::steady_clock::now() - since ).count();
             if( held > threshold_ms && !reported ) {
+                if( last == mp_sched::world && sched.world_waiting() ) {
+                    // Not a stall. The world holds the baton for as long as a
+                    // partner reads a menu, and that is the design working.
+                    // Reporting it would make the one message that means "a
+                    // handoff was missed" indistinguishable from normal play.
+                    continue;
+                }
                 // Report once per stall, not once per poll: a genuinely stuck
                 // participant would otherwise fill the log faster than anyone
                 // could read it.
@@ -1587,9 +1761,48 @@ bool mp_barrier_satisfied();
 // that is the only place the game can tell "thinking" from "working".
 void mp_set_waiting_for_input( size_t slot, bool waiting );
 
-// Clears the per-turn barrier state: the input-wait flags and anybody dropped
-// by a countdown. Called once per tick by the orchestrator.
+// Clears the per-turn barrier bookkeeping that belongs to a fresh turn: the
+// hurry countdown, and the countdown's drops -- but only for players who have
+// since left their input wait.
+//
+// Two deliberate exceptions, both of which were freezes when they were not
+// exceptions:
+//
+// The input-wait flags are never cleared here. They belong to the input backend
+// and live as long as the player is actually parked on a wait. Clearing them
+// would turn a parked player into "acting", which mp_tick_hurry() cannot drop.
+//
+// A drop survives while its player has not moved from the same input wait. The
+// alternative is one keypress of "hurry up" buying exactly one tick of world:
+// a partner reading a recipe list would have to be hurried again every turn,
+// which is the phase gate ("an evening of play") made unplayable by its own
+// safety valve. Once they press a key and act, the input-wait flag clears and
+// they rejoin the barrier on their own.
+//
+// Called once per opened turn by the orchestrator.
 void mp_turn_reset();
+
+// Clears everything the module holds, including the input-wait flags, the turn
+// flag and the end-of-session request. For test setup and teardown and for
+// session start: those are the moments when the state of a previous session is
+// not conservative but wrong.
+void mp_turn_reset_all();
+
+// Whether a turn is currently open: world_turn_pre has run and the barrier has
+// not been satisfied yet. While open, do_turn skips world_turn_pre and only
+// polls the barrier, so a waiting turn never re-runs the world half.
+bool mp_turn_is_open();
+
+// Opens or closes the turn. Set true right after world_turn_pre runs, set false
+// once the barrier is satisfied and world_turn_post has run.
+void mp_set_turn_open( bool open );
+
+// The session must end: a player quit or died out of the game. Player threads
+// call the setter because player_act's return value has nowhere else to go --
+// they run inside a thread body, not inside do_turn -- and the orchestrator
+// turns it into do_turn()'s `true` for main().
+void mp_request_session_end();
+bool mp_session_end_requested();
 ```
 
 - [ ] **Step 1: Написать падающий тест**
@@ -1615,7 +1828,7 @@ TEST_CASE( "a_player_out_of_moves_has_acted", "[mp]" )
     restore_active_state restore;
     mp_ensure_player_context();
     clear_avatar();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &u = g->player_at( 0 );
     u.set_moves( 0 );
@@ -1630,7 +1843,7 @@ TEST_CASE( "a_player_at_an_input_wait_with_moves_holds_the_barrier", "[mp]" )
     restore_active_state restore;
     mp_ensure_player_context();
     clear_avatar();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &u = g->player_at( 0 );
     u.set_moves( 100 );
@@ -1652,7 +1865,7 @@ TEST_CASE( "a_running_activity_counts_as_having_acted", "[mp]" )
     restore_active_state restore;
     mp_ensure_player_context();
     clear_avatar();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &u = g->player_at( 0 );
     u.set_moves( 100 );
@@ -1671,7 +1884,7 @@ TEST_CASE( "a_travel_destination_counts_as_having_acted", "[mp]" )
     mp_ensure_player_context();
     clear_avatar();
     build_test_map( ter_id( "t_pavement" ) );
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &u = g->player_at( 0 );
     u.set_moves( 100 );
@@ -1698,7 +1911,7 @@ TEST_CASE( "the_barrier_waits_for_the_slowest_player", "[mp]" )
     avatar &b = g->add_player_slot();
     b.set_body();
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &a = g->player_at( 0 );
     a.set_moves( 0 );
@@ -1714,7 +1927,7 @@ TEST_CASE( "the_barrier_waits_for_the_slowest_player", "[mp]" )
 
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 }
 ```
 
@@ -1741,11 +1954,15 @@ Expected: FAIL — `mp/mp_turn.h: No such file or directory`.
 
 namespace
 {
-// Per-turn barrier bookkeeping, indexed by slot. Not part of player_context:
-// it is state about the turn, not about the player's display, and it is reset
-// wholesale every tick.
+// Barrier bookkeeping, indexed by slot. Not part of player_context: it is state
+// about the turn, not about the player's display. What belongs to one turn and
+// what outlives it is spelled out at mp_turn_reset in the header.
 std::vector<bool> g_waiting_for_input;
 std::vector<bool> g_dropped_by_countdown;
+// Whether a turn is currently open (see mp_turn_is_open in the header).
+bool g_turn_open = false;
+// Whether a player asked for the session to end (see mp_request_session_end).
+bool g_session_end = false;
 
 void ensure_sized()
 {
@@ -1802,8 +2019,45 @@ void mp_set_waiting_for_input( const size_t slot, const bool waiting )
 
 void mp_turn_reset()
 {
+    ensure_sized();
+    for( size_t i = 0; i < g_dropped_by_countdown.size(); ++i ) {
+        // A drop is released only by its own player moving on. Somebody who is
+        // still sitting at the same input wait stays dropped, or one press of
+        // "hurry up" would buy exactly one tick and the next turn would stop on
+        // them again. The input-wait flags themselves are never cleared here
+        // (see the header). The hurry countdown is reset in task 8.
+        if( i >= g_waiting_for_input.size() || !g_waiting_for_input[i] ) {
+            g_dropped_by_countdown[i] = false;
+        }
+    }
+}
+
+void mp_turn_reset_all()
+{
     g_waiting_for_input.assign( g->player_slot_count(), false );
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
+    g_turn_open = false;
+    g_session_end = false;
+}
+
+bool mp_turn_is_open()
+{
+    return g_turn_open;
+}
+
+void mp_set_turn_open( const bool open )
+{
+    g_turn_open = open;
+}
+
+void mp_request_session_end()
+{
+    g_session_end = true;
+}
+
+bool mp_session_end_requested()
+{
+    return g_session_end;
 }
 ```
 
@@ -1869,6 +2123,18 @@ int mp_hurry_remaining_ms();
 // on "hurry up" when something is running at them.
 void mp_tick_hurry();
 
+// Spends the turn's moves of every player the world stopped waiting for.
+// Called by the orchestrator once per closed turn, immediately before
+// avatar_turn_post hands moves back.
+//
+// Not an optimisation and not cosmetic: moves accumulate (Character::
+// process_turn does `moves += get_speed()`), and a dropped player never spends
+// theirs, because they are reading a menu. Without this, a partner who read a
+// recipe list for a minute comes back holding a minute's worth of moves and
+// takes sixty actions inside one tick, which is both an exploit and exactly
+// what "their character stands still and skips the turn" says does not happen.
+void mp_forfeit_dropped_moves();
+
 // Whether `act` may be taken by a player who has already acted this turn.
 //
 // The default is "no": the list below is a whitelist, not a classification of
@@ -1908,7 +2174,7 @@ TEST_CASE( "a_hurry_countdown_drops_the_holder_from_the_barrier", "[mp]" )
     avatar &b = g->add_player_slot();
     b.set_body();
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &a = g->player_at( 0 );
     a.set_moves( 0 );
@@ -1933,7 +2199,7 @@ TEST_CASE( "a_hurry_countdown_drops_the_holder_from_the_barrier", "[mp]" )
 
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 }
 
 TEST_CASE( "the_countdown_clears_with_the_turn", "[mp]" )
@@ -1941,13 +2207,90 @@ TEST_CASE( "the_countdown_clears_with_the_turn", "[mp]" )
     restore_active_state restore;
     mp_ensure_player_context();
     clear_avatar();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     mp_request_hurry();
     REQUIRE( mp_hurry_remaining_ms() > 0 );
 
     mp_turn_reset();
     CHECK( mp_hurry_remaining_ms() == -1 );
+}
+
+TEST_CASE( "a_drop_lasts_while_the_player_stays_at_the_same_input_wait", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    g->player_at( 0 ).set_moves( 0 );
+    b.set_moves( 100 );
+    b.activity = player_activity();
+    mp_set_waiting_for_input( 1, true );
+    mp_request_hurry();
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1 );
+    mp_tick_hurry();
+    REQUIRE( mp_player_state_of( 1 ) == mp_player_state::not_waited );
+
+    // Next turn opens. They are still in the same menu, so they stay dropped:
+    // one press of "hurry up" that bought exactly one tick would mean hurrying
+    // a partner again every turn for as long as they read, which is the phase
+    // gate made unplayable by its own safety valve.
+    mp_turn_reset();
+    CHECK( mp_player_state_of( 1 ) == mp_player_state::not_waited );
+    CHECK( mp_barrier_satisfied() );
+
+    // They press a key and act: the backend clears the wait, and the next turn
+    // waits for them again like anybody else.
+    mp_set_waiting_for_input( 1, false );
+    mp_turn_reset();
+    CHECK( mp_player_state_of( 1 ) == mp_player_state::acting );
+    CHECK_FALSE( mp_barrier_satisfied() );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
+TEST_CASE( "a_dropped_player_does_not_bank_the_moves_they_never_spent", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    g->player_at( 0 ).set_moves( 0 );
+    b.set_moves( 100 );
+    b.activity = player_activity();
+    mp_set_waiting_for_input( 1, true );
+    mp_request_hurry();
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1 );
+    mp_tick_hurry();
+    REQUIRE( mp_player_state_of( 1 ) == mp_player_state::not_waited );
+    // The drop itself takes nothing away: the menu is still open and the
+    // character is untouched, exactly as the design promises.
+    REQUIRE( b.get_moves() > 0 );
+
+    // Closing the turn is where the standing still is paid for. Moves
+    // accumulate, so without this the reader banks a turn's worth per tick.
+    mp_forfeit_dropped_moves();
+    CHECK( b.get_moves() == 0 );
+    // Whoever is not dropped keeps whatever they have.
+    CHECK( g->player_at( 0 ).get_moves() == 0 );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
 }
 
 TEST_CASE( "menu_actions_are_free_while_waiting_and_costly_ones_are_not", "[mp]" )
@@ -1988,7 +2331,7 @@ TEST_CASE( "the_sidebar_says_who_is_being_waited_on", "[mp]" )
     b.set_body();
     b.name = "Bo";
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 
     avatar &a = g->player_at( 0 );
     a.name = "Ada";
@@ -2013,7 +2356,7 @@ TEST_CASE( "the_sidebar_says_who_is_being_waited_on", "[mp]" )
 
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 }
 ```
 
@@ -2119,6 +2462,20 @@ void mp_tick_hurry()
     g_hurry_started.reset();
 }
 
+void mp_forfeit_dropped_moves()
+{
+    ensure_sized();
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( mp_player_state_of( i ) == mp_player_state::not_waited ) {
+            // Standing still is what the drop means. Taken at the end of the
+            // turn rather than at the moment of the drop, because a drop lasts
+            // as long as the player sits in the same menu while every closed
+            // turn hands out another turn's worth of moves.
+            g->player_at( i ).set_moves( 0 );
+        }
+    }
+}
+
 bool mp_action_is_free( const action_id act )
 {
     switch( act ) {
@@ -2158,7 +2515,7 @@ bool mp_action_is_free( const action_id act )
 ```
 
 Дописать `mp_turn_reset()` сбросом отсчёта: `g_hurry_started.reset();
-g_hurry_length_ms = MP_HURRY_MS;`.
+g_hurry_length_ms = MP_HURRY_MS;`. То же — в `mp_turn_reset_all()`.
 
 `mp_player_holds_barrier` — тонкая обёртка, нужная виджету, чтобы не тащить
 `mp_player_state` в `display.cpp`:
@@ -2641,41 +2998,162 @@ Expected: FAIL — таймаут: `get_input_event` держит эстафет
         }
 ```
 
-- [ ] **Step 4: Отдавать эстафету игрокам из оркестратора**
-
-В `src/do_turn.cpp` заменить встроенный цикл игроков на ветку с планировщиком:
+В `src/do_turn.cpp` к условию цикла действий `player_act` (`do_turn.cpp:634`)
+добавить завершение сессии — второй конец того же пути размотки. `get_input_event`
+при остановке вернул timeout-событие **без эстафеты**, и цикл, который продолжился
+бы, зашёл бы в `get_input_event` снова — прямо на `mp_assert_holds`:
 
 ```cpp
-    mp_turn_reset();
+            while( ( ava.get_moves() > 0 || uquit == QUIT_WATCH ) && !mp_sched_stopping() ) {
+```
+
+В одиночной игре `mp_sched_stopping()` всегда `false`, поэтому поведение не меняется.
+`#include "mp/mp_sched.h"` в `do_turn.cpp`.
+
+Порядок в шаге 3 сохраняется (`wait_for_turn` → `mp_set_waiting_for_input( slot, false )`):
+он безгоночный, потому что флаг пишется только под эстафетой. Сигнал «кто хочет
+эстафету обратно» живёт в `mp_sched::waiting_for_baton` (задача 6), а не в этом флаге.
+
+- [ ] **Step 4: Перестроить оркестратор на возобновляемый ход**
+
+В `src/do_turn.cpp` оркестратор получает ветку с планировщиком. Ход при N > 1
+возобновляемый: `world_turn_pre` открывает его один раз, а пока барьер не выполнен,
+`do_turn()` возвращается, не закрывая ход. Одиночная ветка (sched == nullptr)
+остаётся ровно такой, как в задаче 4 step 4.
+
+```cpp
+bool game::do_turn()
+{
+    if( is_game_over() ) {
+        return turn_handler::cleanup_at_end();
+    }
+
     if( mp_sched *const sched = mp_active_sched() ) {
-        // Release every player at once; they run one at a time, each blocking
-        // on its own socket while the others act. The world takes the baton back
-        // when the barrier is satisfied.
-        for( size_t i = 0; i < player_slot_count(); ++i ) {
-            sched->yield_to( mp_sched::world, i );
+        // With more than one player the turn is resumable: world_turn_pre opens
+        // it once, and while the barrier is unsatisfied do_turn returns without
+        // closing it -- the calendar stays frozen until every living player has
+        // acted or been dropped by the hurry countdown.
+        mp_activate_world();
+        if( mp_session_end_requested() ) {
+            // A player quit or died out of the game. Their thread had nowhere
+            // to return player_act's `true` to, so it left it here.
+            return turn_handler::cleanup_at_end();
         }
-        while( !mp_barrier_satisfied() ) {
-            mp_tick_hurry();
+        if( !mp_turn_is_open() ) {
+            mp_turn_reset(); // once per opened turn, not once per poll
+            world_turn_pre();
+            mp_set_turn_open( true );
+            // Release every player once for this opened turn. avatar_turn_pre
+            // (which drains a running activity) must run for each of them even
+            // if the barrier could already close: a player carrying an activity
+            // reads as 'acted' at the start of a turn and would otherwise never
+            // be handed the baton, so their activity would never advance.
             for( size_t i = 0; i < player_slot_count(); ++i ) {
-                if( mp_player_state_of( i ) == mp_player_state::acting ) {
+                if( sched->waiting_for_baton( i ) ) {
                     sched->yield_to( mp_sched::world, i );
                 }
             }
         }
-    } else {
-        for( size_t i = 0; i < player_slot_count(); ++i ) {
-            mp_activate_player( i );
-            avatar &ava = player_at( i );
-            avatar_turn_pre( ava );
-            if( player_act( ava ) ) {
-                return true;
+        while( !mp_barrier_satisfied() ) {
+            mp_tick_hurry();
+            bool moved = false;
+            for( size_t i = 0; i < player_slot_count(); ++i ) {
+                const mp_player_state state = mp_player_state_of( i );
+                // waiting_for_baton alone is not enough: a player who already
+                // acted this turn releases and immediately re-parks on
+                // wait_for_turn for the next one, so they report it too -- and
+                // yielding to them again would spin the world. Hand the baton
+                // only to someone who still owes the turn: acting (not yet
+                // released this turn) or holding (returning from an input wait).
+                if( sched->waiting_for_baton( i ) &&
+                    ( state == mp_player_state::acting || state == mp_player_state::holding ) ) {
+                    sched->yield_to( mp_sched::world, i );
+                    moved = true;
+                }
+            }
+            if( moved ) {
+                // The world ran somebody, so it is accountable again: any stall
+                // from here on is a real one and the watchdog should say so.
+                sched->set_world_waiting( false );
+            }
+            if( !moved && !sched->wait_for_request( MP_POLL_MS ) ) {
+                // Waiting turn: nobody owes the turn and nobody became ready.
+                // The world does not tick and do_turn returns; the turn stays
+                // open. The declared wait tells the watchdog that the world is
+                // holding the baton on purpose, so a partner reading a menu
+                // does not log as a stalled participant.
+                sched->set_world_waiting( true );
+                return false;
+            }
+            if( mp_session_end_requested() ) {
+                // Somebody quit from inside their own turn: stop polling for a
+                // barrier nobody is going to satisfy.
+                sched->set_world_waiting( false );
+                return turn_handler::cleanup_at_end();
             }
         }
+        sched->set_world_waiting( false );
+        mp_activate_world();
+        world_turn_post();
+
+        // Standing still is what being dropped means, and it has to be charged
+        // before moves are handed back: they accumulate, and a dropped player
+        // spends none of them.
+        mp_forfeit_dropped_moves();
+
+        // Moves come back after monmove, exactly as in single player. The baton
+        // goes back to each player for this because the morale paths can draw.
+        for( size_t i = 0; i < player_slot_count(); ++i ) {
+            mp_activate_player( i );
+            avatar_turn_post( player_at( i ) );
+        }
+        mp_activate_player( 0 );
+        if( player_slot_count() > 1 ) {
+            const tripoint_abs_ms anchor = mp_bubble_anchor();
+            shift_map_center( anchor );
+            if( anchor.z() != get_map().get_abs_sub().z() ) {
+                shift_map_z( anchor.z() );
+            }
+        }
+        mp_set_turn_open( false );
+        debug_menu::debug_capture::tick_if_active();
+        return false;
     }
+
+    // Single player: no scheduler and no thread -- the orchestrator runs the
+    // loop inline, which is what makes the ordinary single-player build walk
+    // this same code and every test exercise it.
+    mp_activate_world();
+    world_turn_pre();
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        mp_activate_player( i );
+        avatar &ava = player_at( i );
+        avatar_turn_pre( ava );
+        if( player_act( ava ) ) {
+            return true;
+        }
+    }
+    mp_activate_world();
+    world_turn_post();
+    for( size_t i = 0; i < player_slot_count(); ++i ) {
+        mp_activate_player( i );
+        avatar_turn_post( player_at( i ) );
+    }
+    mp_activate_player( 0 );
+    if( player_slot_count() > 1 ) {
+        const tripoint_abs_ms anchor = mp_bubble_anchor();
+        shift_map_center( anchor );
+        if( anchor.z() != get_map().get_abs_sub().z() ) {
+            shift_map_z( anchor.z() );
+        }
+    }
+    debug_menu::debug_capture::tick_if_active();
+    return false;
+}
 ```
 
 Тело потока игрока (создаётся в задаче 11) вызывает `avatar_turn_pre` и `player_act`
-под своим контекстом.
+под своим контекстом; в ветке с планировщиком сам `do_turn` их не зовёт.
 
 - [ ] **Step 5: Прогнать**
 
@@ -2894,6 +3372,10 @@ bool mp_server_start_session( std::string &err )
 Подъём потоков — в `mp_server_main` после загрузки мира:
 
 ```cpp
+    // Nothing of a previous session's turn survives into this one: the barrier
+    // flags, the open-turn flag and the end request are all about a session
+    // that no longer exists.
+    mp_turn_reset_all();
     g_sched = std::make_unique<mp_sched>( mp_sessions().size() );
     mp_set_active_sched( g_sched.get() );
     mp_sched_start_watchdog( *g_sched, 30000 );
@@ -2908,14 +3390,49 @@ bool mp_server_start_session( std::string &err )
                 mp_activate_player( i );
                 avatar &ava = g->player_at( i );
                 g->avatar_turn_pre( ava );
-                g->player_act( ava );
+                if( g->player_act( ava ) ) {
+                    // The game is over or this player quit. A thread body has
+                    // nowhere to return that to, so it is left where the
+                    // orchestrator picks it up and turns it into do_turn()'s
+                    // `true` for main().
+                    mp_request_session_end();
+                }
                 mp_active_sched()->release_to( i, mp_sched::world );
             }
         } );
     }
 ```
 
-`mp_server_end_session()` вызывает `shut_down()`, джойнит потоки, чистит сессии.
+`mp_server_end_session()`:
+
+```cpp
+void mp_server_end_session()
+{
+    // Close the wires FIRST. shut_down() only wakes threads parked on the
+    // baton; a player sitting in a menu is parked on recv() with no timeout,
+    // and joining them before their socket goes away hangs the server forever
+    // -- on the one path that matters, because ending a session while somebody
+    // has a menu open is the normal case, not the exotic one. A closed
+    // transport makes mp_server_wait_for_input return a timeout event, the
+    // player_act loop sees mp_sched_stopping() and unwinds.
+    for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
+        if( session->transport ) {
+            session->transport->close();
+        }
+    }
+    if( g_sched ) {
+        g_sched->shut_down();
+    }
+    for( std::thread &t : g_player_threads ) {
+        t.join();
+    }
+    g_player_threads.clear();
+    mp_set_active_sched( nullptr );
+    g_sched.reset();
+    mp_sessions().clear();
+    mp_turn_reset_all();
+}
+```
 
 - [ ] **Step 6: Обрыв любого клиента заканчивает сессию**
 
@@ -3174,6 +3691,11 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     clear_avatar();
     build_test_map( ter_id( "t_pavement" ) );
     g->ensure_gamemode_for_test();
+    // The first do_turn() of a session is the one-time "new_game" pass
+    // (weather.on_game_start), which does not advance the calendar. Pin it here
+    // so turn counting in the tests is deterministic no matter which tests ran
+    // before this one in the same process.
+    g->new_game = true;
     game_test_helper::reset_player_slots();
     mp_sessions_reset_for_test();
 
@@ -3184,6 +3706,11 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
         extra.name = "P" + std::to_string( i );
     }
     mp_sync_context_count();
+    // Fresh session: no leftover barrier state from a previous harness. The
+    // input-wait flags, the turn-open flag and the end-of-session request belong
+    // to a session, not to a turn, so mp_turn_reset() deliberately leaves them --
+    // reset_all is the session/test boundary.
+    mp_turn_reset_all();
 
     for( size_t i = 0; i < players; ++i ) {
         // The latency is not decoration. Without it, code that only works at
@@ -3222,6 +3749,16 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
 
 mp_session_harness::~mp_session_harness()
 {
+    // Close the wires FIRST. shut_down() only wakes threads parked on the baton;
+    // a player sitting in a menu is parked on recv() with no timeout, and joining
+    // them before their socket goes away hangs the harness -- and every Task 13
+    // test ends with a player in a menu. A closed transport makes
+    // mp_server_wait_for_input return a timeout event (the loopback recv polls
+    // and sees the closed peer within a millisecond), and the player_act loop
+    // sees mp_sched_stopping() and unwinds.
+    for( std::shared_ptr<mp_transport> &wire : client_wires_ ) {
+        wire->close();
+    }
     sched_->shut_down();
     for( std::thread &t : threads_ ) {
         t.join();
@@ -3230,7 +3767,7 @@ mp_session_harness::~mp_session_harness()
     mp_sessions_reset_for_test();
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
-    mp_turn_reset();
+    mp_turn_reset_all();
 }
 
 void mp_session_harness::press( const size_t slot, const int key )
@@ -3313,11 +3850,12 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
         mp_session_harness harness( 2 );
 
         // Neither key costs time, so both players hold nothing and both stay
-        // live -- which is the whole point of the per-player context.
+        // live -- which is the whole point of the per-player context. Run until
+        // both menus are open and rendered, then compare the screens.
         harness.press( 0, c.first );
         harness.press( 1, c.second );
-        REQUIRE( harness.run_until( []() {
-            return true;
+        REQUIRE( harness.run_until( [&]() {
+            return !mp_grids_equal( harness.screen( 0 ), harness.screen( 1 ) );
         }, 5 ) );
 
         // The main class of bug this design can have is a leaked global showing
@@ -3330,18 +3868,30 @@ TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
 {
     mp_session_harness harness( 2 );
 
-    // Player 1 parks in a menu with moves left: they hold the barrier.
+    // Player 1 parks in a menu with moves left: they hold the barrier. The
+    // world may not outrun a thinking player. Fresh avatars start with zero
+    // moves, so the first do_turn is a full, closed turn in which neither
+    // player_act reads any input; the calendar advances when the SECOND do_turn
+    // opens a turn and player 1 parks in the menu. Every do_turn after that is
+    // a waiting turn that returns without advancing -- ten of them leave the
+    // calendar exactly one turn past turn_before.
     harness.press( 1, 'i' );
     const int turn_before = to_turn<int>( calendar::turn );
     REQUIRE( harness.run_until( []() {
         return false;
-    }, 3 ) == false );
-    CHECK( to_turn<int>( calendar::turn ) == turn_before );
+    }, 10 ) == false );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
 
-    // Player 0 hurries them. After the countdown the world moves on and the
-    // partner's menu is still open -- untouched, just not waited on.
+    // Player 0 hurries them. The countdown must be running before we expire it:
+    // the key reaches the server asynchronously through the wire, so wait for
+    // the countdown to start, then advance it past expiry.
     harness.press( 0, '\'' );
+    REQUIRE( harness.run_until( []() {
+        return mp_hurry_remaining_ms() > 0;
+    }, 5 ) );
     mp_advance_hurry_for_test( MP_HURRY_MS + 1 );
+    // After the countdown the world moves on and the partner's menu is still
+    // open -- untouched, just not waited on.
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     }, 10 ) );
@@ -3510,9 +4060,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 вернувший `true`, заканчивает сессию — это фиксированный состав из Global Constraints,
 а не упрощение.
 
-**3. Почему `mp_turn` не в `player_context`.** Флаги барьера — состояние хода, а не
-дисплея игрока, и сбрасываются целиком каждый тик. В контексте они пережили бы
-`mp_turn_reset()` и превратились бы во второй источник правды.
+**3. Почему `mp_turn` не в `player_context`.** Барьерная бухгалтерия — состояние
+хода, а не дисплея игрока. Сбрасывается каждый открытый ход только то, что
+принадлежит ходу: снятые по «тороплю» и сам отсчёт. Флаг ожидания ввода
+(`g_waiting_for_input`) принадлежит бэкенду ввода и живёт, пока игрок реально
+сидит на ожидании; в контексте он пережил бы сброс и стал бы вторым источником
+правды, а сброс его в `mp_turn_reset()` превратил бы запаркованного игрока в
+«действующего», которого `mp_tick_hurry()` не снимает, — вечная заморозка.
 
 **4. Порядок в `mp_player_state_of` значим.** «Занят» проверяется раньше «есть moves»:
 игрок с активностью и полными moves — *отходил*, а не *действует*. Обратный порядок
