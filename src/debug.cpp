@@ -36,6 +36,7 @@
 #include "get_version.h"
 #include "input.h"
 #include "loading_ui.h"
+#include "messages.h"
 #include "mod_manager.h"
 #include "options.h"
 #include "output.h"
@@ -561,6 +562,19 @@ void realDebugmsg( const char *filename, const char *line, const char *funcname,
             rep_folder.increment_count();
         }
     }
+
+#if defined(MP_SERVER)
+    // A modal error is an instant deadlock on a server: it can fire during the
+    // world phase, when no player context is active and there is physically
+    // nowhere to draw a window. Log it, put it in the message log, carry on.
+    //
+    // One add_msg, not one per context: the message log is process-wide, so
+    // every player already reads this one, and a pass over the contexts would
+    // only produce N copies of the same line.
+    DebugLog( D_ERROR, D_MAIN ) << "debugmsg: " << text;
+    add_msg( m_bad, _( "Error: %s" ), text );
+    return;
+#endif
 
     if( test_mode ) {
         return;
