@@ -66,6 +66,65 @@ TEST_CASE( "an_unknown_name_is_refused_with_a_reason", "[mp]" )
     mp_server_end_session();
 }
 
+TEST_CASE( "a_roster_with_fewer_clients_than_slots_is_refused", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &a = g->player_at( 0 );
+    a.name = "Ada";
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    b.name = "Bo";
+    mp_sync_context_count();
+
+    // The roster is fixed at connection time: one client against two avatars
+    // would leave the second body without a driver, so start must refuse
+    // rather than park an avatar forever.
+    mp_sessions_reset_for_test();
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions()[0]->name = "Ada";
+
+    std::string err;
+    CHECK_FALSE( mp_server_start_session( err ) );
+    // Both counts in the message: one client, two characters. A log line
+    // must be diagnosable without re-reading the save.
+    CHECK( err.find( std::to_string( mp_sessions().size() ) ) != std::string::npos );
+    CHECK( err.find( std::to_string( g->player_slot_count() ) ) != std::string::npos );
+
+    mp_server_end_session();
+}
+
+TEST_CASE( "two_clients_named_the_same_character_are_refused", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &a = g->player_at( 0 );
+    a.name = "Ada";
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    b.name = "Bo";
+    mp_sync_context_count();
+
+    // Counts line up (two clients, two characters) and both names match an
+    // avatar: the failure the name loop cannot see is that both would drive
+    // Ada while Bo sits empty.
+    mp_sessions_reset_for_test();
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions()[0]->name = "Ada";
+    mp_sessions()[1]->name = "Ada";
+
+    std::string err;
+    CHECK_FALSE( mp_server_start_session( err ) );
+    CHECK( err.find( "Ada" ) != std::string::npos );
+
+    mp_server_end_session();
+}
+
 TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
 {
     restore_active_state restore;

@@ -91,6 +91,15 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
 bool mp_server_start_session( std::string &err )
 {
     err.clear();
+    // The roster is fixed at connection time, so a mismatch here means either
+    // fewer clients than bodies (an avatar stalls with no driver) or more
+    // clients than bodies (nothing left to drive). Refuse before the name
+    // loop rather than let one side of the roster go unrepresented.
+    if( mp_sessions().size() != g->player_slot_count() ) {
+        err = std::to_string( mp_sessions().size() ) + " clients connected but this world has "
+              + std::to_string( g->player_slot_count() ) + " characters";
+        return false;
+    }
     for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
         bool matched = false;
         for( size_t i = 0; i < g->player_slot_count(); ++i ) {
@@ -105,6 +114,18 @@ bool mp_server_start_session( std::string &err )
             // "it did not work" and "you typed Bob and the save has Bo".
             err = "no character named \"" + session->name + "\" in this world";
             return false;
+        }
+    }
+    // Matching every name is not a one-to-one mapping: two clients that named
+    // the same character both bind to its slot, leaving the other avatar with
+    // no driver. A second driver for one body would also race its twin for
+    // input, so refuse the whole roster and name the character involved.
+    for( size_t i = 0; i < mp_sessions().size(); ++i ) {
+        for( size_t j = i + 1; j < mp_sessions().size(); ++j ) {
+            if( mp_sessions()[i]->context_index == mp_sessions()[j]->context_index ) {
+                err = "two clients named \"" + mp_sessions()[i]->name + "\" for one character";
+                return false;
+            }
         }
     }
     return true;
