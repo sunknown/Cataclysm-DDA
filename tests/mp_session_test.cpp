@@ -4,14 +4,18 @@
 
 #include <memory>
 
+#include "calendar.h"
+
 #include "avatar.h"
 #include "debug.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "mp_session_harness.h"
 #include "messages.h"
 #include "mp/mp_context.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
+#include "mp/mp_turn.h"
 
 TEST_CASE( "sessions_are_matched_to_slots_by_name", "[mp]" )
 {
@@ -164,4 +168,73 @@ TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
     mp_sync_context_count();
 }
 
+// The six menus the design names as the heavy ones: each is a different UI
+// path, and a global leaked by any of them shows up as one player seeing the
+// other's screen. The keys are the DEFAULTMODE defaults.
+TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
+{
+    restore_active_state restore;
+    struct menu_case {
+        const char *name;
+        int first;
+        int second;
+    };
+    const std::vector<menu_case> menus = {
+        { "inventory vs character sheet", 'i', '@' },
+        { "crafting vs map",              '&', 'm' },
+        { "vehicle vs construction",      '^', '*' },
+    };
+
+    for( const menu_case &c : menus ) {
+        CAPTURE( c.name );
+        mp_session_harness harness( 2 );
+
+        // Neither key costs time, so both players hold nothing and both stay
+        // live -- which is the whole point of the per-player context. Run until
+        // both menus are open and rendered, then compare the screens.
+        harness.press( 0, c.first );
+        harness.press( 1, c.second );
+        REQUIRE( harness.run_until( [&]() {
+            return !mp_grids_equal( harness.screen( 0 ), harness.screen( 1 ) );
+        }, 5 ) );
+
+        // The main class of bug this design can have is a leaked global showing
+        // one player the other's screen. Comparing the grids catches it.
+        CHECK_FALSE( mp_grids_equal( harness.screen( 0 ), harness.screen( 1 ) ) );
+    }
+}
+
+TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // Player 1 parks in a menu with moves left: they hold the barrier. The
+    // world may not outrun a thinking player. Fresh avatars start with zero
+    // moves, so the first do_turn is a full, closed turn in which neither
+    // player_act reads any input; the calendar advances when the SECOND do_turn
+    // opens a turn and player 1 parks in the menu. Every do_turn after that is
+    // a waiting turn that returns without advancing -- ten of them leave the
+    // calendar exactly one turn past turn_before.
+    harness.press( 1, 'i' );
+    const int turn_before = to_turn<int>( calendar::turn );
+    REQUIRE( harness.run_until( []() {
+        return false;
+    }, 10 ) == false );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
+
+    // Player 0 hurries them. The countdown must be running before we expire it:
+    // the key reaches the server asynchronously through the wire, so wait for
+    // the countdown to start, then advance it past expiry.
+    harness.press( 0, '\'' );
+    REQUIRE( harness.run_until( []() {
+        return mp_hurry_remaining_ms() > 0;
+    }, 5 ) );
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1 );
+    // After the countdown the world moves on and the partner's menu is still
+    // open -- untouched, just not waited on.
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    }, 10 ) );
+}
 #endif // MP_SERVER
