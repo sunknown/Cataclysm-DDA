@@ -756,12 +756,22 @@ bool game::do_turn()
                 // from here on is a real one and the watchdog should say so.
                 sched->set_world_waiting( false );
             }
-            if( !moved && !sched->wait_for_request( MP_POLL_MS ) ) {
-                // Waiting turn: nobody owes the turn and nobody became ready.
-                // The world does not tick and do_turn returns; the turn stays
-                // open. The declared wait tells the watchdog that the world is
-                // holding the baton on purpose, so a partner reading a menu
-                // does not log as a stalled participant.
+            if( !moved ) {
+                // Waiting turn: the loop above -- the sole authority on who owes
+                // the turn -- found nobody both parked and actionable. Sleep out
+                // one poll interval (or wake early on a real event) and return;
+                // the turn stays open. wait_for_request's own predicate is wider
+                // than "owes the turn": it wakes on ANY parked slot, including
+                // one that already acted this turn and re-parked on
+                // wait_for_turn for the next one. Using its return value to
+                // gate this branch (as before) let such a slot's flag keep the
+                // world from ever sleeping, spinning it at 100% CPU without
+                // ever calling set_world_waiting( true ). It is used here only
+                // to sleep, never to decide whether to return. The declared
+                // wait tells the watchdog that the world is holding the baton
+                // on purpose, so a partner reading a menu does not log as a
+                // stalled participant.
+                sched->wait_for_request( MP_POLL_MS );
                 sched->set_world_waiting( true );
                 return false;
             }
