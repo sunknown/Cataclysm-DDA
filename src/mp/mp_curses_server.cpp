@@ -1,10 +1,12 @@
 #if defined(MP_SERVER)
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "cata_utility.h"
@@ -150,7 +152,12 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         // session through the entry point instead; the game itself never sees
         // the transport. This is the one place the backend learns about the
         // wire, and it is deliberately the mp layer, not game logic.
-        if( !mp_server_peer_connected() ) {
+        // mp_sched_stopping() excludes this once teardown is already under way:
+        // without it, every remaining trip round this loop (there can be many
+        // -- a menu several frames up keeps asking for its next keystroke)
+        // re-detects the same disconnect, re-logs it and re-requests exit,
+        // spinning as fast as the CPU allows and writing without end.
+        if( !mp_server_peer_connected() && !mp_sched_stopping() ) {
             // The stop itself is announced by exit_handler(), which also covers
             // the sessions that end without a disconnect.
             std::string who = "a client";
@@ -164,7 +171,50 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             mp_server_log( who + " disconnected" +
                            ( length.empty() ? std::string() : " after " + length ) +
                            "; ending the session" );
-            mp_server_request_exit();
+            if( mp_active_sched() ) {
+                // mp_server_request_exit() calls exit_handler(), which resets
+                // g and calls exit() right there on whichever thread reaches
+                // it. That is fine for the original single-client design this
+                // branch was written for -- one peer, one thread, nothing else
+                // running -- but with a scheduler there are other player
+                // threads and (in a test) the harness's own thread alive at
+                // the same time, and g.reset() out from under them is a
+                // use-after-free waiting to happen. Use the same cooperative
+                // signal a player quitting or dying already uses instead: it
+                // only sets a flag, and the orchestrator (running on its own
+                // thread, in do_turn()) turns that into a clean shutdown no
+                // other thread's state can be caught mid-teardown by.
+                mp_request_session_end();
+            } else {
+                mp_server_request_exit();
+            }
+        }
+        if( mp_sched_stopping() ) {
+            // wait_for_turn()'s own wait predicate is `holder_ == who ||
+            // stopping_`: once shut_down() sets stopping_, every parked
+            // wait_for_turn/yield_to wakes for that reason alone, with no
+            // promise that this thread now holds the baton -- it is a
+            // deliberate "wake up and unwind" broadcast, not a grant. A menu
+            // loop several frames up (inventory_selector, the character
+            // sheet, ...) has no idea a shutdown is underway and will call
+            // straight back in here for its next keystroke; without this
+            // check that call falls through to mp_assert_holds() below and
+            // to release_to()/wait_for_turn() further down, both of which
+            // assert real ownership this thread was never actually granted
+            // during a stopping wake. Bail the same way the reacquire path
+            // already does, before touching any of that.
+            //
+            // A menu's own loop has no way to learn a shutdown happened from
+            // one timeout event, so it keeps calling straight back in here;
+            // without a real wait nothing throttles that, and it spins at
+            // 100% CPU until the caller joins this thread. MP_POLL_MS matches
+            // the world's own idle-wait cadence (do_turn.cpp) -- there is
+            // nothing left worth polling faster than that once the scheduler
+            // is unwinding.
+            std::this_thread::sleep_for( std::chrono::milliseconds( MP_POLL_MS ) );
+            input_event ev;
+            ev.type = input_event_t::timeout;
+            return ev;
         }
         const size_t slot = mp_active_context_ptr() ? mp_active_context().slot_index : 0;
         mp_assert_holds( slot );
@@ -190,6 +240,23 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                 ev.type = input_event_t::timeout;
                 return ev;
             }
+            // wait_for_turn() proves the scheduler's baton is ours again, but
+            // it does not by itself repoint the active-context pointer: that
+            // pointer is one process-wide global (mp_context.cpp), not
+            // per-thread, and another player's own per-turn activation can
+            // have repointed it to their slot while this thread sat parked
+            // here. Every OTHER place that regains the baton (the per-player
+            // turn loop in mp_session_harness.cpp / mp_server_main.cpp)
+            // re-activates immediately after its own wait_for_turn; this
+            // reacquire is the one baton handoff that did not, and it is
+            // exactly the one two interleaved players can race -- one
+            // player's menu asking for a second keystroke while the other,
+            // having since been activated and parked the same way, is still
+            // mid-flight. Without this, the slot this function (or its
+            // caller) next reads from mp_active_context() can be someone
+            // else's, and the next mp_assert_holds() trips on a baton this
+            // thread genuinely holds.
+            mp_activate_player( slot );
         } else {
             ev = mp_server_wait_for_input( timeout );
         }

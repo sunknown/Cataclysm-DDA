@@ -189,9 +189,18 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
         CAPTURE( c.name );
         mp_session_harness harness( 2 );
 
-        // Neither key costs time, so both players hold nothing and both stay
-        // live -- which is the whole point of the per-player context. Run until
-        // both menus are open and rendered, then compare the screens.
+        // The harness constructor zeroes every slot's moves (R6) so the
+        // OTHER new test's turn-counting comment is true, but that leaves
+        // both players read as already having acted this turn: the barrier
+        // is satisfied before anyone is ever handed the baton, so neither
+        // player_act runs, the pressed key is never read, and no menu opens.
+        // Give both players moves back before pressing, so they are
+        // actionable and actually receive the baton this turn. Neither key
+        // costs time, so both players hold nothing and both stay live --
+        // which is the whole point of the per-player context. Run until both
+        // menus are open and rendered, then compare the screens.
+        g->player_at( 0 ).set_moves( 100 );
+        g->player_at( 1 ).set_moves( 100 );
         harness.press( 0, c.first );
         harness.press( 1, c.second );
         REQUIRE( harness.run_until( [&]() {

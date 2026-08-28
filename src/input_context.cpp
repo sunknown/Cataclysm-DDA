@@ -27,6 +27,7 @@
 #include "imgui/imgui.h"
 #include "input.h"
 #include "map.h"
+#include "mp/mp_sched.h"
 #include "options.h"
 #include "output.h"
 #include "point.h"
@@ -143,6 +144,13 @@ static const std::string ANY_INPUT = "ANY_INPUT";
 static const std::string HELP_KEYBINDINGS = "HELP_KEYBINDINGS";
 static const std::string COORDINATE = "COORDINATE";
 static const std::string TIMEOUT = "TIMEOUT";
+// "QUIT" rather than a new action: every menu that loops on handle_input()
+// already treats QUIT as "close and unwind" (it is how Escape/Cancel work
+// throughout the UI), so reusing it reaches every such loop -- including
+// ones this file cannot enumerate -- without teaching each one a new
+// action name. mp_sched_stopping() is false in every non-MP build and in
+// every MP build outside a scheduler shutdown, so this is a no-op there.
+static const std::string MP_SESSION_ENDING_QUIT = "QUIT";
 
 const std::string &input_context::input_to_action( const input_event &inp ) const
 {
@@ -485,6 +493,22 @@ const std::string &input_context::handle_input( const int timeout )
 
         next_action = inp_mngr.get_input_event( preferred_keyboard_mode );
         if( next_action.type == input_event_t::timeout ) {
+            if( mp_sched_stopping() ) {
+                // A plain TIMEOUT here is indistinguishable, to whatever menu
+                // loop called handle_input(), from an ordinary idle redraw --
+                // every such loop already treats one as "nothing happened,
+                // ask again," which is exactly right the rest of the time.
+                // During a scheduler shutdown that is wrong: get_input_event()
+                // (src/mp/mp_curses_server.cpp) is returning this timeout
+                // because the session is ending, not because nothing
+                // happened, and a loop that keeps asking again never returns
+                // control to the per-player thread body that is waiting to
+                // notice mp_sched_stopping() and exit -- the harness's
+                // std::thread::join() on that thread then blocks forever.
+                // QUIT unwinds through the SAME path Escape already does.
+                result = &MP_SESSION_ENDING_QUIT;
+                break;
+            }
             result = &TIMEOUT;
             break;
         }
