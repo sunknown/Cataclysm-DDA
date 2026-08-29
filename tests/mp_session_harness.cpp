@@ -6,17 +6,52 @@
 #include <vector>
 
 #include "avatar.h"
+#include "cached_options.h"
+#include "cursesdef.h"
 #include "game.h"
+#include "game_constants.h"
 #include "game_test_helper.h"
+#include "game_ui.h"
 #include "map_helpers_tests.h"
+#include "output.h"
 #include "player_helpers.h"
 #include "type_id.h"
+#include "ui_manager.h"
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
+
+mp_server_startup_for_test::mp_server_startup_for_test( const int cols, const int rows )
+    : prev_stdscr_( catacurses::stdscr ), prev_test_mode_( test_mode ), prev_termx_( TERMX ),
+      prev_termy_( TERMY ), prev_full_screen_width_( FULL_SCREEN_WIDTH ),
+      prev_full_screen_height_( FULL_SCREEN_HEIGHT ), prev_imclient_( std::move( imclient ) )
+{
+    // The same order main() and run_game() use. The handshake sizes the grid
+    // before init_interface(), which reads it back to size the root window; with
+    // no session attached that is the fallback grid, which is why the write side
+    // of mp_server_blit_row() has to reach the same grid the read side does.
+    mp_server_set_terminal_size( cols, rows );
+    FULL_SCREEN_WIDTH = EVEN_MINIMUM_TERM_WIDTH;
+    FULL_SCREEN_HEIGHT = EVEN_MINIMUM_TERM_HEIGHT;
+    catacurses::init_interface();
+    game_ui::init_ui();
+    test_mode = false;
+}
+
+mp_server_startup_for_test::~mp_server_startup_for_test()
+{
+    test_mode = prev_test_mode_;
+    imclient = std::move( prev_imclient_ );
+    FULL_SCREEN_HEIGHT = prev_full_screen_height_;
+    FULL_SCREEN_WIDTH = prev_full_screen_width_;
+    TERMY = prev_termy_;
+    TERMX = prev_termx_;
+    catacurses::stdscr = prev_stdscr_;
+}
 
 mp_session_harness::mp_session_harness( const size_t players, const int latency_ms )
 {
@@ -31,6 +66,16 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     g->new_game = true;
     game_test_helper::reset_player_slots();
     mp_sessions_reset_for_test();
+
+    // Sessions are gone, so the terminal set up below lands in the fallback
+    // grid rather than in a leftover session's. From here on the harness is a
+    // running server: the screen has a size, a root window and an ImGui client,
+    // and redraws are no longer gated off.
+    startup_ = std::make_unique<mp_server_startup_for_test>( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    // Again, now that TERMX/TERMY and stdscr are real: the first call above ran
+    // before there was a terminal and left context 0 mirroring zeroes. This is
+    // the order run_game() uses -- init_ui() first, then the context.
+    mp_ensure_player_context();
 
     g->player_at( 0 ).name = "P0";
     for( size_t i = 1; i < players; ++i ) {
@@ -60,10 +105,10 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
         session->transport = wire.a;
         session->context_index = i;
         session->name = g->player_at( i ).name;
-        session->grid.resize( 80, 24 );
+        session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
         mp_sessions().push_back( std::move( session ) );
         client_wires_.push_back( wire.b );
-        client_grids_.emplace_back( 80, 24 );
+        client_grids_.emplace_back( MP_HARNESS_COLS, MP_HARNESS_ROWS );
         client_states_.emplace_back();
     }
 

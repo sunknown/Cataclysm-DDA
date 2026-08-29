@@ -56,14 +56,16 @@ bool mp_server_peer_connected()
 
 void mp_server_blit_row( const int x0, const int y, const std::vector<mp_cell> &cells )
 {
-    mp_session *const s = mp_active_session();
-    if( s == nullptr ) {
-        return;
-    }
+    // Through mp_server_grid(), never through the session's grid directly: a
+    // write has to land in the grid the matching read comes from. Reads already
+    // fall back to fallback_grid when no session is active, so an early return
+    // here made writes and reads disagree -- the row arrived, was dropped, and
+    // the reader got a blank cell back out of a grid nobody had written to.
+    mp_screen_grid &grid = mp_server_grid();
     for( size_t i = 0; i < cells.size(); ++i ) {
         // set() ignores out-of-range writes, which is exactly the clipping
         // curses applies when a window is drawn past the edge of the screen.
-        s->grid.set( x0 + static_cast<int>( i ), y, cells[i] );
+        grid.set( x0 + static_cast<int>( i ), y, cells[i] );
     }
 }
 
@@ -71,6 +73,13 @@ void mp_server_set_cursor( const int x, const int y, const bool visible )
 {
     mp_session *const s = mp_active_session();
     if( s == nullptr ) {
+        // Deliberately session-only, unlike the blit above. The asymmetry that
+        // bug was is a write with no matching read; the cursor has no read at
+        // all without a session. Its only reader is mp_server_flush_screen(),
+        // which needs a transport and therefore a session, and nothing else in
+        // the tree reads cursor_x/cursor_y/cursor_visible. A fallback cursor
+        // would be state that can never be observed -- dead by construction --
+        // so there is nothing here to keep symmetric.
         return;
     }
     if( s->cursor_x == x && s->cursor_y == y && s->cursor_visible == visible ) {

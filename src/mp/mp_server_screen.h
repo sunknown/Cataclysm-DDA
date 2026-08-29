@@ -32,11 +32,14 @@ void mp_server_set_terminal_size( int width, int height );
 bool mp_server_peer_connected();
 
 // Writes `cells` starting at (x0, y). Cells past the right edge are dropped,
-// matching curses clipping. Does nothing when no session is active.
+// matching curses clipping. Writes go to the same grid mp_server_grid() reads
+// from, so with no session active they land in the fallback grid rather than
+// being discarded.
 void mp_server_blit_row( int x0, int y, const std::vector<mp_cell> &cells );
 
 // Records where the client should draw its cursor; sent with the next flush.
-// Does nothing when no session is active.
+// Does nothing when no session is active -- unlike the grid, cursor state has
+// no reader without one, so there is no fallback to keep it in.
 void mp_server_set_cursor( int x, int y, bool visible );
 
 // Encodes and sends the dirty rows and the cursor, then clears the dirty
