@@ -153,6 +153,20 @@ mp_session_harness::~mp_session_harness()
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
     mp_turn_reset_all();
+    // Put the globals back here rather than letting the member die on the way
+    // out of the object, because the context has to be re-mirrored from the
+    // restored terminal and not from the harness's.
+    startup_.reset();
+    // Restoring the globals is not enough on its own. mp_ensure_player_context()
+    // copied TERMX, TERMY and stdscr into g->contexts[0] when the harness
+    // started (src/mp/mp_context.cpp:86-89), and mp_activate_player() publishes
+    // that copy straight back out into the same globals (:126, :136). A later
+    // test that reaches mp_activate_player() -- directly, or through
+    // mp_sync_context_count(), which several [mp] tests do -- without calling
+    // ensure itself would therefore restore the harness's terminal over the one
+    // just put back. Re-mirroring here leaves the context agreeing with the
+    // globals, so that path publishes the pre-harness values instead.
+    mp_ensure_player_context();
 }
 
 void mp_session_harness::press( const size_t slot, const int key )
@@ -191,6 +205,31 @@ bool mp_session_harness::run_until( const std::function<bool()> &predicate, cons
 const mp_screen_grid &mp_session_harness::screen( const size_t slot ) const
 {
     return client_grids_[slot];
+}
+
+int mp_grid_nonblank_cells( const mp_screen_grid &grid )
+{
+    int cells = 0;
+    for( int y = 0; y < grid.height(); ++y ) {
+        for( int x = 0; x < grid.width(); ++x ) {
+            cells += grid.at( x, y ).ch != " " ? 1 : 0;
+        }
+    }
+    return cells;
+}
+
+bool mp_grid_contains( const mp_screen_grid &grid, const std::string &text )
+{
+    for( int y = 0; y < grid.height(); ++y ) {
+        std::string row;
+        for( int x = 0; x < grid.width(); ++x ) {
+            row += grid.at( x, y ).ch;
+        }
+        if( row.find( text ) != std::string::npos ) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool mp_grids_equal( const mp_screen_grid &a, const mp_screen_grid &b )

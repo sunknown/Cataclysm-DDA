@@ -168,6 +168,40 @@ TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
     mp_sync_context_count();
 }
 
+// The regression guard for the render pipeline itself. The two tests below it
+// would notice if the pipeline stopped reaching the grid, but both of them are
+// red for reasons that are not the pipeline's -- the teardown race and the hurry
+// flag -- so neither can be relied on to report it. This one asserts the thing
+// those two only imply, and does it with one player: the teardown race needs two
+// threads unwinding at once, so a single-player session does not reach it.
+TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+
+    // The harness constructor zeroes every slot's moves, which reads as "already
+    // acted": the barrier is satisfied before anyone is handed the baton, so no
+    // player_act runs, the key is never read and no menu opens. Give the moves
+    // back so this player is actionable this turn.
+    g->player_at( 0 ).set_moves( 100 );
+    // '@' opens the character sheet, whose header carries the character's own
+    // name. That is the assertion worth making: not "something was drawn", but
+    // "this player's own screen was drawn", which is the claim the whole phase
+    // rests on and the one a broken pipeline cannot fake.
+    harness.press( 0, '@' );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "P0" );
+    }, 5 ) );
+
+    const mp_screen_grid &screen = harness.screen( 0 );
+    CHECK( mp_grid_contains( screen, "P0" ) );
+    // A rendered character sheet, not one stray cell. It measured 944 non-blank
+    // cells when the pipeline was first made to work at this terminal size; the
+    // floor is set far below that so ordinary UI churn does not trip it, and far
+    // above what any partial write could reach.
+    CHECK( mp_grid_nonblank_cells( screen ) > 200 );
+}
+
 // The six menus the design names as the heavy ones: each is a different UI
 // path, and a global leaked by any of them shows up as one player seeing the
 // other's screen. The keys are the DEFAULTMODE defaults.

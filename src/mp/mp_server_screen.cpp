@@ -20,6 +20,14 @@ namespace
 // Before any client is attached (startup, tests without a session) the game
 // still asks for a grid to size stdscr from. The fallback keeps that path
 // alive without pretending a session exists.
+//
+// Since mp_server_blit_row() writes through mp_server_grid(), session-less
+// draws now land here instead of being discarded. That makes this process-wide
+// mutable state shared by every participant, and its safety rests entirely on
+// the scheduler's invariant that exactly one of them runs at a time. Nothing
+// ever sends this grid to a client, so a mixture of two participants' draws
+// would be invisible rather than a screen leak -- but the invariant is what
+// keeps it coherent, not the fact that nobody reads it.
 mp_screen_grid fallback_grid( 80, 24 );
 
 } // namespace
@@ -75,11 +83,14 @@ void mp_server_set_cursor( const int x, const int y, const bool visible )
     if( s == nullptr ) {
         // Deliberately session-only, unlike the blit above. The asymmetry that
         // bug was is a write with no matching read; the cursor has no read at
-        // all without a session. Its only reader is mp_server_flush_screen(),
-        // which needs a transport and therefore a session, and nothing else in
-        // the tree reads cursor_x/cursor_y/cursor_visible. A fallback cursor
-        // would be state that can never be observed -- dead by construction --
-        // so there is nothing here to keep symmetric.
+        // all without a session. The only reader of mp_session::cursor_x /
+        // cursor_y / cursor_visible is mp_server_flush_screen(), which needs a
+        // transport and therefore a session. (mp_client_state carries fields of
+        // the same names, but those are the client's own copy, decoded off the
+        // wire and read by the client -- src/mp/mp_client_main.cpp -- and have
+        // nothing to do with this state.) A fallback cursor would be state that
+        // can never be observed -- dead by construction -- so there is nothing
+        // here to keep symmetric.
         return;
     }
     if( s->cursor_x == x && s->cursor_y == y && s->cursor_visible == visible ) {
