@@ -37,9 +37,19 @@ constexpr int MP_HARNESS_ROWS = 24;
 // ui_adaptor::redraw_invalidated() (src/ui_manager.cpp:383) and the main-UI
 // redraw callback game::draw() (src/game.cpp:3340) return on it -- but it gates
 // roughly twenty other behaviours, and clearing it turns all of them on at once.
-// The ones that are live on the paths this harness walks:
+// This is the full enumeration for this build, not a summary -- there is
+// nowhere else in the tree that carries it. Sites that only run at data-load
+// time, and sites specific to SDL, ncurses, wincurse or sound, are excluded
+// because the harness cannot reach them; everything else that the flag gates is
+// below.
 //
-//  - src/game.cpp:3340        the whole main screen: terrain, sidebar, minimap.
+// Turned ON (behaviour the flag was suppressing):
+//
+//  - src/ui_manager.cpp:383   redraw_invalidated() itself.
+//  - src/game.cpp:3340        game::draw() -- the whole main screen: terrain,
+//                             sidebar, minimap. This is the callback
+//                             create_or_get_main_ui_adaptor() registers, so it
+//                             is the largest single thing the flag was hiding.
 //  - src/ui_manager.cpp:559   background_pane really registers a redraw that
 //                             erases and repaints the shared stdscr.
 //  - src/uilist.cpp:438       cata_assert( !test_mode ) -- clearing the flag is
@@ -67,15 +77,33 @@ constexpr int MP_HARNESS_ROWS = 24;
 //    src/handle_liquid.cpp:274, src/iuse.cpp:1114, src/advanced_inv.cpp:2351
 //                             each stops auto-answering and opens its real
 //                             interactive prompt.
-//  - src/character_proficiency.cpp:120  the one inverted case:
-//                             set_proficiency_practice() becomes a no-op.
+//  - src/output.cpp:2946      scrollingcombattext::add() really queues SCT.
+//  - src/animation.cpp:340    draw_custom_explosion() really draws. Unlike the
+//                             other five test_mode guards in that file, this one
+//                             is NOT inside a #if defined(TILES) block -- it
+//                             sits between the #endif at :335 and the #if at
+//                             :354, so it compiles in a TILES=0 build. Nothing
+//                             explodes in this harness, so it is unreached, but
+//                             it is live.
+//  - src/activity_actor.cpp:13671,13693,13734,14357, src/character.cpp:7235,
+//    src/game.cpp:6659        the zone-sort viewport family starts calling
+//                             g->set_zoom() and mark_main_ui_adaptor_resize();
+//                             inert while players have no activity.
+//
+// Turned OFF (the inverted cases -- behaviour the flag was providing):
+//
+//  - src/character_proficiency.cpp:120  set_proficiency_practice() early-returns
+//                             on !test_mode, so it becomes a no-op.
+//  - src/map.cpp:8702         the overlapping-map DebugLog info line stops being
+//                             emitted.
 //
 // So the harness exercises a far larger surface than "the redraw", and a hang is
-// as plausible a new failure mode as an assertion. Two things it is NOT: every
-// test_mode guard in src/animation.cpp is inside #if defined(TILES) and so is
-// inert in this build, and in an MP_SERVER build debugmsg() returns before it
-// ever consults test_mode (src/debug.cpp:566-577), so clearing the flag cannot
-// make an error open a modal window.
+// as plausible a new failure mode as an assertion. Two things it is NOT: five of
+// the six test_mode guards in src/animation.cpp (:294, :517, :597, :631, :902)
+// are inside #if defined(TILES) and so are inert in this build -- :340 above is
+// the exception -- and in an MP_SERVER build debugmsg() returns before it ever
+// consults test_mode (src/debug.cpp:566-577), so clearing the flag cannot make
+// an error open a modal window.
 //
 // Each of these globals is saved and restored, so a later test inherits none of
 // them. That is not the whole story: mp_ensure_player_context() copies TERMX,

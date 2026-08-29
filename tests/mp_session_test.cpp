@@ -172,8 +172,20 @@ TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
 // would notice if the pipeline stopped reaching the grid, but both of them are
 // red for reasons that are not the pipeline's -- the teardown race and the hurry
 // flag -- so neither can be relied on to report it. This one asserts the thing
-// those two only imply, and does it with one player: the teardown race needs two
-// threads unwinding at once, so a single-player session does not reach it.
+// those two only imply.
+//
+// It is red today too, and for the first of those two reasons: it aborts in
+// ~mp_session_harness on mp_sched.cpp:94's `holder_ == from`. One player does
+// not avoid that race. A thread parked INSIDE player_act() -- which is where a
+// player sitting in a menu is -- wakes on mp_sched's `stopping_` without ever
+// holding the baton, unwinds out of player_act, and the harness thread body then
+// releases a baton it does not hold. One parked-in-menu thread is enough; a
+// thread parked at the top of that loop unwinds cleanly, because the body checks
+// stopping() there and returns before any release. Task B is what makes this
+// green. Closing the menu with a keystroke first would also make it green and is
+// exactly the wrong fix: the point of the guard is the pipeline, and dodging the
+// abort would cost the assertions below, which are evaluated and printed before
+// it. Read those, not the exit status, until task B lands.
 TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
 {
     restore_active_state restore;
@@ -184,10 +196,13 @@ TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
     // player_act runs, the key is never read and no menu opens. Give the moves
     // back so this player is actionable this turn.
     g->player_at( 0 ).set_moves( 100 );
-    // '@' opens the character sheet, whose header carries the character's own
-    // name. That is the assertion worth making: not "something was drawn", but
-    // "this player's own screen was drawn", which is the claim the whole phase
-    // rests on and the one a broken pipeline cannot fake.
+    // '@' opens the character sheet, which carries the character's own name --
+    // though so does the sidebar, now that game::draw() is no longer gated off,
+    // so this does not pin down WHICH screen arrived. It does not need to. What
+    // the assertion proves is the claim the phase rests on: content specific to
+    // this player travelled the whole pipeline to this player's client grid. A
+    // pipeline that discards writes cannot produce it, and one that carried some
+    // other player's screen would not carry this name.
     harness.press( 0, '@' );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 0 ), "P0" );
