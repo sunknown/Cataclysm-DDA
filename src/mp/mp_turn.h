@@ -100,8 +100,7 @@ enum class mp_hurry_source {
 // A running combat countdown does not count: the press is a request in its own
 // right, and the player gets an answer to it even in the middle of a fight.
 //
-// Any player who has already acted may call it. Any player who has
-// already acted may call it. The countdown is visible to everyone; when it
+// Any player who has already acted may call it. The countdown is visible to everyone; when it
 // expires the server stops waiting for whoever is still holding -- it does not
 // reach into their UI or close anything. Their character stands still and skips
 // the turn; their menu stays open and they confirm when they are ready.
