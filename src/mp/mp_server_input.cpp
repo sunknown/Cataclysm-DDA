@@ -48,12 +48,15 @@ void send_hello_ack( mp_transport &transport, const bool accepted, const std::st
                              std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
-// Handles one parsed control message. Only the kinds the client actually sends
-// the server do anything; hello, hello_ack and cursor travel client-ward and
-// are ignored here.
-void dispatch( const mp_control &msg )
+// Handles one parsed control message for the player `s` and `ctx` belong to.
+// Only the kinds the client actually sends the server do anything; hello,
+// hello_ack and cursor travel client-ward and are ignored here.
+//
+// Both are passed in rather than looked up, because the input wait calls this
+// after its player has handed the baton on (see mp_server_wait_for_input_of):
+// by then the active session and context are whoever runs next, not this player.
+void dispatch( const mp_control &msg, mp_session *const s, player_context *const ctx )
 {
-    mp_session *const s = mp_active_session();
     if( s == nullptr ) {
         // No client is addressed: the world phase never reads the wire, and a
         // test without a session has nowhere to put this.
@@ -64,7 +67,7 @@ void dispatch( const mp_control &msg )
             // mp_ensure_player_context() runs at game startup, before the main
             // menu, so the queue is live from the start; the null check is
             // defensive for tests that run without a context.
-            if( player_context *ctx = mp_active_context_ptr() ) {
+            if( ctx != nullptr ) {
                 ctx->input_queue.push_back( msg.event );
             }
             break;
@@ -97,7 +100,8 @@ void dispatch( const mp_control &msg )
 // Parses one raw framed payload. A malformed frame, a non-control kind, or a
 // control message that does not parse is ignored rather than asserted on:
 // nothing a peer sends should ever be able to crash the server loop.
-void dispatch_frame( const std::vector<uint8_t> &payload )
+void dispatch_frame( const std::vector<uint8_t> &payload, mp_session *const s,
+                     player_context *const ctx )
 {
     mp_msg_kind kind = mp_msg_kind::control;
     std::vector<uint8_t> body;
@@ -111,14 +115,13 @@ void dispatch_frame( const std::vector<uint8_t> &payload )
     if( !mp_control_from_json( std::string( body.begin(), body.end() ), msg ) ) {
         return;
     }
-    dispatch( msg );
+    dispatch( msg, s, ctx );
 }
 
-bool take_queued( input_event &out )
+bool take_queued( player_context *const ctx, input_event &out )
 {
     // The context is ensured before the main menu, so the queue is live from
     // startup; the null check is defensive for tests without a context.
-    player_context *ctx = mp_active_context_ptr();
     if( ctx == nullptr ) {
         return false;
     }
@@ -236,13 +239,21 @@ input_event mp_server_wait_for_input( const int timeout_ms )
     // drew since the last turn is packed into a single message here, before
     // the wait blocks.
     mp_server_flush_screen();
+    return mp_server_wait_for_input_of( mp_active_session(), mp_active_context_ptr(),
+                                        timeout_ms );
+}
 
+input_event mp_server_wait_for_input_of( mp_session *const s, player_context *const ctx,
+        const int timeout_ms )
+{
+    // Nothing below may read the active session, the active context or any
+    // other process-wide state: see the header. Everything goes through `s`
+    // and `ctx`.
     input_event buffered;
-    if( take_queued( buffered ) ) {
+    if( take_queued( ctx, buffered ) ) {
         return buffered;
     }
 
-    mp_session *const s = mp_active_session();
     std::shared_ptr<mp_transport> t;
     if( s ) {
         t = s->transport;
@@ -281,8 +292,8 @@ input_event mp_server_wait_for_input( const int timeout_ms )
             return make_timeout_event();
         }
 
-        dispatch_frame( *msg );
-        if( take_queued( buffered ) ) {
+        dispatch_frame( *msg, s, ctx );
+        if( take_queued( ctx, buffered ) ) {
             return buffered;
         }
         if( s && s->pending_resize ) {
@@ -304,8 +315,9 @@ void mp_server_pump()
     if( !s || !s->transport || !s->transport->connected() ) {
         return;
     }
+    player_context *const ctx = mp_active_context_ptr();
     while( const std::optional<std::vector<uint8_t>> msg = s->transport->recv( 0 ) ) {
-        dispatch_frame( *msg );
+        dispatch_frame( *msg, s, ctx );
     }
 }
 

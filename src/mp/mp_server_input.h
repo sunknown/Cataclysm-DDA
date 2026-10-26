@@ -8,6 +8,7 @@
 
 class mp_transport;
 struct mp_session;
+struct player_context;
 
 // The largest terminal a peer may declare, in either dimension. The server's
 // screen grid multiplies width by height (mp_screen_grid::resize), so an
@@ -46,6 +47,20 @@ bool mp_server_handshake( mp_transport &transport, mp_session &session,
 // an event of type `timeout` when nothing arrived and when the wait ended on a
 // resize -- the caller tells the two apart with mp_server_resize_pending().
 input_event mp_server_wait_for_input( int timeout_ms );
+
+// The same wait, minus the flush, for player `session` / `ctx` named explicitly.
+// mp_server_wait_for_input() is this applied to the active session and context.
+//
+// This is the half that runs WITHOUT the baton. A player thread hands the baton
+// on before it blocks on its own wire (the curses backend's get_input_event),
+// and from that moment the world and the other players run: they repoint the
+// active context, flip the world-phase flag and swap avatars. So this reads no
+// process-wide state at all -- only `session` (its transport and pending
+// resize) and `ctx` (its input queue), both of which belong to this player
+// alone. The caller captures them, and flushes the screen, while it still holds
+// the baton.
+input_event mp_server_wait_for_input_of( mp_session *session, player_context *ctx,
+        int timeout_ms );
 
 // Consumes whatever has already arrived without blocking. Keystrokes seen here
 // are buffered for the next mp_server_wait_for_input().

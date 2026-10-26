@@ -229,17 +229,31 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         input_event ev;
         if( sched ) {
             // This is the only place in the game where the baton changes hands.
-            // The screen goes out first (inside wait_for_input), because the
-            // player must see what the game drew before anyone waits on them;
-            // then the baton is released, and this thread blocks on its own
-            // socket holding nothing. A slow wire cannot stall the simulation,
-            // because whoever holds the baton is somebody else.
+            // The screen goes out first, because the player must see what the
+            // game drew before anyone waits on them; then the baton is
+            // released, and this thread blocks on its own socket holding
+            // nothing. A slow wire cannot stall the simulation, because whoever
+            // holds the baton is somebody else.
+            //
+            // Which also means that from release_to() on, the active session
+            // and context are no longer this player's: the world and the other
+            // players repoint them as they run. So the flush and the lookups
+            // happen here, while the baton is still held, and the wait is
+            // handed this player's own session and context to read instead.
+            mp_server_flush_screen();
+            mp_session *const session = mp_active_session();
+            player_context *const ctx = mp_active_context_ptr();
             mp_set_waiting_for_input( slot, true );
             sched->release_to( slot, mp_sched::world );
-            ev = mp_server_wait_for_input( timeout );
+            ev = mp_server_wait_for_input_of( session, ctx, timeout );
             sched->wait_for_turn( slot );
-            mp_set_waiting_for_input( slot, false );
+            // Not cleared yet: wait_for_turn() can return without the baton
+            // (below), and the flags are one shared vector<bool> -- every slot's
+            // flag lives in the same word, so two players woken by the same
+            // shutdown would write it at once. Each branch clears it once it
+            // holds something that orders it: the unwind right or the baton.
             if( sched->unwind_if_stopping( slot ) ) {
+                mp_set_waiting_for_input( slot, false );
                 // Woken by the shutdown broadcast, without the baton. This is
                 // where a player sitting in a menu first learns of it, and it
                 // learns it with its own slot in hand -- so it takes the unwind
@@ -269,6 +283,7 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             // caller) next reads from mp_active_context() can be someone
             // else's, and the next mp_assert_holds() trips on a baton this
             // thread genuinely holds.
+            mp_set_waiting_for_input( slot, false );
             mp_activate_player( slot );
         } else {
             ev = mp_server_wait_for_input( timeout );
