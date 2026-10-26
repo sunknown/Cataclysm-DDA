@@ -7,6 +7,7 @@
 
 #include "avatar.h"
 #include "cached_options.h"
+#include "cata_scope_helpers.h"
 #include "cursesdef.h"
 #include "game.h"
 #include "game_constants.h"
@@ -115,10 +116,16 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     sched_ = std::make_unique<mp_sched>( players );
     mp_set_active_sched( sched_.get() );
     for( size_t i = 0; i < players; ++i ) {
-        threads_.emplace_back( [i]() {
+        threads_.emplace_back( [i, sched = sched_.get()]() {
+            // Held for the whole body, so the unwind right is handed on however
+            // the thread ends -- see mp_sched::unwind_if_stopping. A no-op for a
+            // thread that never took it.
+            on_out_of_scope release_unwind( [i, sched]() {
+                sched->release_unwind( i );
+            } );
             while( true ) {
-                mp_active_sched()->wait_for_turn( i );
-                if( mp_active_sched()->stopping() ) {
+                sched->wait_for_turn( i );
+                if( sched->unwind_if_stopping( i ) ) {
                     return;
                 }
                 mp_assert_holds( i );
@@ -126,7 +133,14 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
                 avatar &ava = g->player_at( i );
                 g->avatar_turn_pre( ava );
                 g->player_act( ava );
-                mp_active_sched()->release_to( i, mp_sched::world );
+                // A shutdown during player_act woke this thread without the
+                // baton, so there is none to release. The right is already
+                // held by now if the wake came through an input wait; taking it
+                // here covers a player_act that saw the stop some other way.
+                if( sched->unwind_if_stopping( i ) ) {
+                    return;
+                }
+                sched->release_to( i, mp_sched::world );
             }
         } );
     }
@@ -148,6 +162,11 @@ mp_session_harness::~mp_session_harness()
     for( std::thread &t : threads_ ) {
         t.join();
     }
+    // The unwinders ran under their own contexts (mp_sched::unwind_if_stopping),
+    // and the last one left its slot active, with its avatar swapped into g->u.
+    // Nothing runs any more, so put the process back in the world phase before
+    // anything below reads or reshapes the slots.
+    mp_activate_world();
     mp_set_active_sched( nullptr );
     mp_sessions_reset_for_test();
     game_test_helper::reset_player_slots();

@@ -169,23 +169,18 @@ TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
 }
 
 // The regression guard for the render pipeline itself. The two tests below it
-// would notice if the pipeline stopped reaching the grid, but both of them are
-// red for reasons that are not the pipeline's -- the teardown race and the hurry
+// would notice if the pipeline stopped reaching the grid, but each can fail for
+// reasons that are not the pipeline's -- the menus' own teardown, and the hurry
 // flag -- so neither can be relied on to report it. This one asserts the thing
 // those two only imply.
 //
-// It is red today too, and for the first of those two reasons: it aborts in
-// ~mp_session_harness on mp_sched.cpp:94's `holder_ == from`. One player does
-// not avoid that race. A thread parked INSIDE player_act() -- which is where a
-// player sitting in a menu is -- wakes on mp_sched's `stopping_` without ever
-// holding the baton, unwinds out of player_act, and the harness thread body then
-// releases a baton it does not hold. One parked-in-menu thread is enough; a
-// thread parked at the top of that loop unwinds cleanly, because the body checks
-// stopping() there and returns before any release. Task B is what makes this
-// green. Closing the menu with a keystroke first would also make it green and is
-// exactly the wrong fix: the point of the guard is the pipeline, and dodging the
-// abort would cost the assertions below, which are evaluated and printed before
-// it. Read those, not the exit status, until task B lands.
+// It also covers the teardown of a single player left inside a menu, which was
+// an abort before mp_sched's unwind right (mp_sched.cpp's release_to assert):
+// a thread parked INSIDE player_act() wakes on `stopping_` without the baton,
+// and its thread body used to release a baton it did not hold. One parked-in-
+// menu thread was enough -- no concurrency involved. Do not "fix" a failure
+// here by closing the menu with a keystroke first: that dodges the very case
+// this leaves open at teardown.
 TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
 {
     restore_active_state restore;

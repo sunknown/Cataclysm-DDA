@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "avatar.h"
+#include "cata_scope_helpers.h"
 #include "debug.h"
 #include "game.h"
 #include "mp/mp_context.h"
@@ -145,24 +146,39 @@ void mp_server_start_player_threads()
     mp_set_active_sched( g_sched.get() );
     mp_sched_start_watchdog( *g_sched, 30000 );
     for( size_t i = 0; i < mp_sessions().size(); ++i ) {
-        g_player_threads.emplace_back( [i]() {
+        g_player_threads.emplace_back( [i, sched = g_sched.get()]() {
+            // Held for the whole body, so the unwind right is handed on however
+            // the thread ends -- see mp_sched::unwind_if_stopping. A no-op for a
+            // thread that never took it.
+            on_out_of_scope release_unwind( [i, sched]() {
+                sched->release_unwind( i );
+            } );
             while( true ) {
-                mp_active_sched()->wait_for_turn( i );
-                if( mp_active_sched()->stopping() ) {
+                sched->wait_for_turn( i );
+                if( sched->unwind_if_stopping( i ) ) {
                     return;
                 }
                 mp_assert_holds( i );
                 mp_activate_player( i );
                 avatar &ava = g->player_at( i );
                 g->avatar_turn_pre( ava );
-                if( g->player_act( ava ) ) {
+                const bool ended = g->player_act( ava );
+                // A shutdown during player_act woke this thread without the
+                // baton, so there is none to release, and the session is
+                // already ending without a request. The right is already held
+                // by now if the wake came through an input wait; taking it here
+                // covers a player_act that saw the stop some other way.
+                if( sched->unwind_if_stopping( i ) ) {
+                    return;
+                }
+                if( ended ) {
                     // The game is over or this player quit. A thread body has
                     // nowhere to return that to, so it is left where the
                     // orchestrator picks it up and turns it into do_turn()'s
                     // `true` for main().
                     mp_request_session_end();
                 }
-                mp_active_sched()->release_to( i, mp_sched::world );
+                sched->release_to( i, mp_sched::world );
             }
         } );
     }
@@ -188,6 +204,11 @@ void mp_server_end_session()
     for( std::thread &t : g_player_threads ) {
         t.join();
     }
+    // The unwinders ran under their own contexts (mp_sched::unwind_if_stopping),
+    // and the last one left its slot active, with its avatar swapped into g->u.
+    // Nothing runs any more, so put the process back in the world phase before
+    // anything below reads or reshapes the slots.
+    mp_activate_world();
     g_player_threads.clear();
     mp_set_active_sched( nullptr );
     g_sched.reset();

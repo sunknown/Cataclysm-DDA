@@ -28,7 +28,8 @@ class mp_sched
         // object at the time has left. That is NOT the whole precondition for
         // destroying safely: a thread that has not yet entered a wait_for_turn/
         // yield_to/wait_for_request call when shut_down() finishes draining is
-        // not counted, so it can still be about to touch a member that is mid-
+        // not counted, nor is the unwinder still to call release_unwind(), so
+        // either can still be about to touch a member that is mid-
         // destruction. The owner must join every thread that might call any
         // mp_sched method -- player threads and anyone else -- before the
         // mp_sched object itself goes out of scope or is deleted.
@@ -67,10 +68,14 @@ class mp_sched
 
         // Signals every participant to end, then blocks until every waiter
         // that was parked inside this object (in wait_for_turn, the resume
-        // half of yield_to, or wait_for_request) has woken, observed
-        // stopping_, and left -- so no such waiter is still touching mutex_ or
-        // waiting_for_baton_ when this call returns. Called by the destructor
-        // and by session teardown. Idempotent: safe to call more than once.
+        // half of yield_to, wait_for_request, or waiting on the unwind right in
+        // unwind_if_stopping) has woken and left -- so no such waiter is still
+        // touching mutex_ or waiting_for_baton_ when this call returns. The
+        // first three wake on stopping_ itself; a thread waiting on the unwind
+        // right leaves only once the unwinders ahead of it have finished, so
+        // this call can outlast all but the last player's unwind. Called by
+        // the destructor and by session teardown. Idempotent: safe to call
+        // more than once.
         //
         // This is necessary but not sufficient for safe destruction; see the
         // destructor's comment for the rest of the precondition it does not
@@ -80,6 +85,74 @@ class mp_sched
         // Whether shut_down() has been called. A player thread body checks it
         // after every resume and returns when it is set.
         bool stopping() const;
+
+        // The unwind right: the shutdown counterpart of the baton.
+        //
+        // shut_down() wakes every parked player at once, on purpose, and a
+        // woken player holds NO baton -- yet a player woken inside a menu
+        // still has that whole menu stack to unwind, and an unwind runs game
+        // code against process-wide single-writer state: ui_manager's active
+        // stack, the active-context pointer, the avatar swapped into g->u.
+        // Two unwinding at once trip ~ui_adaptor()'s owner == active_stack
+        // assert. The right restores "exactly one player context runs at a
+        // time" for the teardown too: at most one player holds it, from the
+        // moment that player learns of the shutdown until its thread has
+        // fully exited its per-player loop.
+        //
+        // It is not the baton, and cannot be. A baton is taken and given back
+        // around one turn; an unwind re-enters get_input_event() an unbounded
+        // number of times as each nested menu loop notices the shutdown and
+        // returns, and the right has to be held across all of them.
+        //
+        // unwind_if_stopping( who ): returns false at once, touching nothing,
+        // when shut_down() has not been called. Otherwise blocks until no
+        // other player holds the right, takes it for `who`, and returns true.
+        // Idempotent: a caller that already holds the right returns true at
+        // once, which is what makes the repeated get_input_event() re-entries
+        // of one unwind safe. Checking and taking are one call so that no
+        // caller can observe the shutdown without also serialising on it.
+        // `who` must be a player index, and a re-entry must come from the
+        // thread that took the right (asserted: a thread naming a slot that
+        // is not its own is exactly the slip that would let two unwind).
+        //
+        // release_unwind( who ): gives the right back and wakes the next
+        // waiter. A no-op when `who` does not hold it -- a thread that ends
+        // without ever having seen the shutdown, or a test body that returns
+        // early -- so an unconditional scope guard around the whole thread
+        // body is the intended shape, and it cannot release someone else's.
+        //
+        // What it guarantees: no two players run unwind code at once, and
+        // the thread granted the right was granted it under the mutex, after
+        // the previous holder's whole loop body had ended.
+        //
+        // What it does NOT do, which the owner and the callers must:
+        //  - Repoint the process-wide context. Whoever is granted the right
+        //    must mp_activate_player( who ) before running game code, for the
+        //    same reason the baton-reacquire path in get_input_event() does:
+        //    the previous unwinder left its own context active.
+        //  - Release the baton. A woken player does not hold it, and a stop
+        //    path must return WITHOUT release_to(): at teardown the world
+        //    needs nothing back, and release_to() asserts real ownership.
+        //  - Release itself. Every player thread body must hold a scope guard
+        //    calling release_unwind( slot ) for its whole lifetime; a thread
+        //    that exits holding the right parks every later unwinder forever,
+        //    and with them shut_down().
+        //  - Restore the world phase. The last unwinder leaves its own slot
+        //    active, avatar swapped into g->u; the owner must call
+        //    mp_activate_world() once it has joined the player threads and
+        //    before it touches the slots.
+        //  - Make a menu terminate. The right serialises unwinds; a menu loop
+        //    that ignores the substituted QUIT holds it forever, and
+        //    shut_down() with it, since its waiters are counted in parked_.
+        //
+        // Waiting on the right is counted in parked_ like every other wait, so
+        // shut_down() does not return while a thread is still parked on it.
+        // That cannot deadlock: the holder is never itself parked in this
+        // object (every other wait here wakes on stopping_), so its unwind
+        // runs to its scope guard and hands the right on, and the last holder
+        // is never waiting at all.
+        bool unwind_if_stopping( size_t who );
+        void release_unwind( size_t who );
 
         // Whether `who` is currently parked on wait_for_turn (or on the resume
         // half of yield_to), i.e. ready to be handed the baton. The world polls
@@ -128,10 +201,17 @@ class mp_sched
         // participant has no entry: it never waits for the baton, it waits for
         // somebody to ask for it (wait_for_request).
         std::vector<char> waiting_for_baton_;
+        // Holder of the unwind right (see unwind_if_stopping), or
+        // mp_sched::world while nobody holds it, and the thread that took it.
+        // The thread id is only there to catch a re-entry naming a slot that
+        // belongs to another thread; it is never used to decide who runs.
+        size_t unwinder_ = world;
+        std::thread::id unwinder_thread_;
         // Count of callers currently blocked inside a cv_.wait/wait_for in
-        // wait_for_turn, yield_to, or wait_for_request -- i.e. still holding a
-        // reference to this object's members that shut_down() must not let
-        // become dangling. Incremented under mutex_ right before parking,
+        // wait_for_turn, yield_to, unwind_if_stopping or wait_for_request --
+        // i.e. still holding a reference to this object's members that
+        // shut_down() must not let become dangling. Incremented under mutex_
+        // right before parking,
         // decremented under mutex_ right after waking, so shut_down() can wait
         // on "parked_ == 0" and know every such caller has fully finished
         // touching the object.

@@ -343,4 +343,65 @@ TEST_CASE( "a_declared_wait_suppresses_the_watchdogs_report", "[mp]" )
     sched.shut_down();
 }
 
+// Blocks until every player of `sched` is parked on wait_for_turn, so a
+// following shut_down() wakes them all at once -- the broadcast the unwind right
+// exists to serialise.
+static void wait_until_all_parked( const mp_sched &sched, const size_t players )
+{
+    for( size_t i = 0; i < players; ++i ) {
+        while( !sched.waiting_for_baton( i ) ) {
+            std::this_thread::yield();
+        }
+    }
+}
+
+TEST_CASE( "only_one_player_unwinds_at_a_time_after_a_shutdown", "[mp]" )
+{
+    // shut_down() wakes every parked player at once, by design. Each one here
+    // then does what an unwinding player does: takes the right, re-enters it
+    // (a second menu frame asking for input), and runs for a while. Without the
+    // right all three would be inside together -- they wake in the same
+    // instant and each stays inside for milliseconds. Each also tries to
+    // release its neighbour's right while holding its own, which must be a
+    // no-op: a release that could free someone else's right would let a
+    // third player in alongside the holder. Repeated, because the property is
+    // about an interleaving.
+    constexpr size_t players = 3;
+    for( int rep = 0; rep < 10; ++rep ) {
+        mp_sched sched( players );
+        std::atomic<int> inside{ 0 };
+        std::atomic<int> max_inside{ 0 };
+        std::atomic<int> took{ 0 };
+        std::atomic<int> reentered{ 0 };
+        std::vector<std::thread> threads;
+        for( size_t i = 0; i < players; ++i ) {
+            threads.emplace_back( [&, i]() {
+                sched.wait_for_turn( i );
+                if( !sched.unwind_if_stopping( i ) ) {
+                    return;
+                }
+                ++took;
+                const int now = ++inside;
+                int prev = max_inside.load();
+                while( now > prev && !max_inside.compare_exchange_weak( prev, now ) ) {}
+                if( sched.unwind_if_stopping( i ) ) {
+                    ++reentered;
+                }
+                sched.release_unwind( ( i + 1 ) % players );
+                std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+                --inside;
+                sched.release_unwind( i );
+            } );
+        }
+        wait_until_all_parked( sched, players );
+        sched.shut_down();
+        for( std::thread &t : threads ) {
+            t.join();
+        }
+        CHECK( took.load() == static_cast<int>( players ) );
+        CHECK( reentered.load() == static_cast<int>( players ) );
+        CHECK( max_inside.load() == 1 );
+    }
+}
+
 #endif // defined(MULTIPLAYER)

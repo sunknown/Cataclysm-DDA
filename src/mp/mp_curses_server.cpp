@@ -1,12 +1,10 @@
 #if defined(MP_SERVER)
 
 #include <array>
-#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include "cata_utility.h"
@@ -189,7 +187,15 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                 mp_server_request_exit();
             }
         }
-        if( mp_sched_stopping() ) {
+        // Read before the stopping check below as well as for the normal path:
+        // during an unwind the active context IS this thread's own, because
+        // unwind_if_stopping() is first reached from a place that knows its
+        // slot for itself (the reacquire branch below, or the per-player loop
+        // body), the activation that follows it repoints the context here, and
+        // nobody else runs while this thread holds the unwind right.
+        const size_t slot = mp_active_context_ptr() ? mp_active_context().slot_index : 0;
+        mp_sched *const sched = mp_active_sched();
+        if( sched && sched->unwind_if_stopping( slot ) ) {
             // wait_for_turn()'s own wait predicate is `holder_ == who ||
             // stopping_`: once shut_down() sets stopping_, every parked
             // wait_for_turn/yield_to wakes for that reason alone, with no
@@ -201,29 +207,27 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             // check that call falls through to mp_assert_holds() below and
             // to release_to()/wait_for_turn() further down, both of which
             // assert real ownership this thread was never actually granted
-            // during a stopping wake. Bail the same way the reacquire path
-            // already does, before touching any of that.
+            // during a stopping wake.
             //
-            // A menu's own loop has no way to learn a shutdown happened from
-            // one timeout event, so it keeps calling straight back in here;
-            // without a real wait nothing throttles that, and it spins at
-            // 100% CPU until the caller joins this thread. MP_POLL_MS matches
-            // the world's own idle-wait cadence (do_turn.cpp) -- there is
-            // nothing left worth polling faster than that once the scheduler
-            // is unwinding.
-            std::this_thread::sleep_for( std::chrono::milliseconds( MP_POLL_MS ) );
+            // What it holds instead is the unwind right, and this is where a
+            // re-entering menu loop finds it already held (unwind_if_stopping
+            // is idempotent). That right is also the throttle this branch used
+            // to need a sleep for: every other unwinding thread is blocked on
+            // it, not spinning, and the one holding it gets a timeout that
+            // handle_input() turns into QUIT, so its loops end rather than ask
+            // again. The activation is redundant on a re-entry and harmless.
+            mp_activate_player( slot );
             input_event ev;
             ev.type = input_event_t::timeout;
             return ev;
         }
-        const size_t slot = mp_active_context_ptr() ? mp_active_context().slot_index : 0;
         mp_assert_holds( slot );
 
         const int timeout = mp_active_context_ptr() ?
                             mp_active_context().input_timeout_ms : -1;
 
         input_event ev;
-        if( mp_sched *const sched = mp_active_sched() ) {
+        if( sched ) {
             // This is the only place in the game where the baton changes hands.
             // The screen goes out first (inside wait_for_input), because the
             // player must see what the game drew before anyone waits on them;
@@ -235,7 +239,16 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             ev = mp_server_wait_for_input( timeout );
             sched->wait_for_turn( slot );
             mp_set_waiting_for_input( slot, false );
-            if( sched->stopping() ) {
+            if( sched->unwind_if_stopping( slot ) ) {
+                // Woken by the shutdown broadcast, without the baton. This is
+                // where a player sitting in a menu first learns of it, and it
+                // learns it with its own slot in hand -- so it takes the unwind
+                // right here, before any of the menu code it returns into can
+                // run, and parks if another player is still unwinding. The
+                // activation is the same one the normal path below does, for
+                // the same reason: whoever unwound before this thread left its
+                // own context active.
+                mp_activate_player( slot );
                 ev = input_event();
                 ev.type = input_event_t::timeout;
                 return ev;

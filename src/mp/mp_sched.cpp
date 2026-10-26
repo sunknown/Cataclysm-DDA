@@ -162,6 +162,12 @@ void mp_sched::shut_down()
     // is waiting -- has fully left before this call returns. It does NOT wait
     // for a caller that has not yet entered any of those three functions; see
     // the destructor's comment.
+    //
+    // A thread waiting on the unwind right in unwind_if_stopping() is counted
+    // too, and it does not wake on stopping_: it leaves when the unwinder
+    // ahead of it hands the right on. So this wait lasts until every player
+    // but the last has finished its unwind. That is finite as long as each
+    // unwind is, because the holder of the right is never parked in here.
     cv_.wait( lock, [this] { return parked_ == 0; } );
     lock.unlock();
 
@@ -176,6 +182,51 @@ bool mp_sched::stopping() const
 {
     std::lock_guard<std::mutex> lock( mutex_ );
     return stopping_;
+}
+
+bool mp_sched::unwind_if_stopping( const size_t who )
+{
+    // Same reason as wait_for_turn: world (SIZE_MAX) is not a player, and the
+    // world never unwinds a menu -- it is the thread blocked in shut_down().
+    cata_assert( who < players_ );
+    std::unique_lock<std::mutex> lock( mutex_ );
+    if( !stopping_ ) {
+        return false;
+    }
+    if( unwinder_ == who ) {
+        // A nested menu loop of the same unwind calling back in. Another
+        // thread naming this slot would be a caller that read someone else's
+        // slot out of the shared active context: let it through and two
+        // threads unwind at once, the exact failure the right exists for.
+        cata_assert( unwinder_thread_ == std::this_thread::get_id() );
+        return true;
+    }
+    // No stopping_ in the predicate: it is already set, and it is monotone.
+    // What ends this wait is the holder ahead of us handing the right back,
+    // which its scope guard does when its thread body ends.
+    ++parked_;
+    cv_.wait( lock, [this] {
+        return unwinder_ == world;
+    } );
+    unwinder_ = who;
+    unwinder_thread_ = std::this_thread::get_id();
+    --parked_;
+    cv_.notify_all();
+    return true;
+}
+
+void mp_sched::release_unwind( const size_t who )
+{
+    // world would compare equal to the "nobody holds it" value and pass as a
+    // release; a player index is the only thing that can hold the right.
+    cata_assert( who < players_ );
+    std::lock_guard<std::mutex> lock( mutex_ );
+    if( unwinder_ != who ) {
+        return;
+    }
+    unwinder_ = world;
+    unwinder_thread_ = std::thread::id();
+    cv_.notify_all();
 }
 
 int mp_sched::watchdog_report_count() const
