@@ -129,7 +129,13 @@ TEST_CASE( "a_parked_player_reports_waiting_for_the_baton", "[mp]" )
     }
     CHECK( sched.waiting_for_baton( 0 ) );
     // A requester is already parked: wait_for_request sees it immediately.
-    CHECK( sched.wait_for_request( 100 ) );
+    CHECK( sched.wait_for_request( 100, { true } ) );
+    // ...but only one the world still owes the turn to. A player who already
+    // acted re-parks at once, and waking on them is the 100% CPU spin of a
+    // waiting turn: the world must sleep out the whole timeout instead.
+    const auto start = std::chrono::steady_clock::now();
+    CHECK_FALSE( sched.wait_for_request( 50, { false } ) );
+    CHECK( std::chrono::steady_clock::now() - start >= std::chrono::milliseconds( 45 ) );
 
     sched.shut_down();
     player.join();
@@ -144,7 +150,7 @@ TEST_CASE( "wait_for_request_times_out_when_nobody_is_ready", "[mp]" )
     // must not spin, it must return false so do_turn can close out a waiting
     // turn.
     const auto start = std::chrono::steady_clock::now();
-    CHECK_FALSE( sched.wait_for_request( 50 ) );
+    CHECK_FALSE( sched.wait_for_request( 50, { true } ) );
     const auto elapsed = std::chrono::steady_clock::now() - start;
     // Actually waited out the timeout rather than returning on a spurious wake.
     CHECK( elapsed >= std::chrono::milliseconds( 45 ) );
@@ -196,7 +202,7 @@ TEST_CASE( "wait_for_request_wakes_when_a_player_parks_after_the_world_is_alread
 
     std::thread world_side( [&]() {
         world_parked = true;
-        ready = sched.wait_for_request( 5000 );
+        ready = sched.wait_for_request( 5000, { true } );
     } );
 
     while( !world_parked.load() ) {

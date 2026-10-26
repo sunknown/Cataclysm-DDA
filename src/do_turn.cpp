@@ -737,6 +737,7 @@ bool game::do_turn()
         while( !mp_barrier_satisfied() ) {
             mp_tick_hurry();
             bool moved = false;
+            std::vector<bool> owes_turn( player_slot_count(), false );
             for( size_t i = 0; i < player_slot_count(); ++i ) {
                 const mp_player_state state = mp_player_state_of( i );
                 // waiting_for_baton alone is not enough: a player who already
@@ -745,8 +746,9 @@ bool game::do_turn()
                 // yielding to them again would spin the world. Hand the baton
                 // only to someone who still owes the turn: acting (not yet
                 // released this turn) or holding (returning from an input wait).
-                if( sched->waiting_for_baton( i ) &&
-                    ( state == mp_player_state::acting || state == mp_player_state::holding ) ) {
+                owes_turn[i] = state == mp_player_state::acting ||
+                               state == mp_player_state::holding;
+                if( owes_turn[i] && sched->waiting_for_baton( i ) ) {
                     sched->yield_to( mp_sched::world, i );
                     moved = true;
                 }
@@ -759,19 +761,15 @@ bool game::do_turn()
             if( !moved ) {
                 // Waiting turn: the loop above -- the sole authority on who owes
                 // the turn -- found nobody both parked and actionable. Sleep out
-                // one poll interval (or wake early on a real event) and return;
-                // the turn stays open. wait_for_request's own predicate is wider
-                // than "owes the turn": it wakes on ANY parked slot, including
-                // one that already acted this turn and re-parked on
-                // wait_for_turn for the next one. Using its return value to
-                // gate this branch (as before) let such a slot's flag keep the
-                // world from ever sleeping, spinning it at 100% CPU without
-                // ever calling set_world_waiting( true ). It is used here only
-                // to sleep, never to decide whether to return. The declared
-                // wait tells the watchdog that the world is holding the baton
-                // on purpose, so a partner reading a menu does not log as a
-                // stalled participant.
-                sched->wait_for_request( MP_POLL_MS );
+                // one poll interval, or less if one of the players who still owe
+                // the turn comes back from their input wait, and return; the
+                // turn stays open. The wait is on those players only: a player
+                // who already acted re-parks on wait_for_turn straight away, and
+                // waking on them made this a 100% CPU spin for as long as a
+                // partner read a menu. The declared wait tells the watchdog that
+                // the world is holding the baton on purpose, so a partner
+                // reading a menu does not log as a stalled participant.
+                sched->wait_for_request( MP_POLL_MS, owes_turn );
                 sched->set_world_waiting( true );
                 return false;
             }

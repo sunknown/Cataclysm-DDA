@@ -160,11 +160,21 @@ class mp_sched
         // an input wait is NOT waiting for the baton and reports false.
         bool waiting_for_baton( size_t who ) const;
 
-        // Blocks the world participant until any player becomes ready to run, or
-        // until `timeout_ms` passes. Returns true when a player is ready. This
-        // is what replaces a spin: the world sleeps instead of burning a core
-        // while a partner reads a menu.
-        bool wait_for_request( int timeout_ms );
+        // Blocks the world participant until one of the players named in
+        // `candidates` (indexed by slot) is parked waiting for the baton, or
+        // until `timeout_ms` passes, or until shut_down(). Returns true when a
+        // candidate is ready. This is what replaces a spin: the world sleeps
+        // instead of burning a core while a partner reads a menu.
+        //
+        // The candidates are the world's to name because only the world knows
+        // who still owes the turn. A player who has already acted re-parks on
+        // wait_for_turn at once, so "anyone parked" is true for the whole of a
+        // waiting turn, and a wait on it returns immediately -- the world then
+        // spins at 100% CPU for as long as the partner reads. The set cannot
+        // go stale while the world sleeps: it sleeps holding the baton, so no
+        // player can change the game state it was computed from. A slot past
+        // the end of `candidates` is not a candidate.
+        bool wait_for_request( int timeout_ms, const std::vector<bool> &candidates );
 
         // Declares that the world is holding the baton on purpose: the barrier
         // is unsatisfied and it is waiting for somebody to come back from an

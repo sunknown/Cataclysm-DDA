@@ -1,5 +1,6 @@
 #include "mp/mp_sched.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -102,18 +103,20 @@ bool mp_sched::waiting_for_baton( const size_t who ) const
     return who < waiting_for_baton_.size() && waiting_for_baton_[who] != 0;
 }
 
-bool mp_sched::wait_for_request( const int timeout_ms )
+bool mp_sched::wait_for_request( const int timeout_ms, const std::vector<bool> &candidates )
 {
     std::unique_lock<std::mutex> lock( mutex_ );
     ++parked_;
-    const bool ready = cv_.wait_for( lock, std::chrono::milliseconds( timeout_ms ), [this] {
+    const bool ready = cv_.wait_for( lock, std::chrono::milliseconds( timeout_ms ),
+    [this, &candidates] {
         // Without this, a world parked here at shutdown sleeps out whatever
         // is left of timeout_ms instead of unwinding immediately.
         if( stopping_ ) {
             return true;
         }
-        for( const char flag : waiting_for_baton_ ) {
-            if( flag != 0 ) {
+        const size_t n = std::min( candidates.size(), waiting_for_baton_.size() );
+        for( size_t i = 0; i < n; ++i ) {
+            if( candidates[i] && waiting_for_baton_[i] != 0 ) {
                 return true;
             }
         }
