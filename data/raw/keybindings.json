@@ -3305,7 +3305,7 @@
     "name": "Hurry the others",
     "category": "DEFAULTMODE",
     "id": "coop_hurry",
-    "bindings": [ { "input_method": "keyboard_char", "key": "'" } ]
+    "bindings": [ { "input_method": "keyboard_char", "key": "`" } ]
   },
   {
     "type": "keybinding",

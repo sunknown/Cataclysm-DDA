@@ -2685,6 +2685,12 @@ input_context get_default_mode_input_context()
         ctxt.register_action( "whitelist_enemy" );
         ctxt.register_action( "workout" );
         ctxt.register_action( "save" );
+#if defined(MULTIPLAYER)
+        // Under the same guard as its handler in game::handle_action(): an
+        // action that is bound but not registered here never reaches it, and
+        // the key falls through to whatever else in this context shares it.
+        ctxt.register_action( "coop_hurry" );
+#endif
         ctxt.register_action( "quicksave" );
 #if !defined(RELEASE)
         ctxt.register_action( "quickload" );
