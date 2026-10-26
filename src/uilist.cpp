@@ -16,6 +16,7 @@
 #include "game.h"
 #include "input.h"
 #include "memory_fast.h"
+#include "mp/mp_sched.h"
 #include "output.h"
 #include "sdltiles.h"
 #include "input_popup.h"
@@ -992,6 +993,17 @@ void uilist::query_once( input_context &ctxt, int timeout,
                          bool allow_unfiltered_hotkeys )
 {
     ret_act = ctxt.handle_input( timeout );
+    if( ret_act == "QUIT" && mp_sched_stopping() ) {
+        // The multiplayer session is ending: handle_input() answers QUIT to
+        // every menu loop so that each one unwinds (input_context.cpp). A
+        // uilist cancels on its own UILIST.QUIT, not on QUIT, so without this
+        // it read the answer as an unknown key and asked again for ever --
+        // under the unwind right, which parks every other player's unwind and
+        // the server's shutdown with it. Cancelled even when allow_cancel is
+        // off: there is no choice left to make once the session is gone.
+        ret = UILIST_CANCEL;
+        return;
+    }
     const input_event event = ctxt.get_raw_input();
     ret_evt = event;
     const auto iter = keymap.find( ret_evt );
