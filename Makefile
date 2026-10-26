@@ -51,6 +51,8 @@
 #  (for every .po file in lang/po)
 # Enable sanitizer (address, undefined, etc.)
 #  make SANITIZE=address
+# Enable the thread sanitizer (shorthand for SANITIZE=thread)
+#  make TSAN=1
 # Enable the string id debugging helper
 #  make STRING_ID_DEBUG=1
 # Adjust names of build artifacts (for example to allow easily toggling between build types).
@@ -440,6 +442,10 @@ CXX_TARGET_MACHINE := $(shell $(CXX) -dumpmachine 2>/dev/null)
 CX16_TARGETS := x86_64% i686%
 
 LDFLAGS += $(PROFILE)
+
+ifeq ($(TSAN), 1)
+  SANITIZE = thread
+endif
 
 ifneq ($(SANITIZE),)
   SANITIZE_FLAGS := -fsanitize=$(SANITIZE) -fno-sanitize-recover=all -fno-omit-frame-pointer
