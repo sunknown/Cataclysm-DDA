@@ -121,6 +121,10 @@ void mp_request_hurry();
 // mp_tick_hurry() while a hostile can still see someone; a press is not, which
 // is right, as it was a request about the turn that just ended.
 int mp_hurry_remaining_ms();
+// Milliseconds left on the one countdown `source` names, or -1 when it is not
+// running. For a caller that has to know which trigger is armed: the overload
+// above cannot tell a press from a hostile in view.
+int mp_hurry_remaining_ms( mp_hurry_source source );
 
 // Advances the countdown and, when it expires, drops every holding player from
 // the barrier for this turn. Called once per orchestrator poll.

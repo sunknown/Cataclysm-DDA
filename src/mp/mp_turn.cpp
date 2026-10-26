@@ -191,6 +191,11 @@ void mp_request_hurry()
     g_hurry_manual_started = std::chrono::steady_clock::now();
 }
 
+int mp_hurry_remaining_ms( const mp_hurry_source source )
+{
+    return remaining_ms_of( source );
+}
+
 int mp_hurry_remaining_ms()
 {
     const int manual = remaining_ms_of( mp_hurry_source::manual );

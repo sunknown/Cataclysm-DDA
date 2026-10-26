@@ -5,17 +5,25 @@
 #include <memory>
 
 #include "calendar.h"
+#include "cata_scope_helpers.h"
 
 #include "avatar.h"
 #include "debug.h"
 #include "game.h"
 #include "game_test_helper.h"
 #include "mp_session_harness.h"
+#include "map.h"
+#include "map_helpers.h"
 #include "messages.h"
 #include "mp/mp_context.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
+#include "point.h"
+#include "type_id.h"
+#include "units.h"
+
+static const vproto_id vehicle_prototype_test_shopping_cart( "test_shopping_cart" );
 
 TEST_CASE( "sessions_are_matched_to_slots_by_name", "[mp]" )
 {
@@ -195,17 +203,18 @@ TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
     // player_act runs, the key is never read and no menu opens. Give the moves
     // back so this player is actionable this turn.
     g->player_at( 0 ).set_moves( 100 );
-    // '@' opens the character sheet, which carries the character's own name --
-    // though so does the sidebar, now that game::draw() is no longer gated off,
-    // so this does not pin down WHICH screen arrived. It does not need to. What
-    // the assertion proves is the claim the phase rests on: content specific to
-    // this player travelled the whole pipeline to this player's client grid. A
-    // pipeline that discards writes cannot produce it, and one that carried some
-    // other player's screen would not carry this name.
+    // '@' opens the character sheet, which carries the character's own name.
+    // Nothing else on this screen does: the harness raises no main-screen UI
+    // (game::create_or_get_main_ui_adaptor), so there is no sidebar behind the
+    // menu, and an idle player's grid stays blank. So the name proves the claim
+    // the phase rests on: content specific to this player travelled the whole
+    // pipeline to this player's client grid. A pipeline that discards writes
+    // cannot produce it, and one that carried some other player's screen would
+    // not carry this name.
     harness.press( 0, '@' );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 0 ), "P0" );
-    }, 5 ) );
+    } ) );
 
     const mp_screen_grid &screen = harness.screen( 0 );
     CHECK( mp_grid_contains( screen, "P0" ) );
@@ -216,48 +225,80 @@ TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
     CHECK( mp_grid_nonblank_cells( screen ) > 200 );
 }
 
-// The six menus the design names as the heavy ones: each is a different UI
-// path, and a global leaked by any of them shows up as one player seeing the
-// other's screen. The keys are the DEFAULTMODE defaults.
+namespace
+{
+// One of the heavy menus: the key that opens it from the main game screen,
+// and text that appears on its screen and on no other menu's here. The texts
+// were read off the menus as this harness renders them, at its 80x24.
+struct mp_heavy_menu {
+    int key;
+    const char *marker;
+};
+
+const mp_heavy_menu mp_menu_inventory{ 'i', "Item hotkeys assigned" };
+const mp_heavy_menu mp_menu_character_sheet{ '@', "ENCUMBRANCE" };
+const mp_heavy_menu mp_menu_crafting{ '&', "Craft, D[e]scribe" };
+const mp_heavy_menu mp_menu_map{ 'm', "Quick Reference" };
+// Examining the one vehicle next to the player auto-selects it and opens the
+// vehicle's action menu (a uilist, so this is also the case that has to unwind
+// through uilist's own cancel at teardown).
+const mp_heavy_menu mp_menu_vehicle{ 'e', "Examine vehicle" };
+const mp_heavy_menu mp_menu_construction{ '*', "Construction" };
+} // namespace
+
+// The six menus the design names as the heavy ones (inventory, crafting, map,
+// character sheet, vehicle, construction): each is a different UI path, and a
+// global leaked by any of them shows up as one player seeing the other's
+// screen. The keys are the DEFAULTMODE defaults.
 TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
 {
     restore_active_state restore;
     struct menu_case {
         const char *name;
-        int first;
-        int second;
+        mp_heavy_menu first;
+        mp_heavy_menu second;
     };
     const std::vector<menu_case> menus = {
-        { "inventory vs character sheet", 'i', '@' },
-        { "crafting vs map",              '&', 'm' },
-        { "vehicle vs construction",      '^', '*' },
+        { "inventory vs character sheet", mp_menu_inventory, mp_menu_character_sheet },
+        { "crafting vs map", mp_menu_crafting, mp_menu_map },
+        { "vehicle vs construction", mp_menu_vehicle, mp_menu_construction },
     };
 
     for( const menu_case &c : menus ) {
         CAPTURE( c.name );
+        // The cart outlives the harness; nothing after this test expects it.
+        on_out_of_scope remove_vehicles( []() {
+            clear_vehicles();
+        } );
         mp_session_harness harness( 2 );
+        if( c.first.key == mp_menu_vehicle.key ) {
+            // Something to examine: without a vehicle in reach the key opens
+            // nothing, and the case would compare a menu with a blank screen.
+            REQUIRE( get_map().add_vehicle( vehicle_prototype_test_shopping_cart,
+                                            g->player_at( 0 ).pos_bub() + point::east,
+                                            0_degrees ) != nullptr );
+        }
 
-        // The harness constructor zeroes every slot's moves (R6) so the
-        // OTHER new test's turn-counting comment is true, but that leaves
-        // both players read as already having acted this turn: the barrier
-        // is satisfied before anyone is ever handed the baton, so neither
-        // player_act runs, the pressed key is never read, and no menu opens.
-        // Give both players moves back before pressing, so they are
-        // actionable and actually receive the baton this turn. Neither key
-        // costs time, so both players hold nothing and both stay live --
-        // which is the whole point of the per-player context. Run until both
-        // menus are open and rendered, then compare the screens.
+        // The harness zeroes every slot's moves, which reads as "already acted":
+        // the barrier would close before either player is handed the baton, and
+        // no key would be read. Give both their moves back so both are
+        // actionable. Neither key costs time, so both players hold nothing and
+        // both stay live -- which is the whole point of the per-player context.
         g->player_at( 0 ).set_moves( 100 );
         g->player_at( 1 ).set_moves( 100 );
-        harness.press( 0, c.first );
-        harness.press( 1, c.second );
+        harness.press( 0, c.first.key );
+        harness.press( 1, c.second.key );
         REQUIRE( harness.run_until( [&]() {
-            return !mp_grids_equal( harness.screen( 0 ), harness.screen( 1 ) );
-        }, 5 ) );
+            return mp_grid_contains( harness.screen( 0 ), c.first.marker ) &&
+                   mp_grid_contains( harness.screen( 1 ), c.second.marker );
+        } ) );
 
-        // The main class of bug this design can have is a leaked global showing
-        // one player the other's screen. Comparing the grids catches it.
-        CHECK_FALSE( mp_grids_equal( harness.screen( 0 ), harness.screen( 1 ) ) );
+        // Each player sees their own menu, and nothing of the other's. A
+        // leaked global shows one player the other's screen -- the main class
+        // of bug this design can have -- and so does a draw that lands in the
+        // wrong session's grid.
+        CHECK_FALSE( mp_grid_contains( harness.screen( 0 ), c.second.marker ) );
+        CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), c.first.marker ) );
     }
 }
 
@@ -273,25 +314,34 @@ TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
     // opens a turn and player 1 parks in the menu. Every do_turn after that is
     // a waiting turn that returns without advancing -- ten of them leave the
     // calendar exactly one turn past turn_before.
-    harness.press( 1, 'i' );
+    harness.press( 1, mp_menu_inventory.key );
     const int turn_before = to_turn<int>( calendar::turn );
     REQUIRE( harness.run_until( []() {
         return false;
     }, 10 ) == false );
     CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
+    CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
 
-    // Player 0 hurries them. The countdown must be running before we expire it:
-    // the key reaches the server asynchronously through the wire, so wait for
-    // the countdown to start, then advance it past expiry.
-    harness.press( 0, '\'' );
+    // Player 0 hurries them. The key reaches the server through the wire, so
+    // wait for the press itself to be registered -- the manual countdown
+    // specifically: the shorter combat one arms on its own whenever a hostile
+    // can see a player, and would make this pass with nobody hurrying. The
+    // harness clears the map's creatures, so none should be armed.
+    harness.press( 0, '`' );
     REQUIRE( harness.run_until( []() {
-        return mp_hurry_remaining_ms() > 0;
-    }, 5 ) );
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1 );
-    // After the countdown the world moves on and the partner's menu is still
-    // open -- untouched, just not waited on.
+        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+    } ) );
+    CHECK( mp_hurry_remaining_ms( mp_hurry_source::combat ) < 0 );
+    // The press asks; it does not move the world by itself.
+    CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
+
+    // Expire it. The world moves on past the frozen turn -- `+ 1` is where the
+    // first phase already left it -- and the partner's menu is still open:
+    // untouched, just not waited on.
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
     CHECK( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before;
-    }, 10 ) );
+        return to_turn<int>( calendar::turn ) > turn_before + 1;
+    } ) );
+    CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
 }
 #endif // MP_SERVER
