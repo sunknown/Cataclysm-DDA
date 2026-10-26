@@ -62,6 +62,11 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     mp_ensure_player_context();
     clear_avatar();
     build_test_map( ter_id( "t_pavement" ) );
+    // build_test_map() repaints terrain and leaves the creatures the test world
+    // generated. A hostile that can see a player arms the combat hurry
+    // countdown on its own (mp_tick_hurry), and a session whose turns can close
+    // without anyone hurrying cannot show what a hurry does.
+    clear_creatures();
     g->ensure_gamemode_for_test();
     // The first do_turn() of a session is the one-time "new_game" pass
     // (weather.on_game_start), which does not advance the calendar. Pin it here
@@ -86,6 +91,13 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
         avatar &extra = g->add_player_slot();
         extra.set_body();
         extra.name = "P" + std::to_string( i );
+        // A new slot is created nowhere in particular -- it was measured at
+        // z = -500, off the map -- and the world half of a closed turn then
+        // works on that position (scent, fields, caches). Stand every extra
+        // player on the test map, a column south of P0 and two tiles apart, so
+        // none of them is adjacent to anything a test puts next to P0.
+        extra.setpos( get_map(), g->player_at( 0 ).pos_bub() +
+                      tripoint_rel_ms( 0, 2 * static_cast<int>( i ), 0 ) );
     }
     // g->add_player_slot() leaves a new avatar at moves == 100, unlike a fresh
     // avatar's zero. Zero every slot here so the "fresh avatars start with zero
