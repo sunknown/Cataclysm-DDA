@@ -44,7 +44,7 @@ bool mp_barrier_satisfied();
 void mp_set_waiting_for_input( size_t slot, bool waiting );
 
 // Clears the per-turn barrier bookkeeping that belongs to a fresh turn: the
-// hurry countdown, and the countdown's drops -- but only for players who have
+// hurry countdowns (both), and the countdowns' drops -- but only for players who have
 // since left their input wait.
 //
 // Two deliberate exceptions, both of which were freezes when they were not
@@ -86,15 +86,41 @@ void mp_set_turn_open( bool open );
 void mp_request_session_end();
 bool mp_session_end_requested();
 
-// Starts the hurry countdown, if one is not already running. Any player who has
+// The two things that start a hurry countdown. Each has its own countdown, so
+// neither can swallow the other.
+enum class mp_hurry_source {
+    // A player pressed "hurry up". MP_HURRY_MS.
+    manual,
+    // A hostile creature can see a player; started by mp_tick_hurry() itself.
+    // MP_HURRY_COMBAT_MS.
+    combat,
+};
+
+// Starts the manual hurry countdown, if a manual one is not already running.
+// A running combat countdown does not count: the press is a request in its own
+// right, and the player gets an answer to it even in the middle of a fight.
+//
+// Any player who has already acted may call it. Any player who has
 // already acted may call it. The countdown is visible to everyone; when it
 // expires the server stops waiting for whoever is still holding -- it does not
 // reach into their UI or close anything. Their character stands still and skips
 // the turn; their menu stays open and they confirm when they are ready.
 void mp_request_hurry();
 
-// Milliseconds left on the countdown, or -1 when none is running. Read by the
-// sidebar widget and by the tests.
+// Milliseconds left on the countdown that will expire first, or -1 when none is
+// running. Read by the sidebar widget and by the tests.
+//
+// "Expires first" because expiry is the only thing a countdown does -- it is
+// what drops a holder -- so the shortest time left is the honest answer to "how
+// long until the world stops waiting". When both are armed that is whichever
+// has less left, not whichever was armed first or has the shorter length.
+//
+// Both countdowns end the same way, and they are independent: when one expires
+// it drops everyone still holding and disarms itself only; the other keeps
+// running. Both are turn-scoped, so mp_turn_reset() and mp_turn_reset_all()
+// clear both. A combat countdown is simply re-armed by the next
+// mp_tick_hurry() while a hostile can still see someone; a press is not, which
+// is right, as it was a request about the turn that just ended.
 int mp_hurry_remaining_ms();
 
 // Advances the countdown and, when it expires, drops every holding player from
@@ -126,6 +152,9 @@ void mp_forfeit_dropped_moves();
 // annoying and fixed by one line.
 bool mp_action_is_free( action_id act );
 
-// Moves the countdown's start point back by `ms`, so a test can expire a
-// fifteen-second countdown without sleeping for fifteen seconds.
+// Moves a countdown's start point back by `ms`, so a test can expire a
+// fifteen-second countdown without sleeping for fifteen seconds. Does nothing
+// to a countdown that is not running. The overload without a source advances
+// both.
+void mp_advance_hurry_for_test( int ms, mp_hurry_source source );
 void mp_advance_hurry_for_test( int ms );

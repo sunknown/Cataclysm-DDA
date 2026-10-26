@@ -1,5 +1,6 @@
 #include "mp/mp_turn.h"
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <vector>
@@ -29,11 +30,45 @@ void ensure_sized()
     g_dropped_by_countdown.resize( n, false );
 }
 
-// When the countdown started, or nullopt when none is running. A time point
+// When each countdown started, or nullopt when it is not running. A time point
 // rather than a remaining count: the orchestrator polls at whatever rate the
 // session runs at, and a decrementing counter would drift with it.
-std::optional<std::chrono::steady_clock::time_point> g_hurry_started;
-int g_hurry_length_ms = MP_HURRY_MS;
+//
+// One per trigger, so that arming one can never swallow the other. They share
+// one flag once, and whichever fired first silently turned the other trigger
+// into a no-op (see mp_turn.h for the semantics).
+using hurry_time_point = std::chrono::steady_clock::time_point;
+std::optional<hurry_time_point> g_hurry_manual_started;
+std::optional<hurry_time_point> g_hurry_combat_started;
+
+std::optional<hurry_time_point> &started_of( const mp_hurry_source source )
+{
+    return source == mp_hurry_source::manual ? g_hurry_manual_started : g_hurry_combat_started;
+}
+
+int length_ms_of( const mp_hurry_source source )
+{
+    return source == mp_hurry_source::manual ? MP_HURRY_MS : MP_HURRY_COMBAT_MS;
+}
+
+// Milliseconds left on one countdown, or -1 when it is not running.
+int remaining_ms_of( const mp_hurry_source source )
+{
+    const std::optional<hurry_time_point> &started = started_of( source );
+    if( !started ) {
+        return -1;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - *started ).count();
+    const int left = length_ms_of( source ) - static_cast<int>( elapsed );
+    return left > 0 ? left : 0;
+}
+
+void clear_hurry_countdowns()
+{
+    g_hurry_manual_started.reset();
+    g_hurry_combat_started.reset();
+}
 
 // True while a hostile creature inside the bubble can see any player.
 bool anyone_is_seen_by_a_hostile()
@@ -116,8 +151,7 @@ void mp_turn_reset()
             g_dropped_by_countdown[i] = false;
         }
     }
-    g_hurry_started.reset();
-    g_hurry_length_ms = MP_HURRY_MS;
+    clear_hurry_countdowns();
 }
 
 void mp_turn_reset_all()
@@ -126,8 +160,7 @@ void mp_turn_reset_all()
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
     g_turn_open = false;
     g_session_end = false;
-    g_hurry_started.reset();
-    g_hurry_length_ms = MP_HURRY_MS;
+    clear_hurry_countdowns();
 }
 
 bool mp_turn_is_open()
@@ -152,52 +185,61 @@ bool mp_session_end_requested()
 
 void mp_request_hurry()
 {
-    if( g_hurry_started ) {
+    if( g_hurry_manual_started ) {
         return;
     }
-    g_hurry_started = std::chrono::steady_clock::now();
-    g_hurry_length_ms = MP_HURRY_MS;
+    g_hurry_manual_started = std::chrono::steady_clock::now();
 }
 
 int mp_hurry_remaining_ms()
 {
-    if( !g_hurry_started ) {
-        return -1;
+    const int manual = remaining_ms_of( mp_hurry_source::manual );
+    const int combat = remaining_ms_of( mp_hurry_source::combat );
+    if( manual < 0 || combat < 0 ) {
+        return std::max( manual, combat );
     }
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now() - *g_hurry_started ).count();
-    const int left = g_hurry_length_ms - static_cast<int>( elapsed );
-    return left > 0 ? left : 0;
+    return std::min( manual, combat );
+}
+
+void mp_advance_hurry_for_test( const int ms, const mp_hurry_source source )
+{
+    std::optional<hurry_time_point> &started = started_of( source );
+    if( started ) {
+        *started -= std::chrono::milliseconds( ms );
+    }
 }
 
 void mp_advance_hurry_for_test( const int ms )
 {
-    if( g_hurry_started ) {
-        *g_hurry_started -= std::chrono::milliseconds( ms );
-    }
+    mp_advance_hurry_for_test( ms, mp_hurry_source::manual );
+    mp_advance_hurry_for_test( ms, mp_hurry_source::combat );
 }
 
 void mp_tick_hurry()
 {
     ensure_sized();
     // Nobody spends a keystroke on "hurry up" when something is running at
-    // them, so combat starts its own countdown, and a shorter one.
-    if( !g_hurry_started && anyone_is_seen_by_a_hostile() ) {
-        g_hurry_started = std::chrono::steady_clock::now();
-        g_hurry_length_ms = MP_HURRY_COMBAT_MS;
+    // them, so combat starts its own countdown, and a shorter one. It does so
+    // whether or not somebody already pressed the key: a press that came first
+    // must not make combat urgency wait out the longer countdown.
+    if( !g_hurry_combat_started && anyone_is_seen_by_a_hostile() ) {
+        g_hurry_combat_started = std::chrono::steady_clock::now();
     }
-    if( !g_hurry_started || mp_hurry_remaining_ms() > 0 ) {
-        return;
-    }
-    // Expired. Drop everyone still holding -- for this turn only. Their UI is
-    // untouched: their character stands still and skips the turn, their menu
-    // stays open, and they confirm their choice when they are ready.
-    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-        if( mp_player_state_of( i ) == mp_player_state::holding ) {
-            g_dropped_by_countdown[i] = true;
+    for( const mp_hurry_source source : { mp_hurry_source::manual, mp_hurry_source::combat } ) {
+        if( remaining_ms_of( source ) != 0 ) {
+            continue;
         }
+        // Expired. Drop everyone still holding -- for this turn only. Their UI
+        // is untouched: their character stands still and skips the turn, their
+        // menu stays open, and they confirm their choice when they are ready.
+        for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+            if( mp_player_state_of( i ) == mp_player_state::holding ) {
+                g_dropped_by_countdown[i] = true;
+            }
+        }
+        // Only the one that expired: the other is still somebody's request.
+        started_of( source ).reset();
     }
-    g_hurry_started.reset();
 }
 
 void mp_forfeit_dropped_moves()

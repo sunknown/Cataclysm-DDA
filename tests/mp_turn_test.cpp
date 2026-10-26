@@ -166,6 +166,75 @@ TEST_CASE( "a_hurry_countdown_drops_the_holder_from_the_barrier", "[mp]" )
     mp_turn_reset_all();
 }
 
+// Two players, slot 1 holding at an input wait, and a zombie next to slot 0 that
+// can see them: the one setup in which both countdowns can be armed.
+static void set_up_holder_with_a_hostile_in_view()
+{
+    clear_avatar();
+    clear_map();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    avatar &a = g->player_at( 0 );
+    a.set_moves( 0 );
+    b.set_moves( 100 );
+    b.activity = player_activity();
+    mp_set_waiting_for_input( 1, true );
+    spawn_test_monster( "mon_zombie", a.pos_bub() + tripoint::east );
+}
+
+TEST_CASE( "a_running_combat_countdown_does_not_swallow_the_hurry_press", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_holder_with_a_hostile_in_view();
+
+    mp_tick_hurry();
+    REQUIRE( mp_hurry_remaining_ms() > 0 );
+    REQUIRE( mp_hurry_remaining_ms() <= MP_HURRY_COMBAT_MS );
+
+    mp_request_hurry();
+
+    // The combat countdown expires and drops the holder. The press made while
+    // it was running must still be counting: it was swallowed whole when both
+    // shared one flag, and the player's deliberate request vanished unanswered.
+    mp_advance_hurry_for_test( MP_HURRY_COMBAT_MS + 1, mp_hurry_source::combat );
+    mp_tick_hurry();
+    REQUIRE( mp_player_state_of( 1 ) == mp_player_state::not_waited );
+    CHECK( mp_hurry_remaining_ms() > MP_HURRY_COMBAT_MS );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
+TEST_CASE( "a_running_hurry_press_does_not_swallow_the_combat_countdown", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_holder_with_a_hostile_in_view();
+
+    mp_request_hurry();
+    mp_tick_hurry();
+
+    // Combat urgency applies its own short length rather than waiting out the
+    // fifteen seconds of a press that happened to come first.
+    CHECK( mp_hurry_remaining_ms() <= MP_HURRY_COMBAT_MS );
+    mp_advance_hurry_for_test( MP_HURRY_COMBAT_MS + 1, mp_hurry_source::combat );
+    mp_tick_hurry();
+    CHECK( mp_player_state_of( 1 ) == mp_player_state::not_waited );
+    // Expiring combat disarms combat only; the press is still counting.
+    CHECK( mp_hurry_remaining_ms() > MP_HURRY_COMBAT_MS );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
 TEST_CASE( "the_countdown_clears_with_the_turn", "[mp]" )
 {
     restore_active_state restore;
