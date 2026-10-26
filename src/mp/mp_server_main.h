@@ -2,7 +2,16 @@
 #ifndef CATA_SRC_MP_MP_SERVER_MAIN_H
 #define CATA_SRC_MP_MP_SERVER_MAIN_H
 
+#include <cstddef>
 #include <string>
+#include <thread>
+#include <vector>
+
+class mp_sched;
+
+// How long the baton may sit still with one holder before the watchdog logs
+// it. Generous: it exists to catch a missed handoff, not a slow turn.
+constexpr int MP_WATCHDOG_MS = 30000;
 
 // Binds a TCP listener on `port`, waits for `players` clients, performs the
 // connection handshake with every one of them, and attaches each client's
@@ -35,6 +44,21 @@ void mp_server_start_player_threads();
 // first: shut_down() only wakes threads parked on the baton, and a player
 // sitting in a menu is parked on the wire until their socket goes away.
 void mp_server_end_session();
+
+// The two halves of a session's thread lifecycle that every owner of one runs
+// the same way -- the server above, and the in-process test harness -- so that
+// a fix to one cannot leave the other behind.
+//
+// mp_run_player_thread: the whole body of player `slot`'s thread. Parks on the
+// baton, runs that player's turn under their own context, hands a "session
+// must end" verdict to the orchestrator, and unwinds holding the unwind right
+// once the scheduler stops.
+//
+// mp_stop_player_threads: closes every session's transport, shuts `sched` down
+// (null when none was raised), joins `threads` and leaves the process in the
+// world phase. Must be called by the world, while it holds the baton.
+void mp_run_player_thread( mp_sched &sched, size_t slot );
+void mp_stop_player_threads( mp_sched *sched, std::vector<std::thread> &threads );
 
 // Ends the server session cleanly. Called by the mp curses backend when a
 // client disconnects, so the game does not spin on timeout events from a

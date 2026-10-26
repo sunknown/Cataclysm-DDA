@@ -2,6 +2,7 @@
 
 #include "mp/mp_server_main.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -132,6 +133,72 @@ bool mp_server_start_session( std::string &err )
     return true;
 }
 
+void mp_run_player_thread( mp_sched &sched, const size_t slot )
+{
+    // Held for the whole body, so the unwind right is handed on however the
+    // thread ends -- see mp_sched::unwind_if_stopping. A no-op for a thread that
+    // never took it.
+    on_out_of_scope release_unwind( [slot, &sched]() {
+        sched.release_unwind( slot );
+    } );
+    while( true ) {
+        sched.wait_for_turn( slot );
+        if( sched.unwind_if_stopping( slot ) ) {
+            return;
+        }
+        mp_assert_holds( slot );
+        mp_activate_player( slot );
+        avatar &ava = g->player_at( slot );
+        g->avatar_turn_pre( ava );
+        const bool ended = g->player_act( ava );
+        // A shutdown during player_act woke this thread without the baton, so
+        // there is none to release, and the session is already ending without
+        // a request. The right is already held by now if the wake came through
+        // an input wait; taking it here covers a player_act that saw the stop
+        // some other way.
+        if( sched.unwind_if_stopping( slot ) ) {
+            return;
+        }
+        if( ended ) {
+            // The game is over or this player quit. A thread body has nowhere
+            // to return that to, so it is left where the orchestrator picks it
+            // up and turns it into do_turn()'s `true` for main().
+            mp_request_session_end();
+        }
+        sched.release_to( slot, mp_sched::world );
+    }
+}
+
+void mp_stop_player_threads( mp_sched *const sched, std::vector<std::thread> &threads )
+{
+    // Close the wires FIRST. shut_down() only wakes threads parked on the
+    // baton; a player sitting in a menu is parked on recv() with no timeout,
+    // and joining them before their socket goes away hangs the server forever
+    // -- on the one path that matters, because ending a session while somebody
+    // has a menu open is the normal case, not the exotic one. A closed
+    // transport makes the input wait return a timeout event, the player_act
+    // loop sees mp_sched_stopping() and unwinds.
+    for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
+        if( session && session->transport ) {
+            session->transport->close();
+        }
+    }
+    // Called from the world, which holds the baton: the precondition
+    // shut_down() documents for the unwind that follows.
+    if( sched ) {
+        sched->shut_down();
+    }
+    for( std::thread &t : threads ) {
+        t.join();
+    }
+    threads.clear();
+    // The unwinders ran under their own contexts (mp_sched::unwind_if_stopping),
+    // and the last one left its slot active, with its avatar swapped into g->u.
+    // Nothing runs any more, so put the process back in the world phase before
+    // anything the caller does next reads or reshapes the slots.
+    mp_activate_world();
+}
+
 void mp_server_start_player_threads()
 {
     // Each player thread activates its own context (mp_activate_player asserts
@@ -144,72 +211,15 @@ void mp_server_start_player_threads()
     mp_turn_reset_all();
     g_sched = std::make_unique<mp_sched>( mp_sessions().size() );
     mp_set_active_sched( g_sched.get() );
-    mp_sched_start_watchdog( *g_sched, 30000 );
+    mp_sched_start_watchdog( *g_sched, MP_WATCHDOG_MS );
     for( size_t i = 0; i < mp_sessions().size(); ++i ) {
-        g_player_threads.emplace_back( [i, sched = g_sched.get()]() {
-            // Held for the whole body, so the unwind right is handed on however
-            // the thread ends -- see mp_sched::unwind_if_stopping. A no-op for a
-            // thread that never took it.
-            on_out_of_scope release_unwind( [i, sched]() {
-                sched->release_unwind( i );
-            } );
-            while( true ) {
-                sched->wait_for_turn( i );
-                if( sched->unwind_if_stopping( i ) ) {
-                    return;
-                }
-                mp_assert_holds( i );
-                mp_activate_player( i );
-                avatar &ava = g->player_at( i );
-                g->avatar_turn_pre( ava );
-                const bool ended = g->player_act( ava );
-                // A shutdown during player_act woke this thread without the
-                // baton, so there is none to release, and the session is
-                // already ending without a request. The right is already held
-                // by now if the wake came through an input wait; taking it here
-                // covers a player_act that saw the stop some other way.
-                if( sched->unwind_if_stopping( i ) ) {
-                    return;
-                }
-                if( ended ) {
-                    // The game is over or this player quit. A thread body has
-                    // nowhere to return that to, so it is left where the
-                    // orchestrator picks it up and turns it into do_turn()'s
-                    // `true` for main().
-                    mp_request_session_end();
-                }
-                sched->release_to( i, mp_sched::world );
-            }
-        } );
+        g_player_threads.emplace_back( mp_run_player_thread, std::ref( *g_sched ), i );
     }
 }
 
 void mp_server_end_session()
 {
-    // Close the wires FIRST. shut_down() only wakes threads parked on the
-    // baton; a player sitting in a menu is parked on recv() with no timeout,
-    // and joining them before their socket goes away hangs the server forever
-    // -- on the one path that matters, because ending a session while somebody
-    // has a menu open is the normal case, not the exotic one. A closed
-    // transport makes mp_server_wait_for_input return a timeout event, the
-    // player_act loop sees mp_sched_stopping() and unwinds.
-    for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
-        if( session->transport ) {
-            session->transport->close();
-        }
-    }
-    if( g_sched ) {
-        g_sched->shut_down();
-    }
-    for( std::thread &t : g_player_threads ) {
-        t.join();
-    }
-    // The unwinders ran under their own contexts (mp_sched::unwind_if_stopping),
-    // and the last one left its slot active, with its avatar swapped into g->u.
-    // Nothing runs any more, so put the process back in the world phase before
-    // anything below reads or reshapes the slots.
-    mp_activate_world();
-    g_player_threads.clear();
+    mp_stop_player_threads( g_sched.get(), g_player_threads );
     mp_set_active_sched( nullptr );
     g_sched.reset();
     mp_sessions().clear();

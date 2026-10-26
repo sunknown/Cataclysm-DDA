@@ -276,7 +276,7 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             // per-thread, and another player's own per-turn activation can
             // have repointed it to their slot while this thread sat parked
             // here. Every OTHER place that regains the baton (the per-player
-            // turn loop in mp_session_harness.cpp / mp_server_main.cpp)
+            // thread body, mp_run_player_thread in mp_server_main.cpp)
             // re-activates immediately after its own wait_for_turn; this
             // reacquire is the one baton handoff that did not, and it is
             // exactly the one two interleaved players can race -- one

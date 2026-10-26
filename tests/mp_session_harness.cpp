@@ -2,17 +2,19 @@
 
 #include "mp_session_harness.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "avatar.h"
 #include "cached_options.h"
-#include "cata_scope_helpers.h"
 #include "cursesdef.h"
 #include "game.h"
 #include "game_constants.h"
 #include "game_test_helper.h"
 #include "game_ui.h"
+#include "map.h"
+#include "map_helpers.h"
 #include "map_helpers_tests.h"
 #include "output.h"
 #include "player_helpers.h"
@@ -22,6 +24,7 @@
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
@@ -115,58 +118,20 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
 
     sched_ = std::make_unique<mp_sched>( players );
     mp_set_active_sched( sched_.get() );
+    // The same thread body and watchdog the server raises
+    // (mp_server_start_player_threads), not a copy of them that can drift.
+    mp_sched_start_watchdog( *sched_, MP_WATCHDOG_MS );
     for( size_t i = 0; i < players; ++i ) {
-        threads_.emplace_back( [i, sched = sched_.get()]() {
-            // Held for the whole body, so the unwind right is handed on however
-            // the thread ends -- see mp_sched::unwind_if_stopping. A no-op for a
-            // thread that never took it.
-            on_out_of_scope release_unwind( [i, sched]() {
-                sched->release_unwind( i );
-            } );
-            while( true ) {
-                sched->wait_for_turn( i );
-                if( sched->unwind_if_stopping( i ) ) {
-                    return;
-                }
-                mp_assert_holds( i );
-                mp_activate_player( i );
-                avatar &ava = g->player_at( i );
-                g->avatar_turn_pre( ava );
-                g->player_act( ava );
-                // A shutdown during player_act woke this thread without the
-                // baton, so there is none to release. The right is already
-                // held by now if the wake came through an input wait; taking it
-                // here covers a player_act that saw the stop some other way.
-                if( sched->unwind_if_stopping( i ) ) {
-                    return;
-                }
-                sched->release_to( i, mp_sched::world );
-            }
-        } );
+        threads_.emplace_back( mp_run_player_thread, std::ref( *sched_ ), i );
     }
 }
 
 mp_session_harness::~mp_session_harness()
 {
-    // Close the wires FIRST. shut_down() only wakes threads parked on the baton;
-    // a player sitting in a menu is parked on recv() with no timeout, and joining
-    // them before their socket goes away hangs the harness -- and every Task 13
-    // test ends with a player in a menu. A closed transport makes
-    // mp_server_wait_for_input return a timeout event (the loopback recv polls
-    // and sees the closed peer within a millisecond), and the player_act loop
-    // sees mp_sched_stopping() and unwinds.
-    for( std::shared_ptr<mp_transport> &wire : client_wires_ ) {
-        wire->close();
-    }
-    sched_->shut_down();
-    for( std::thread &t : threads_ ) {
-        t.join();
-    }
-    // The unwinders ran under their own contexts (mp_sched::unwind_if_stopping),
-    // and the last one left its slot active, with its avatar swapped into g->u.
-    // Nothing runs any more, so put the process back in the world phase before
-    // anything below reads or reshapes the slots.
-    mp_activate_world();
+    // The server's own teardown: wires first, then the shutdown, then the
+    // joins, ending in the world phase. Most harness tests end with a player
+    // in a menu, which is the case that ordering exists for.
+    mp_stop_player_threads( sched_.get(), threads_ );
     mp_set_active_sched( nullptr );
     mp_sessions_reset_for_test();
     game_test_helper::reset_player_slots();
