@@ -98,6 +98,8 @@ TEST_CASE( "a_roster_with_fewer_clients_than_slots_is_refused", "[mp]" )
     CHECK( err.find( std::to_string( g->player_slot_count() ) ) != std::string::npos );
 
     mp_server_end_session();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 TEST_CASE( "two_clients_named_the_same_character_are_refused", "[mp]" )
@@ -127,6 +129,8 @@ TEST_CASE( "two_clients_named_the_same_character_are_refused", "[mp]" )
     CHECK( err.find( "Ada" ) != std::string::npos );
 
     mp_server_end_session();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
