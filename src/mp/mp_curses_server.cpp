@@ -150,12 +150,15 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         // session through the entry point instead; the game itself never sees
         // the transport. This is the one place the backend learns about the
         // wire, and it is deliberately the mp layer, not game logic.
-        // mp_sched_stopping() excludes this once teardown is already under way:
-        // without it, every remaining trip round this loop (there can be many
-        // -- a menu several frames up keeps asking for its next keystroke)
-        // re-detects the same disconnect, re-logs it and re-requests exit,
-        // spinning as fast as the CPU allows and writing without end.
-        if( !mp_server_peer_connected() && !mp_sched_stopping() ) {
+        // Once is enough. Every remaining trip round this loop (there can be
+        // many -- a menu several frames up keeps asking for its next keystroke)
+        // would otherwise re-detect the same disconnect, re-log it and
+        // re-request the end, spinning as fast as the CPU allows and writing
+        // without end. Two things say it has already been handled: the end is
+        // requested and the world has not acted on it yet, or teardown is
+        // already under way.
+        if( !mp_server_peer_connected() && !mp_session_end_requested() &&
+            !mp_sched_stopping() ) {
             // The stop itself is announced by exit_handler(), which also covers
             // the sessions that end without a disconnect.
             std::string who = "a client";
