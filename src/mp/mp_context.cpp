@@ -189,6 +189,24 @@ void mp_sync_context_count()
         // Until this player's client reports its own terminal, borrow slot 0's:
         // a context with a zero-sized viewport would compute degenerate metrics.
         fresh.viewport = g->contexts[0].viewport;
+        // Not a copy of the root window: the same window. Every context draws
+        // into one stdscr, and that is safe as long as two things hold.
+        //  - Only the baton holder (or, at teardown, the unwind-right holder)
+        //    draws, so the window's cells and its per-line `touched` flags have
+        //    one writer at a time.
+        //  - A draw reaches a grid at refresh time, not at flush time:
+        //    curses_drawwindow() copies the touched lines into the grid of the
+        //    session active at that moment -- the drawing player's own -- and
+        //    clears the flags. The UI redraws and refreshes before it blocks
+        //    for input, which is where the baton leaves, so no touched line of
+        //    one player's is left for the next player's refresh to carry into
+        //    their grid. Each grid then keeps its own copy of whatever was last
+        //    refreshed into it, which is all a client ever sees.
+        // Checked by two_players_sit_in_different_heavy_menus: six full-screen
+        // menus drawn into this one window, pairwise, and neither player's grid
+        // carries the other's menu. What it does NOT cover is clients of
+        // different sizes: one root sized for one terminal is wrong for the
+        // other, so per-client terminal sizes need a root per context.
         fresh.stdscr = g->contexts[0].stdscr;
     }
     while( g->contexts.size() > want ) {
