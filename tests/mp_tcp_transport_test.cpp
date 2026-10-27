@@ -1,10 +1,13 @@
 #include "cata_catch.h"
 
 #if defined(MULTIPLAYER)
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mp/mp_protocol.h"
@@ -34,6 +37,42 @@ TEST_CASE( "tcp_transport_carries_messages_over_a_real_socket", "[mp]" )
 
     server_side->send( { 1 } );
     CHECK( client->recv( 1000 ) == std::vector<uint8_t> { 1 } );
+}
+
+// How a server session ends: the world closes every transport while a player
+// thread sits in recv(-1) on one -- a player with a menu open -- and then joins
+// that thread. On Linux, closing a descriptor does not wake a poll() blocked on
+// it in another thread, so the join waited for the client's next keystroke.
+TEST_CASE( "closing_a_tcp_transport_wakes_a_reader_blocked_in_recv", "[mp]" )
+{
+    std::string err;
+    std::optional<mp_listener> listener = mp_listener::bind( 0, err );
+    REQUIRE( listener.has_value() );
+    std::shared_ptr<mp_transport> client = mp_tcp_connect( "127.0.0.1", listener->port(), err );
+    REQUIRE( client );
+    std::shared_ptr<mp_transport> server_side = listener->accept( 1000 );
+    REQUIRE( server_side );
+
+    std::future<std::optional<std::vector<uint8_t>>> reader = std::async( std::launch::async,
+    [server_side]() {
+        return server_side->recv( -1 );
+    } );
+    // Let the reader reach its poll(). Nothing in the transport says when it
+    // has, and a close that wins the race proves nothing either way.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+    server_side->close();
+
+    const bool woke = reader.wait_for( std::chrono::seconds( 2 ) ) == std::future_status::ready;
+    if( !woke ) {
+        // Release the reader the way a client keystroke would, so the
+        // future's destructor can join it and the failure stays a failure
+        // rather than a hung suite.
+        client->send( { 1 } );
+        client->close();
+    }
+    CHECK( woke );
+    CHECK_FALSE( reader.get().has_value() );
+    CHECK_FALSE( server_side->connected() );
 }
 
 TEST_CASE( "tcp_transport_names_the_peer_that_connected", "[mp]" )

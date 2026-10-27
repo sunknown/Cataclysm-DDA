@@ -2,6 +2,7 @@
 #ifndef CATA_SRC_MP_MP_TCP_TRANSPORT_H
 #define CATA_SRC_MP_MP_TCP_TRANSPORT_H
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -39,11 +40,21 @@ class mp_tcp_transport : public mp_transport
         void flush_outbound();
         void disconnect();
 
-        mp_socket_t fd_ = mp_socket_invalid;
+        // Fixed for the transport's whole life and released only by the
+        // destructor. A server closes a player's transport from the world
+        // thread while that player's thread may be blocked reading it, so a
+        // close must not change or free the descriptor under the reader; it
+        // shuts the socket down instead, which also wakes the reader.
+        const mp_socket_t fd_;
         // Read once at construction: the socket is still connected then, and
         // the disconnect log needs the address after it is not.
         std::string peer_;
-        bool connected_ = true;
+        // Written by whichever thread ends the connection and read by others
+        // (mp_server_peer_connected() asks every session's), hence atomic.
+        // Every way the stream can fail -- a reset, end-of-stream, a corrupt
+        // frame -- goes through disconnect(), so this alone answers
+        // connected().
+        std::atomic<bool> connected_;
         mp_frame_reader reader_;
         // Complete framed messages waiting to be written, in send order. Each
         // element is one whole [4-byte big-endian length][body] frame; a frame

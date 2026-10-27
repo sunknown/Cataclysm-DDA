@@ -85,6 +85,18 @@ mp_socket_t mp_socket_create_tcp()
     return fd;
 }
 
+void mp_socket_shutdown( const mp_socket_t fd )
+{
+    if( fd == mp_socket_invalid ) {
+        return;
+    }
+#ifdef _WIN32
+    ::shutdown( fd, SD_BOTH );
+#else
+    ::shutdown( fd, SHUT_RDWR );
+#endif
+}
+
 void mp_socket_close( const mp_socket_t fd )
 {
     if( fd == mp_socket_invalid ) {

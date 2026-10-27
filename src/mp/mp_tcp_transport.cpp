@@ -30,6 +30,7 @@ mp_tcp_transport::mp_tcp_transport( const mp_socket_t fd )
 mp_tcp_transport::~mp_tcp_transport()
 {
     close();
+    mp_socket_close( fd_ );
 }
 
 void mp_tcp_transport::send( std::vector<uint8_t> payload )
@@ -151,21 +152,18 @@ std::string mp_tcp_transport::peer_description() const
 
 bool mp_tcp_transport::connected() const
 {
-    return connected_ && fd_ != mp_socket_invalid && !reader_.failed();
+    return connected_;
 }
 
 void mp_tcp_transport::close()
 {
-    if( !connected_ ) {
-        return;
+    // May run on another thread than the one reading or writing (see fd_), so
+    // it touches nothing those use but the flag: the outbound queue and the
+    // reader stay as they are, unreachable once connected() is false, and go
+    // with the transport.
+    if( connected_.exchange( false ) ) {
+        mp_socket_shutdown( fd_ );
     }
-    connected_ = false;
-    mp_socket_close( fd_ );
-    fd_ = mp_socket_invalid;
-    outbound_.clear();
-    outbound_head_sent_ = 0;
-    // reader_ is left alone on purpose: connected() is already false, so no
-    // caller can observe its buffered bytes again.
 }
 
 void mp_tcp_transport::flush_outbound()
@@ -197,12 +195,9 @@ void mp_tcp_transport::flush_outbound()
 
 void mp_tcp_transport::disconnect()
 {
-    if( !connected_ ) {
-        return;
-    }
-    connected_ = false;
-    mp_socket_close( fd_ );
-    fd_ = mp_socket_invalid;
+    // The peer is gone. Run by the thread that found out, which owns the
+    // queue; the descriptor itself is the destructor's (see fd_).
+    close();
     outbound_.clear();
     outbound_head_sent_ = 0;
 }

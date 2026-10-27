@@ -36,6 +36,12 @@ mp_socket_t mp_socket_create_tcp();
 // triggered it. Accepts mp_socket_invalid as a no-op.
 void mp_socket_close( mp_socket_t fd );
 
+// Shuts both directions of a connected socket down without releasing the
+// descriptor. Unlike a close, this wakes a poll() or recv() blocked on the
+// socket in another thread (it then reads end-of-stream), and the peer sees the
+// connection end. Errors are ignored, as for mp_socket_close.
+void mp_socket_shutdown( mp_socket_t fd );
+
 // Switches the socket to non-blocking mode. Returns false on failure.
 bool mp_socket_set_nonblocking( mp_socket_t fd );
 
