@@ -32,7 +32,8 @@
 mp_server_startup_for_test::mp_server_startup_for_test( const int cols, const int rows )
     : prev_stdscr_( catacurses::stdscr ), prev_test_mode_( test_mode ), prev_termx_( TERMX ),
       prev_termy_( TERMY ), prev_full_screen_width_( FULL_SCREEN_WIDTH ),
-      prev_full_screen_height_( FULL_SCREEN_HEIGHT ), prev_imclient_( std::move( imclient ) )
+      prev_full_screen_height_( FULL_SCREEN_HEIGHT ), prev_imclient_( std::move( imclient ) ),
+      prev_panels_( panel_manager::get_manager() )
 {
     // The same order main() and run_game() use. The handshake sizes the grid
     // before init_interface(), which reads it back to size the root window; with
@@ -43,12 +44,17 @@ mp_server_startup_for_test::mp_server_startup_for_test( const int cols, const in
     FULL_SCREEN_HEIGHT = EVEN_MINIMUM_TERM_HEIGHT;
     catacurses::init_interface();
     game_ui::init_ui();
+    // game::setup() does this once the world's JSON is loaded; the test binary
+    // never runs setup(), so without it the sidebar has no layout to draw and
+    // panel_manager::get_current_layout() recurses until the stack runs out.
+    panel_manager::get_manager().init();
     test_mode = false;
 }
 
 mp_server_startup_for_test::~mp_server_startup_for_test()
 {
     test_mode = prev_test_mode_;
+    panel_manager::get_manager() = prev_panels_;
     imclient = std::move( prev_imclient_ );
     FULL_SCREEN_HEIGHT = prev_full_screen_height_;
     FULL_SCREEN_WIDTH = prev_full_screen_width_;

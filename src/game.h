@@ -349,6 +349,10 @@ class game
         void write_memorial_file( std::string sLastWords );
         void start_calendar();
         shared_ptr_fast<ui_adaptor> create_or_get_main_ui_adaptor();
+        // Same, for whichever player context is active, without first making
+        // sure context 0 exists and activating it. For a player thread, which
+        // already runs under its own context.
+        shared_ptr_fast<ui_adaptor> create_or_get_active_main_ui_adaptor();
         void invalidate_main_ui_adaptor() const;
         void mark_main_ui_adaptor_resize() const;
         void draw( ui_adaptor &ui );

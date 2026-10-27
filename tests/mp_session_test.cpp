@@ -20,6 +20,7 @@
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
 #include "point.h"
+#include "string_formatter.h"
 #include "type_id.h"
 #include "units.h"
 
@@ -204,9 +205,8 @@ TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
     // back so this player is actionable this turn.
     g->player_at( 0 ).set_moves( 100 );
     // '@' opens the character sheet, which carries the character's own name.
-    // Nothing else on this screen does: the harness raises no main-screen UI
-    // (game::create_or_get_main_ui_adaptor), so there is no sidebar behind the
-    // menu, and an idle player's grid stays blank. So the name proves the claim
+    // Nothing else on this screen does -- the sidebar of the main screen behind
+    // it shows no name at this terminal size. So the name proves the claim
     // the phase rests on: content specific to this player travelled the whole
     // pipeline to this player's client grid. A pipeline that discards writes
     // cannot produce it, and one that carried some other player's screen would
@@ -223,6 +223,37 @@ TEST_CASE( "one_players_menu_reaches_their_own_client_screen", "[mp]" )
     // floor is set far below that so ordinary UI churn does not trip it, and far
     // above what any partial write could reach.
     CHECK( mp_grid_nonblank_cells( screen ) > 200 );
+}
+
+TEST_CASE( "every_player_sees_their_own_main_game_screen", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // Both actionable, no key pressed: each player sits on the main screen
+    // waiting for input, which is what a client sees for most of a session.
+    // The sidebar does not carry the character's name at this size, but it
+    // does carry their strength, so give the two players far-apart ones. The
+    // text is read off the character rather than written here: the sidebar
+    // shows strength after weight and other penalties.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    g->player_at( 1 ).set_str_base( 20 );
+    const auto strength = []( const size_t slot ) {
+        return string_format( "Str: %d ", g->player_at( slot ).get_str() );
+    };
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), strength( 0 ) ) &&
+               mp_grid_contains( harness.screen( 1 ), strength( 1 ) );
+    }, 10 ) );
+    REQUIRE( strength( 0 ) != strength( 1 ) );
+    // A whole screen, not a stray line: the map and the sidebar drew about 500
+    // cells each when this was first made to work at the harness's 80x24.
+    CHECK( mp_grid_nonblank_cells( harness.screen( 0 ) ) > 200 );
+    CHECK( mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200 );
+    // And each player's own: the other's sidebar never lands on it.
+    CHECK_FALSE( mp_grid_contains( harness.screen( 0 ), strength( 1 ) ) );
+    CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), strength( 0 ) ) );
 }
 
 namespace

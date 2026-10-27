@@ -141,6 +141,22 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
     on_out_of_scope release_unwind( [slot, &sched]() {
         sched.release_unwind( slot );
     } );
+    // This player's main game screen: the map and sidebar every menu sits on.
+    // main() raises one, but before any player thread exists, so only for
+    // context 0; without this a client of any other slot sees a blank screen
+    // whenever no menu is open. Held for the whole body because the adaptor is
+    // the screen's registration in this context's ui stack. It must die under
+    // that same stack (~ui_adaptor asserts it), and every way out of the body
+    // holds the unwind right, so nobody else is repointing the context then.
+    // Declared after release_unwind so it is dropped while the right is still
+    // held.
+    shared_ptr_fast<ui_adaptor> main_ui;
+    on_out_of_scope drop_main_ui( [slot, &main_ui]() {
+        if( main_ui ) {
+            mp_activate_player( slot );
+            main_ui.reset();
+        }
+    } );
     while( true ) {
         sched.wait_for_turn( slot );
         if( sched.unwind_if_stopping( slot ) ) {
@@ -148,6 +164,9 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         }
         mp_assert_holds( slot );
         mp_activate_player( slot );
+        if( !main_ui ) {
+            main_ui = g->create_or_get_active_main_ui_adaptor();
+        }
         avatar &ava = g->player_at( slot );
         g->avatar_turn_pre( ava );
         const bool ended = g->player_act( ava );

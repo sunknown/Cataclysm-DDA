@@ -3189,6 +3189,11 @@ static void draw_footsteps( const catacurses::window &window, const tripoint_rel
 shared_ptr_fast<ui_adaptor> game::create_or_get_main_ui_adaptor()
 {
     mp_ensure_player_context();
+    return create_or_get_active_main_ui_adaptor();
+}
+
+shared_ptr_fast<ui_adaptor> game::create_or_get_active_main_ui_adaptor()
+{
     player_context &ctx = mp_active_context();
     shared_ptr_fast<ui_adaptor> ui = ctx.main_ui_adaptor.lock();
     if( !ui ) {

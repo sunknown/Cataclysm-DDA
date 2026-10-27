@@ -17,6 +17,7 @@
 #include "mp/mp_client_screen.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_transport.h"
+#include "panels.h"              // panel_manager
 
 // The terminal every harness client runs at. A real client reports its own size
 // in the handshake; the harness picks one and uses it for the server grid, the
@@ -139,6 +140,7 @@ class mp_server_startup_for_test
         int prev_full_screen_width_;
         int prev_full_screen_height_;
         std::unique_ptr<cataimgui::client> prev_imclient_;
+        panel_manager prev_panels_;
 };
 
 // A whole server session inside one process: N clients on loopback transports,
