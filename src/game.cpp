@@ -161,8 +161,8 @@
 #include "monster.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_mode.h"
-#include "mp/mp_sched.h"
 #endif
+#include "mp/mp_sched.h"
 #include "monstergenerator.h"
 #include "move_mode.h"
 #include "mtype.h"
