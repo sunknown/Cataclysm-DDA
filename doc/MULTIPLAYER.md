@@ -121,8 +121,10 @@ The client needs a terminal of at least 80x24. On connect it announces its
 terminal size; the server streams at that size. Resizing the client's terminal
 renegotiates the grid.
 
-When any client disconnects, the session ends for everyone and the server
-shuts down cleanly. It does not keep the world open for a replacement.
+When any player leaves -- disconnects, quits or dies -- the session ends for
+everyone: the server saves the world, tells every client why ("Bo
+disconnected"), and goes back to waiting at its menu. It does not keep the
+world open for a replacement.
 
 ## Two or more players
 
@@ -162,15 +164,21 @@ acted, waits.
 ### Hurrying a partner
 
 Press **`` ` ``** (backquote, the `coop_hurry` action) to start a countdown for
-every player who is still holding the world. When it runs out, those players
-stop holding it for this turn: the world moves on, and their characters stand
-still and lose the turn. Nothing is closed -- the menu stays open, and they
-finish what they were doing when they are ready. If what they chose has gone
-stale meanwhile (somebody took the item), the game refuses it with its usual
-message.
+every player who is still holding the world -- you too, if you press it while
+you still have time to spend. When it runs out, those players stop holding the
+world for as long as they stay at the screen they are on: the world moves on,
+and their characters stand still and lose those turns. Nothing is closed -- the
+menu stays open, their keys still work, and they finish what they were doing
+when they are ready. Once they act, the world waits for them again like anyone
+else. If what they chose has gone stale meanwhile (somebody took the item), the
+game refuses it with its usual message.
 
 When a hostile creature can see any player, the countdown starts by itself and
-is shorter.
+is shorter (4 seconds rather than 15).
+
+If nobody is left playing -- everyone has been dropped this way or is busy with
+a long activity -- the world does not race ahead: it moves one turn per
+countdown length until somebody acts.
 
 ## Limitations of this first version
 
@@ -182,9 +190,15 @@ is shorter.
   parked until the next turn and reads no keys, so they cannot press hurry; only
   a player who is still holding the world can. In practice the waiting player
   asks their partner to press it, or waits; danger starts the countdown on its
-  own. A countdown also only lasts one turn: a player who stays in a menu holds
-  the next turn again. Both are planned for the next phase, together with a
-  sticky "carry on without me".
+  own. Planned for the next phase, together with a "carry on without me".
+- **The world cannot ask anyone anything.** An NPC who walks up to talk, a
+  monster that asks a question, a popup from an effect: these come from the
+  world's half of the turn, which has no player to answer, so they get the
+  answer of Escape -- the conversation does not open, the question is answered
+  "no" -- and the server's console says one was skipped.
+- **A death ends the session.** There are no death screens and no deathcam in a
+  session: the world is saved with the dead character in it, and the death is
+  dealt with the next time the world is loaded for single-player play.
 - **One terminal size for everyone.** All players draw into one shared root
   window, which is sound only while every client runs the same terminal size.
   Use the same size on every machine.
