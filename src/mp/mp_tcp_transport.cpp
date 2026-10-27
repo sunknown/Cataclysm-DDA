@@ -35,6 +35,7 @@ mp_tcp_transport::~mp_tcp_transport()
 
 void mp_tcp_transport::send( std::vector<uint8_t> payload )
 {
+    std::lock_guard<std::mutex> lock( out_mutex_ );
     if( !connected_ ) {
         // A closed wire silently drops the message, matching the loopback
         // transport's early return on a closed channel.
@@ -48,7 +49,10 @@ std::optional<std::vector<uint8_t>> mp_tcp_transport::recv( const int timeout_ms
 {
     // Push whatever we owe the peer before settling down to wait for them; a
     // reply is usually the answer to what we just sent.
-    flush_outbound();
+    {
+        std::lock_guard<std::mutex> lock( out_mutex_ );
+        flush_outbound();
+    }
     if( !connected() ) {
         return std::nullopt;
     }
@@ -83,6 +87,7 @@ std::optional<std::vector<uint8_t>> mp_tcp_transport::recv( const int timeout_ms
             return std::nullopt;
         }
         if( pr == mp_socket_poll_result::error ) {
+            std::lock_guard<std::mutex> lock( out_mutex_ );
             disconnect();
             return std::nullopt;
         }
@@ -94,11 +99,13 @@ std::optional<std::vector<uint8_t>> mp_tcp_transport::recv( const int timeout_ms
             // reset. Both mean the peer is gone; crucially, both must also
             // unblock a recv(-1), so the server's input loop can notice the
             // drop and tear down instead of hanging forever.
+            std::lock_guard<std::mutex> lock( out_mutex_ );
             disconnect();
             return std::nullopt;
         }
         reader_.feed( buf.data(), static_cast<size_t>( n ) );
         if( reader_.failed() ) {
+            std::lock_guard<std::mutex> lock( out_mutex_ );
             disconnect();
             return std::nullopt;
         }
@@ -112,6 +119,7 @@ std::optional<std::vector<uint8_t>> mp_tcp_transport::recv( const int timeout_ms
 
 size_t mp_tcp_transport::pending_bytes() const
 {
+    std::lock_guard<std::mutex> lock( out_mutex_ );
     size_t total = 0;
     for( const std::vector<uint8_t> &frame : outbound_ ) {
         total += frame.size();
@@ -125,6 +133,7 @@ size_t mp_tcp_transport::pending_bytes() const
 
 void mp_tcp_transport::drop_pending_screen_messages()
 {
+    std::lock_guard<std::mutex> lock( out_mutex_ );
     // outbound_ holds whole frames, so dropping one cannot corrupt framing:
     // the head frame may be partially sent -- its length header and the start
     // of its body are already on the wire, so it must always survive, even a
@@ -195,8 +204,7 @@ void mp_tcp_transport::flush_outbound()
 
 void mp_tcp_transport::disconnect()
 {
-    // The peer is gone. Run by the thread that found out, which owns the
-    // queue; the descriptor itself is the destructor's (see fd_).
+    // The peer is gone. The descriptor itself is the destructor's (see fd_).
     close();
     outbound_.clear();
     outbound_head_sent_ = 0;

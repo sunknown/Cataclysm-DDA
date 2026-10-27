@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -37,6 +38,7 @@ class mp_tcp_transport : public mp_transport
         mp_tcp_transport &operator=( const mp_tcp_transport & ) = delete;
 
     private:
+        // Both expect out_mutex_ held.
         void flush_outbound();
         void disconnect();
 
@@ -56,6 +58,11 @@ class mp_tcp_transport : public mp_transport
         // connected().
         std::atomic<bool> connected_;
         mp_frame_reader reader_;
+        // Guards the outbound queue and every write to the socket. The player
+        // whose transport this is writes their screen to it, but the world
+        // writes to it too -- the goodbye when a session ends -- and two
+        // writers interleaving bytes would corrupt the frame stream.
+        mutable std::mutex out_mutex_;
         // Complete framed messages waiting to be written, in send order. Each
         // element is one whole [4-byte big-endian length][body] frame; a frame
         // is never split across elements. Keeping whole frames is what lets

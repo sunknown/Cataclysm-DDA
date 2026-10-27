@@ -155,6 +155,9 @@ mp_session_harness::~mp_session_harness()
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
     mp_turn_reset_all();
+    // A session that ended (a death, a quit) leaves the quit status behind,
+    // and the next test's first do_turn() would read it as its game being over.
+    g->uquit = QUIT_NO;
     // Put the globals back here rather than letting the member die on the way
     // out of the object, because the context has to be re-mirrored from the
     // restored terminal and not from the harness's.

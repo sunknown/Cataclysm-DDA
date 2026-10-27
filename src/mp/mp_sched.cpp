@@ -8,7 +8,6 @@
 
 #include "cata_assert.h"
 #include "debug.h"
-#include "mp/mp_context.h"
 
 namespace
 {
@@ -256,7 +255,8 @@ bool mp_sched_stopping()
 
 bool mp_input_must_not_wait()
 {
-    return mp_active_sched() && ( mp_in_world_phase() || mp_sched_stopping() );
+    const mp_sched *const sched = mp_active_sched();
+    return sched && ( sched->stopping() || sched->holds( mp_sched::world ) );
 }
 
 void mp_assert_holds( const size_t who )

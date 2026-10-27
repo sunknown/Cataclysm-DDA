@@ -135,11 +135,15 @@ bool catacurses::supports_256_colors()
 
 input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
 {
-    if( mp_active_sched() && mp_in_world_phase() ) {
+    const mp_sched *const asking_sched = mp_active_sched();
+    if( asking_sched && !asking_sched->stopping() &&
+        asking_sched->holds( mp_sched::world ) ) {
         // The world is asking (see mp_input_must_not_wait). Nobody's wire is
         // read and no baton changes hands: the world holds it, and the slot
         // the active context names belongs to a player whose input lives on
-        // that player's own thread. The answer is a cancel; routing the
+        // that player's own thread. A shutdown is not this case even though
+        // the world holds the baton through it: the players unwinding then ask
+        // from their own threads, and the unwind path below serialises them. The answer is a cancel; routing the
         // question to the player it is about is later work, so say on the
         // console that one was skipped -- once a turn, because a menu asks
         // several times on its way to closing.
@@ -204,7 +208,7 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
                 // only sets a flag, and the orchestrator (running on its own
                 // thread, in do_turn()) turns that into a clean shutdown no
                 // other thread's state can be caught mid-teardown by.
-                mp_request_session_end();
+                mp_request_session_end( who + " disconnected" );
             } else {
                 mp_server_request_exit();
             }

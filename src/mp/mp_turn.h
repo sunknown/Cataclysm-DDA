@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 
 #include "action.h"
 
@@ -97,12 +98,14 @@ bool mp_turn_is_open();
 // starts the clock mp_turn_paced() measures.
 void mp_set_turn_open( bool open );
 
-// The session must end: a player quit or died out of the game. Player threads
+// The session must end: a player quit, died or disconnected. Player threads
 // call the setter because player_act's return value has nowhere else to go --
 // they run inside a thread body, not inside do_turn -- and the orchestrator
-// turns it into do_turn()'s `true` for main().
-void mp_request_session_end();
+// turns it into do_turn()'s `true` for main(). `reason` is what every client
+// is told ("Bo disconnected"); the first request's reason is the one kept.
+void mp_request_session_end( const std::string &reason );
 bool mp_session_end_requested();
+const std::string &mp_session_end_reason();
 
 // The two things that start a hurry countdown. Each has its own countdown, so
 // neither can swallow the other.

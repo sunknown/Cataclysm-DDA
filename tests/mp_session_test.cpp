@@ -3,11 +3,15 @@
 #include "cata_catch.h"
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "calendar.h"
 #include "cata_scope_helpers.h"
 
 #include "avatar.h"
+#include "bodypart.h"
 #include "debug.h"
 #include "game.h"
 #include "game_test_helper.h"
@@ -18,9 +22,13 @@
 #include "messages.h"
 #include "output.h"
 #include "mp/mp_context.h"
+#include "mp/mp_loopback_transport.h"
+#include "mp/mp_protocol.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
+#include "overmapbuffer.h"
+#include "overmap.h"
 #include "point.h"
 #include "string_formatter.h"
 #include "type_id.h"
@@ -496,5 +504,73 @@ TEST_CASE( "a_dropped_player_keeps_playing_while_their_partner_holds", "[mp]" )
     CHECK( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
     }, 20 ) );
+}
+TEST_CASE( "every_client_is_told_why_the_session_ended", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_sessions_reset_for_test();
+    mp_turn_reset_all();
+    const mp_loopback_pair wire = mp_make_loopback_pair();
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions().back()->transport = wire.a;
+
+    mp_request_session_end( "Bo disconnected" );
+    mp_server_end_session();
+
+    // The client's end of the wire: everything the server said last.
+    std::optional<std::string> reason;
+    while( std::optional<std::vector<uint8_t>> payload = wire.b->recv( 100 ) ) {
+        mp_msg_kind kind = mp_msg_kind::screen;
+        std::vector<uint8_t> body;
+        mp_control msg;
+        if( mp_unwrap( *payload, kind, body ) && kind == mp_msg_kind::control &&
+            mp_control_from_json( std::string( body.begin(), body.end() ), msg ) &&
+            msg.kind == mp_control_kind::bye ) {
+            reason = msg.bye_reason;
+        }
+    }
+    CHECK( reason == std::optional<std::string>( "Bo disconnected" ) );
+    mp_turn_reset_all();
+}
+
+TEST_CASE( "a_death_in_a_session_ends_it_and_saves_the_world", "[mp]" )
+{
+    restore_active_state restore;
+    // Slot 1 first: its death used to go unnoticed, which fails a check. Slot
+    // 0's used to reach the death screens from the world thread and abort.
+    const size_t victim = GENERATE( 1, 0 );
+    CAPTURE( victim );
+    mp_session_harness harness( 2 );
+    harness.run_until( []() {
+        return false;
+    }, 1 );
+    // By name, not by reference: activating a player swaps avatars' contents
+    // between the slot objects, so a reference names somebody else afterwards.
+    avatar &dead = g->player_at( victim );
+    const std::string name = dead.get_name();
+    dead.set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    REQUIRE( dead.is_dead_state() );
+
+    // The death screens, the deathcam question and the world-end menu are
+    // all a single player's. A session asks none of them: it saves the world
+    // as it stands -- the dead character with it, their death handled when
+    // the world is next loaded alone -- and ends for everyone, saying why.
+    CHECK( g->do_turn() );
+    CHECK( mp_session_end_reason() == name + " died" );
+    CHECK( g->uquit == QUIT_SAVED );
+
+    // The ending's own teardown (turn_handler::cleanup_at_end) empties the map
+    // buffer and the overmaps, leaving the map pointing at freed submaps, as
+    // main() expects: it goes back to the menu and loads a world. A test
+    // process goes on to the next test instead, so put back the world
+    // tests/test_main.cpp starts every run with.
+    get_map() = map();
+    overmap_special_batch empty_specials( point_abs_om{} );
+    overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
+    get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
+    get_avatar().move_to( tripoint_abs_ms::zero );
 }
 #endif // MP_SERVER

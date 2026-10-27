@@ -269,10 +269,11 @@ bool mp_sched_stopping();
 
 // Whether whoever is asking for input right now must get an answer at once
 // instead of a wait: the session is shutting down, or the world is asking --
-// an NPC opening a conversation, a monster's question, the death screen, all
-// raised from the world's half of the turn. The world has no player of its own
-// and holds the baton while it asks, so waiting on any one player would ask
-// them for the baton the asker holds. Both get a timeout from the backend,
+// it holds the baton, so the asker is the world thread: an NPC opening a
+// conversation or a monster's question in the world's half of the turn, an
+// effect's popup in a player's upkeep (avatar_turn_post runs on the world
+// thread under that player's context). The world has no player of its own,
+// and waiting on any one player would ask them for the baton the asker holds. Both get a timeout from the backend,
 // which handle_input() turns into QUIT: every menu's cancel.
 bool mp_input_must_not_wait();
 

@@ -702,22 +702,43 @@ bool game::player_act( avatar &ava )
     return false;
 }
 
+// A session ends for everybody the moment anyone leaves it -- quits, dies or
+// drops (the roster is fixed). None of single-player's ending applies: the
+// death screens, the deathcam and the world-end menu all ask the one player,
+// and moving the save to the graveyard would take everyone else's characters
+// with it. The world is saved as it stands instead, a dead character with it,
+// whose death is then dealt with when the world is next loaded alone.
+static bool end_session( mp_sched &sched )
+{
+    sched.set_world_waiting( false );
+    mp_activate_world();
+    if( g->uquit != QUIT_SAVED && !g->save() ) {
+        debugmsg( "the session ended but the world could not be saved" );
+    }
+    g->uquit = QUIT_SAVED;
+    return turn_handler::cleanup_at_end();
+}
+
 bool game::do_turn()
 {
-    if( is_game_over() ) {
-        return turn_handler::cleanup_at_end();
-    }
-
     if( mp_sched *const sched = mp_active_sched() ) {
         // With more than one player the turn is resumable: world_turn_pre opens
         // it once, and while the barrier is unsatisfied do_turn returns without
         // closing it -- the calendar stays frozen until every living player has
         // acted or been dropped by the hurry countdown.
         mp_activate_world();
+        // Single-player's own check, is_game_over(), reads only the avatar in
+        // u and goes on to ask that player questions; a session looks at every
+        // slot and asks nobody.
+        for( size_t i = 0; i < player_slot_count(); ++i ) {
+            if( player_at( i ).is_dead_state() ) {
+                mp_request_session_end( player_at( i ).get_name() + " died" );
+            }
+        }
         if( mp_session_end_requested() ) {
-            // A player quit or died out of the game. Their thread had nowhere
-            // to return player_act's `true` to, so it left it here.
-            return turn_handler::cleanup_at_end();
+            // A player quit, died or dropped. A player thread had nowhere to
+            // return player_act's `true` to, so it left it here.
+            return end_session( *sched );
         }
         if( !mp_turn_is_open() ) {
             mp_turn_reset(); // once per opened turn, not once per poll
@@ -782,8 +803,7 @@ bool game::do_turn()
             if( mp_session_end_requested() ) {
                 // Somebody quit from inside their own turn: stop polling for a
                 // barrier nobody is going to satisfy.
-                sched->set_world_waiting( false );
-                return turn_handler::cleanup_at_end();
+                return end_session( *sched );
             }
         }
         sched->set_world_waiting( false );
@@ -795,8 +815,10 @@ bool game::do_turn()
         // spends none of them.
         mp_forfeit_dropped_moves();
 
-        // Moves come back after monmove, exactly as in single player. The baton
-        // goes back to each player for this because the morale paths can draw.
+        // Moves come back after monmove, exactly as in single player. This runs
+        // on the world thread under each player's context in turn -- the world
+        // keeps the baton -- so anything here that asks for input gets the
+        // world's answer (mp_input_must_not_wait).
         for( size_t i = 0; i < player_slot_count(); ++i ) {
             mp_activate_player( i );
             avatar_turn_post( player_at( i ) );
@@ -817,6 +839,10 @@ bool game::do_turn()
 #endif
         debug_menu::debug_capture::tick_if_active();
         return false;
+    }
+
+    if( is_game_over() ) {
+        return turn_handler::cleanup_at_end();
     }
 
     // Single player: no scheduler and no thread -- the orchestrator runs the

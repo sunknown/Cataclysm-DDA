@@ -182,7 +182,9 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             // The game is over or this player quit. A thread body has nowhere
             // to return that to, so it is left where the orchestrator picks it
             // up and turns it into do_turn()'s `true` for main().
-            mp_request_session_end();
+            const avatar &ava = g->player_at( slot );
+            mp_request_session_end( ava.get_name() +
+                                    ( ava.is_dead_state() ? " died" : " left the game" ) );
         }
         sched.release_to( slot, mp_sched::world );
     }
@@ -197,8 +199,22 @@ void mp_stop_player_threads( mp_sched *const sched, std::vector<std::thread> &th
     // has a menu open is the normal case, not the exotic one. A closed
     // transport makes the input wait return a timeout event, the player_act
     // loop sees mp_sched_stopping() and unwinds.
+    //
+    // Say goodbye first, with the reason, so a client shows why its game
+    // stopped instead of a dropped connection. The world sends this while a
+    // player thread may be parked reading the same transport; transports take
+    // a send from any thread.
+    mp_control bye;
+    bye.kind = mp_control_kind::bye;
+    bye.bye_reason = mp_session_end_reason().empty() ? std::string( "the session ended" ) :
+                     mp_session_end_reason();
+    const std::string bye_json = mp_control_to_json( bye );
     for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
         if( session && session->transport ) {
+            if( session->transport->connected() ) {
+                session->transport->send( mp_wrap( mp_msg_kind::control,
+                                                   std::vector<uint8_t>( bye_json.begin(), bye_json.end() ) ) );
+            }
             session->transport->close();
         }
     }

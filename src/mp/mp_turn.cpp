@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "avatar.h"
@@ -22,8 +23,10 @@ std::vector<bool> g_dropped_by_countdown;
 // since when (see mp_turn_paced).
 bool g_turn_open = false;
 std::chrono::steady_clock::time_point g_turn_opened_at;
-// Whether a player asked for the session to end (see mp_request_session_end).
+// Whether a player asked for the session to end, and why (see
+// mp_request_session_end).
 bool g_session_end = false;
+std::string g_session_end_reason;
 
 void ensure_sized()
 {
@@ -162,6 +165,7 @@ void mp_turn_reset_all()
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
     g_turn_open = false;
     g_session_end = false;
+    g_session_end_reason.clear();
     clear_hurry_countdowns();
 }
 
@@ -209,9 +213,17 @@ bool mp_turn_paced()
            std::chrono::milliseconds( pace_ms );
 }
 
-void mp_request_session_end()
+void mp_request_session_end( const std::string &reason )
 {
+    if( !g_session_end ) {
+        g_session_end_reason = reason;
+    }
     g_session_end = true;
+}
+
+const std::string &mp_session_end_reason()
+{
+    return g_session_end_reason;
 }
 
 bool mp_session_end_requested()

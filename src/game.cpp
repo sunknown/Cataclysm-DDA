@@ -161,6 +161,7 @@
 #include "monster.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_mode.h"
+#include "mp/mp_sched.h"
 #endif
 #include "monstergenerator.h"
 #include "move_mode.h"
@@ -2929,7 +2930,12 @@ bool game::is_game_over()
             return false;
         }
         Messages::deactivate();
-        if( get_option<std::string>( "DEATHCAM" ) == "always" ) {
+        if( mp_active_sched() ) {
+            // A session ends when anyone dies (do_turn's end_session), so
+            // there is nothing to watch, and the watch state is one value
+            // shared by every player: the living partner would read it too.
+            uquit = QUIT_DIED;
+        } else if( get_option<std::string>( "DEATHCAM" ) == "always" ) {
             uquit = QUIT_WATCH;
         } else if( get_option<std::string>( "DEATHCAM" ) == "ask" ) {
             uquit = query_yn( _( "Watch the last moments of your life…?" ) ) ?
