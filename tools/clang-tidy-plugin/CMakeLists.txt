@@ -18,6 +18,7 @@ set(CataAnalyzerSrc
         JsonTranslationInputCheck.cpp
         LargeInlineFunctionCheck.cpp
         LargeStackObjectCheck.cpp
+        NoAvatarInSimulationCheck.cpp
         NoLongCheck.cpp
         NoStaticTranslationCheck.cpp
         OtMatchCheck.cpp

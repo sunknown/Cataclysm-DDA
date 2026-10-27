@@ -14,6 +14,7 @@
 #include "JsonTranslationInputCheck.h"
 #include "LargeInlineFunctionCheck.h"
 #include "LargeStackObjectCheck.h"
+#include "NoAvatarInSimulationCheck.h"
 #include "NoLongCheck.h"
 #include "NoStaticTranslationCheck.h"
 #include "OtMatchCheck.h"
@@ -78,6 +79,8 @@ class CataModule : public ClangTidyModule
             CheckFactories.registerCheck<JsonTranslationInputCheck>( "cata-json-translation-input" );
             CheckFactories.registerCheck<LargeInlineFunctionCheck>( "cata-large-inline-function" );
             CheckFactories.registerCheck<LargeStackObjectCheck>( "cata-large-stack-object" );
+            CheckFactories.registerCheck<NoAvatarInSimulationCheck>(
+                "cata-no-avatar-in-simulation" );
             CheckFactories.registerCheck<NoLongCheck>( "cata-no-long" );
             CheckFactories.registerCheck<NoStaticTranslationCheck>( "cata-no-static-translation" );
             CheckFactories.registerCheck<OtMatchCheck>( "cata-ot-match" );
