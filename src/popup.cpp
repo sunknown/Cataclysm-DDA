@@ -340,10 +340,17 @@ query_popup::result query_popup::query_once()
           res.evt.get_first_input() == static_cast<int>( MouseInput::Move ) ) ||
         // Ignore window losing focus in SDL
         ( res.evt.type == input_event_t::keyboard_char && res.evt.sequence.empty() ) ||
-        res.evt.type == input_event_t::timeout
+        // An idle timeout asks again. A timeout that handle_input() turned
+        // into QUIT is a multiplayer session ending, or a question nobody can
+        // answer (mp_input_must_not_wait): asking again would never return.
+        ( res.evt.type == input_event_t::timeout && res.action != "QUIT" )
     );
 
-    if( cancel && res.action == "QUIT" ) {
+    // A QUIT that came from a timeout is handle_input() saying nobody will
+    // answer (mp_input_must_not_wait): it ends even a popup that offers no
+    // cancel, or it would be asked again for ever. Without a cancel option no
+    // key maps to QUIT, so nothing else reaches this.
+    if( res.action == "QUIT" && ( cancel || res.evt.type == input_event_t::timeout ) ) {
         res.wait_input = false;
     } else if( res.action == "CONFIRM" ) {
         if( cur < options.size() ) {

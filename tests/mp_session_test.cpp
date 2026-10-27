@@ -15,6 +15,7 @@
 #include "map.h"
 #include "map_helpers.h"
 #include "messages.h"
+#include "output.h"
 #include "mp/mp_context.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
@@ -374,5 +375,46 @@ TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
         return to_turn<int>( calendar::turn ) > turn_before + 1;
     } ) );
     CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
+}
+TEST_CASE( "a_yes_no_prompt_unwinds_when_the_session_ends", "[mp]" )
+{
+    restore_active_state restore;
+    {
+        mp_session_harness harness( 2 );
+        g->player_at( 0 ).set_moves( 100 );
+        // 'S' asks "Save and quit?" through query_yn, the prompt most
+        // confirmations in the game share. Its loop asks again on every
+        // timeout, and a session ending answers a waiting player with one.
+        harness.press( 0, 'S' );
+        REQUIRE( harness.run_until( [&]() {
+            return mp_grid_contains( harness.screen( 0 ), "Save and quit" );
+        } ) );
+    }
+    // Reaching the end of this test is the assertion: the harness's destructor
+    // joins every player thread, and a prompt that never closes holds that join
+    // for ever.
+}
+
+TEST_CASE( "a_question_the_world_asks_is_answered_without_waiting", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    harness.run_until( []() {
+        return false;
+    }, 1 );
+    // The test thread is the world and holds the baton between turns. Enter
+    // the world phase as do_turn() does for world_turn_post(), where an NPC
+    // walking up to talk, a monster's question or the death screen asks from.
+    // There is no player of the world to answer: every player's input belongs
+    // to their own thread, and waiting on one would hold the baton while
+    // asking them for it.
+    mp_activate_world();
+    CHECK_FALSE( query_yn( "A question from the world?" ) );
+    mp_activate_player( 0 );
+    // The world still runs turns afterwards.
+    const int turn_before = to_turn<int>( calendar::turn );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
 }
 #endif // MP_SERVER

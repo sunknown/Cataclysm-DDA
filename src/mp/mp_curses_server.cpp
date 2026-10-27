@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "calendar.h"
 #include "cata_utility.h"
 #include "coordinates.h"
 #include "cuboid_rectangle.h"
@@ -134,6 +135,24 @@ bool catacurses::supports_256_colors()
 
 input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
 {
+    if( mp_active_sched() && mp_in_world_phase() ) {
+        // The world is asking (see mp_input_must_not_wait). Nobody's wire is
+        // read and no baton changes hands: the world holds it, and the slot
+        // the active context names belongs to a player whose input lives on
+        // that player's own thread. The answer is a cancel; routing the
+        // question to the player it is about is later work, so say on the
+        // console that one was skipped -- once a turn, because a menu asks
+        // several times on its way to closing.
+        static time_point last_logged = calendar::before_time_starts;
+        if( calendar::turn != last_logged ) {
+            last_logged = calendar::turn;
+            mp_server_log( "the world asked for input while no player was acting; "
+                           "answered with a cancel" );
+        }
+        input_event ev;
+        ev.type = input_event_t::timeout;
+        return ev;
+    }
     while( true ) {
         int w = 0;
         int h = 0;

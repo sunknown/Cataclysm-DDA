@@ -267,6 +267,15 @@ void mp_assert_holds( size_t who );
 // kept going would call get_input_event again and trip mp_assert_holds.
 bool mp_sched_stopping();
 
+// Whether whoever is asking for input right now must get an answer at once
+// instead of a wait: the session is shutting down, or the world is asking --
+// an NPC opening a conversation, a monster's question, the death screen, all
+// raised from the world's half of the turn. The world has no player of its own
+// and holds the baton while it asks, so waiting on any one player would ask
+// them for the baton the asker holds. Both get a timeout from the backend,
+// which handle_input() turns into QUIT: every menu's cancel.
+bool mp_input_must_not_wait();
+
 // Starts the watchdog thread owned by `sched`. It logs the current holder
 // whenever the baton has not moved for longer than `threshold_ms`, then keeps
 // watching. Stopped by sched.shut_down(). Calling this twice on the same

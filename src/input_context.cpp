@@ -148,8 +148,9 @@ static const std::string TIMEOUT = "TIMEOUT";
 // already treats QUIT as "close and unwind" (it is how Escape/Cancel work
 // throughout the UI), so reusing it reaches every such loop -- including
 // ones this file cannot enumerate -- without teaching each one a new
-// action name. mp_sched_stopping() is false in every non-MP build and in
-// every MP build outside a scheduler shutdown, so this is a no-op there.
+// action name. mp_input_must_not_wait() is false whenever no scheduler runs
+// -- every non-MP build, and single-player in an MP one -- so this is a no-op
+// there.
 static const std::string MP_SESSION_ENDING_QUIT = "QUIT";
 
 const std::string &input_context::input_to_action( const input_event &inp ) const
@@ -493,7 +494,7 @@ const std::string &input_context::handle_input( const int timeout )
 
         next_action = inp_mngr.get_input_event( preferred_keyboard_mode );
         if( next_action.type == input_event_t::timeout ) {
-            if( mp_sched_stopping() ) {
+            if( mp_input_must_not_wait() ) {
                 // A plain TIMEOUT here is indistinguishable, to whatever menu
                 // loop called handle_input(), from an ordinary idle redraw --
                 // every such loop already treats one as "nothing happened,
@@ -505,7 +506,10 @@ const std::string &input_context::handle_input( const int timeout )
                 // control to the per-player thread body that is waiting to
                 // notice mp_sched_stopping() and exit -- the harness's
                 // std::thread::join() on that thread then blocks forever.
-                // QUIT unwinds through the SAME path Escape already does.
+                // QUIT unwinds through the SAME path Escape already does. The
+                // world asking for input (an NPC's conversation, a monster's
+                // question, the death screen) gets the same answer, for the
+                // same reason: nobody is going to answer it.
                 result = &MP_SESSION_ENDING_QUIT;
                 break;
             }
