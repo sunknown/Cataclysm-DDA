@@ -4,10 +4,12 @@
 #include <vector>
 
 #include "cata_scope_helpers.h"
+#include "game.h"
 #include "game_test_helper.h"
 #include "mp/mp_context.h"
 #include "output.h"
 #include "panels.h"
+#include "popup.h"
 #include "ui_manager.h"
 
 TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" )
@@ -253,15 +255,43 @@ TEST_CASE( "the_world_phase_has_no_active_player", "[mp]" )
 {
     restore_active_state restore;
     mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    g->add_player_slot().set_body();
+    mp_sync_context_count();
     mp_activate_player( 0 );
 
     mp_activate_world();
 
-    // The world stack is a real object: debugmsg can raise a UI during the
-    // world phase, and it must land somewhere rather than dereference null.
+    // With more than one player the world stack is a real object of its own:
+    // UI raised during the world phase must land somewhere rather than
+    // dereference null, and not in either player's stack.
     CHECK( ui_manager::get_active_stack() != nullptr );
     CHECK( ui_manager::get_active_stack() != &g->contexts[0].ui_stack );
+    CHECK( ui_manager::get_active_stack() != &g->contexts[1].ui_stack );
 
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+// Single-player runs the world's half of the turn through the same
+// mp_activate_world() as a server session. NPCs finishing an activity there
+// call g->wait_popup_reset(), which drops the one player's progress popup
+// ("Wait till you wake up..."); that popup registered in the player's ui stack,
+// and ~ui_adaptor asserts it dies in the stack it registered in.
+TEST_CASE( "a_single_player_popup_survives_a_reset_from_the_world_phase", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_activate_player( 0 );
+    g->contexts[0].wait_popup = std::make_unique<static_popup>();
+
+    mp_activate_world();
+    g->wait_popup_reset();
+
+    CHECK( g->contexts[0].wait_popup == nullptr );
     mp_activate_player( 0 );
 }
 

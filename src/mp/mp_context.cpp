@@ -5,6 +5,7 @@
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
+#include "mp/mp_sched.h"
 #include "output.h"
 #include "panels.h"
 #include "popup.h" // static_popup's complete definition, for wait_popup
@@ -241,9 +242,16 @@ void mp_activate_world()
     g->set_active_slot( 0 );
     cata_assert( g->player_slots[g->active_slot()] == &g->u );
 
-    // No player is acting. The ui stack becomes the world stack, so UI raised
-    // here (debugmsg, and nothing else by design) lands somewhere real instead
-    // of in a player's window set.
+    // No player is acting. In a session -- player threads, or more than one
+    // slot -- the ui stack becomes the world stack, so UI raised here lands
+    // somewhere real instead of in a player's window set while that player may
+    // be mid-menu on their own thread.
+    //
+    // Single-player keeps its one player's stack, as the game did before the
+    // turn was split: there is one screen and nobody else to protect it from.
+    // The world half draws there (shots and explosions over the map, an NPC's
+    // dialogue) and NPC activity code resets that player's progress popup from
+    // here, which must happen under the stack the popup registered in.
     //
     // The active context is NOT cleared, for the same reason the avatar aliases
     // are not: world code that still reads them must see live state rather than
@@ -252,7 +260,11 @@ void mp_activate_world()
     // roughly two dozen other call sites read the context without knowing which
     // phase they are in. "World phase" means nobody is acting, not that the
     // per-player state ceases to exist, so it stays on slot 0.
-    ui_manager::activate_world_stack();
+    if( mp_active_sched() != nullptr || g->player_slot_count() > 1 ) {
+        ui_manager::activate_world_stack();
+    } else {
+        ui_manager::set_active_stack( &g->contexts[0].ui_stack );
+    }
     mp_set_active_context( &g->contexts[0] );
 }
 
