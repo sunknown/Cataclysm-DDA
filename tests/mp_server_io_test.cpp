@@ -1,6 +1,6 @@
 #include "cata_catch.h"
 
-#if defined(MULTIPLAYER)
+#if defined(MP_SERVER)
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -758,4 +758,4 @@ TEST_CASE( "waiting_for_input_yields_the_baton", "[mp]" )
     mp_sessions_reset_for_test();
 }
 
-#endif // MULTIPLAYER
+#endif // MP_SERVER

@@ -1,3 +1,5 @@
+#if defined(MP_SERVER)
+
 #include "mp/mp_server_input.h"
 
 #include <chrono>
@@ -341,3 +343,5 @@ bool mp_server_resize_pending()
     }
     return s->pending_resize.has_value();
 }
+
+#endif // MP_SERVER

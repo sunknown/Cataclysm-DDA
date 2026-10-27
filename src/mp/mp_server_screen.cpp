@@ -1,3 +1,5 @@
+#if defined(MP_SERVER)
+
 #include "mp/mp_server_screen.h"
 
 #include <memory>
@@ -151,3 +153,5 @@ std::shared_ptr<mp_transport> mp_server_shared_transport()
     }
     return s->transport;
 }
+
+#endif // MP_SERVER
