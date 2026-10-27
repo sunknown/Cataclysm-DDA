@@ -243,6 +243,11 @@ void mp_server_end_session()
     g_sched.reset();
     mp_sessions().clear();
     mp_turn_reset_all();
+    // Hand main() back the process it started the session in: player 0's
+    // context and stack, not the world phase the threads were stopped in.
+    // main() still holds context 0's main screen and drops it at the end of
+    // this loop iteration, and ~ui_adaptor asserts it dies in that stack.
+    mp_activate_player( 0 );
 }
 
 #endif // MP_SERVER

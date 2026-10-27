@@ -23,6 +23,7 @@
 #include "point.h"
 #include "string_formatter.h"
 #include "type_id.h"
+#include "ui_manager.h"
 #include "units.h"
 
 static const vproto_id vehicle_prototype_test_shopping_cart( "test_shopping_cart" );
@@ -416,5 +417,28 @@ TEST_CASE( "a_question_the_world_asks_is_answered_without_waiting", "[mp]" )
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
+}
+TEST_CASE( "the_main_screen_outlives_the_end_of_a_session", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    g->add_player_slot().set_body();
+    mp_sync_context_count();
+    // main() raises context 0's main screen before the session starts and
+    // drops it at the end of the same loop iteration, after the session ends.
+    shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
+
+    mp_server_end_session();
+    // ~ui_adaptor asserts it dies under the stack it registered in.
+    ui.reset();
+
+    // And the menu loop main() goes back to finds the process as it was
+    // before the session: player 0's context and stack.
+    CHECK( ui_manager::get_active_stack() == &g->contexts[0].ui_stack );
+    CHECK( mp_active_context_ptr() == &g->contexts[0] );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 #endif // MP_SERVER
