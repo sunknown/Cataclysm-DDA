@@ -1,23 +1,23 @@
 # Multiplayer
 
-This document covers the first version of networked multiplayer: a dedicated
-server binary that streams its text screen to one thin client over TCP, and the
-client that connects to it. This is a technology preview -- see
+This document covers networked multiplayer: a dedicated server binary that
+streams a text screen to each of its thin clients over TCP, and the client that
+connects to it. This is a technology preview -- see
 [Limitations](#limitations-of-this-first-version) before you plan a session.
 
 ## Overview
 
 The server is a special build of the game (`MP_SERVER=1`). It links an
 in-memory curses backend and renders everything -- menus, the map, IMGUI
-screens -- into a text grid. One client connects over TCP, sends its terminal
-size, and the server starts streaming the grid to it. The client is the normal
+screens -- into a text grid per player. Each client connects over TCP, sends its
+terminal size, and the server streams that player's grid to it. The client is the normal
 game binary in a special mode: it forwards your keystrokes to the server and
 paints whatever screen the server sends. The server runs the game logic; the
 client is a thin remote viewport.
 
 Because the server is a full game build, everything you can do in single-player
-(create a character, move, fight, craft, read, sleep) is available -- but only
-one client connects, and only the server's own keybindings are in effect.
+(move, fight, craft, read, sleep) is available, with every player in their own
+menus at the same time -- but only the server's own keybindings are in effect.
 
 ## Building
 
@@ -62,7 +62,7 @@ place -- quit any running copy first, or the link fails with "Text file busy".
 ### 1. Start the server
 
 ```sh
-./mpserver-cataclysm-server --server <port> --world <name> --userdir <path>
+./mpserver-cataclysm-server --server <port> --world <name> --players <count> --userdir <path>
 ```
 
 - `--server <port>` -- run this instance as a multiplayer server that streams
@@ -70,14 +70,18 @@ place -- quit any running copy first, or the link fails with "Text file busy".
 - `--world <name>` -- load this world. If omitted, the server opens the
   world-selection menu, which is streamed to the client, so you can pick a
   world from the client side.
+- `--players <count>` -- how many clients the server waits for before the game
+  starts (default 1). The roster is fixed: nobody joins or leaves once play
+  begins, and the world must hold exactly this many characters (see
+  [Two or more players](#two-or-more-players)).
 - `--userdir <path>` -- keep the server's config, saves, and log under this
   directory instead of your normal single-player profile. Recommended, so the
   server does not share options or savegames with your client.
 
-The server binds a TCP listener on `<port>`, waits for one client, and performs
-a connection handshake (protocol version, terminal size, 256-colour support).
-Only after the client is accepted does the game start; you can take as long as
-you like to connect.
+The server binds a TCP listener on `<port>`, waits for `<count>` clients, and
+performs a connection handshake with each (protocol version, terminal size,
+256-colour support, the client's name). Only after every client is accepted does
+the game start; you can take as long as you like to connect.
 
 The server has no screen of its own -- its curses backend draws into a buffer
 that goes out over the wire -- so the console it was launched from carries a
@@ -102,24 +106,88 @@ turned away.
 ### 2. Connect the client
 
 ```sh
-./cataclysm --connect <host:port>
+./cataclysm --connect <host:port> --username <character name>
 ```
 
 - `--connect <host:port>` -- connect to a multiplayer server and play as its
   client (main.cpp, `--connect` handler).
+- `--username <name>` -- the character you play. The server matches it against
+  the names of the characters in the world, exactly, and refuses the whole
+  roster -- with the name in the message on its console -- when a name matches
+  nobody or two clients name the same character. Without it the client sends
+  your system user name.
 
 The client needs a terminal of at least 80x24. On connect it announces its
 terminal size; the server streams at that size. Resizing the client's terminal
 renegotiates the grid.
 
-When the client disconnects, the server shuts down cleanly (it does not keep
-running and it does not keep the world open for a second player).
+When any client disconnects, the session ends for everyone and the server
+shuts down cleanly. It does not keep the world open for a replacement.
+
+## Two or more players
+
+### Preparing the world
+
+There is no join menu yet: every character a session uses must already be in
+the world, and they all live in one save. Make them in a single-player game:
+
+1. Start or load the world in the client build (`MULTIPLAYER=1`, which is what
+   carries the debug entry below) and play as the first character.
+2. Open the debug menu, **Player** > **Add/remove a co-op player slot**, and pick
+   a template or a bare avatar. The new character appears where the first one
+   stands.
+3. Save and quit.
+
+Name the characters so each player can type theirs into `--username`.
+
+```sh
+./mpserver-cataclysm-server --server 4321 --world "coop" --players 2
+# on each machine:
+./cataclysm --connect <host>:4321 --username "<character name>"
+```
+
+### How turns work
+
+Everyone acts at once: each player has their own screen, their own menus and
+their own input, and opening a menu never blocks anyone else's screen. The world
+-- monsters, fire, the clock -- only moves on once every player has acted. A
+player who still has time to spend this turn **holds** the world; a player who
+has spent it, or who is running a long activity (crafting, reading, a long walk
+to a destination), has **acted** and holds nothing.
+
+Leafing through a menu costs no time. So a player reading the crafting list
+holds the world until they pick something -- and their partner, who has already
+acted, waits.
+
+### Hurrying a partner
+
+Press **`` ` ``** (backquote, the `coop_hurry` action) to start a countdown for
+every player who is still holding the world. When it runs out, those players
+stop holding it for this turn: the world moves on, and their characters stand
+still and lose the turn. Nothing is closed -- the menu stays open, and they
+finish what they were doing when they are ready. If what they chose has gone
+stale meanwhile (somebody took the item), the game refuses it with its usual
+message.
+
+When a hostile creature can see any player, the countdown starts by itself and
+is shorter.
 
 ## Limitations of this first version
 
-- **One player.** The server accepts exactly one client (`mp_listener::accept`)
-  and ends the session when that client disconnects. There is no rejoin, no
-  reconnect, and no spectator mode.
+- **A fixed roster.** The server waits for exactly `--players` clients, plays
+  only the characters already in the world, and ends the session when any client
+  disconnects. There is no join menu, no character creation for a joining
+  player, no rejoin, no reconnect, and no spectator mode.
+- **Hurry is pressed by the wrong player.** A player who has already acted is
+  parked until the next turn and reads no keys, so they cannot press hurry; only
+  a player who is still holding the world can. In practice the waiting player
+  asks their partner to press it, or waits; danger starts the countdown on its
+  own. A countdown also only lasts one turn: a player who stays in a menu holds
+  the next turn again. Both are planned for the next phase, together with a
+  sticky "carry on without me".
+- **One terminal size for everyone.** All players draw into one shared root
+  window, which is sound only while every client runs the same terminal size.
+  Use the same size on every machine.
 - **The server's keyboard layout is the one that counts.** The client sends
   raw input events (key presses, mouse position, modifiers); the server feeds
   them through its own keybinding configuration. If you want a different layout,

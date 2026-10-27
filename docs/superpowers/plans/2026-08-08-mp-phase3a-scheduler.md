@@ -4115,3 +4115,68 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 | Сборка: источники | `src/mp/*.cpp` подхватывается глобом под `MULTIPLAYER` (`Makefile:1119`); файлы для всех билдов добавляются явно (`Makefile:1116`) |
 | Сборка: TSAN | `make ... TSAN=1 BUILD_PREFIX=<prefix>-` |
 | Режим теста | `extern bool test_mode` (`cached_options.h:44`) |
+
+---
+
+## Amendment 2026-08-29 — Tasks A–F replace Tasks 13–14
+
+Task 13 was stopped on 2026-08-28: its harness and its two tests are correct, but they
+sit on three independent product defects, none of them Task 13 work. The user ruled
+"stop and re-plan the phase"; the re-plan is
+`.superpowers/cs/2026-08-08-mp-phase3a-scheduler/REPLAN-2026-08-28.md` and this section
+folds its decomposition into the plan. Tasks 1–12 and the Task 11 roster-guard fix are
+unchanged and merged at `31bc8d630f`. Task 13's three commits live unmerged on
+`cs/task-002` (`ade795f9a6`) and are the base of the work below.
+
+Two constraints the re-plan adds to the Global Constraints above:
+
+- **Инвариант «ровно один контекст» распространяется и на раскрутку при завершении.**
+  Дизайн (§9.3) заявляет его безусловно и опирается на него, обосновывая TSAN-гейт, но
+  `mp_sched`'s `stopping_` broadcast намеренно будит все припаркованные потоки сразу.
+  Ф3a не может пройти собственный TSAN-гейт без дисциплины, которую §8.4 отложил в Ф5.
+- **Список известных падений — не бессрочная индульгенция.** Каждая запись обязана
+  называть, что именно она блокирует и какая задача её чинит. Запись, блокирующая
+  критерий приёмки самой фазы, — первая задача этой фазы, а не отложенная.
+
+| # | Задача | Ветка | Статус на 2026-08-29 | Заметки |
+|---|---|---|---|---|
+| **A** | Довести отрисовку до сетки сессии | `cs/task-a` от `ade795f9a6` | **Готово** — `0e5e8861b8`, `aadd602293`, `572346ebf8`; ревью чистое (раунд 2) | Два дефекта: асимметрия чтения/записи в `mp_server_screen.cpp` и `test_mode`-гейт. Закрывает все три «известных» падения `mp_server_backend_test.cpp`; пайплайн на самом деле работал — сломана была только наблюдаемость из тестового бинария. |
+| **B** | Сериализовать раскрутку при завершении через эстафету | `cs/task-b` от A @ `572346ebf8` | **В работе на момент паузы** — реализатор запущен, ревью не запущено | Нужен НОВЫЙ примитив координации, а не переиспользование хода: раскрутка меню входит в `get_input_event` несколько раз. Закрывает и N=1 assert `release_to` (`mp_sched.cpp:94`), и teardown-гонку. |
+| **C** | Разделить флаг разгона | `cs/task-c` от B | Ожидает — brief готов (`task-C-brief.md`) | `g_hurry_started` обслуживает два триггера (ручной `'`, `MP_HURRY_MS`; автоматический боевой, `MP_HURRY_COMBAT_MS`); первый сработавший глушит второй. |
+| **D** | Довести харнесс и тесты Ф3a до зелёного | `cs/task-d` от C | Ожидает | Merge `cs/task-002` + реальный TSAN-гейт. Здесь фаза впервые проверяет своё центральное утверждение. |
+| **E** | Бенчмарк подмены аватара | `cs/task-e` | Ожидает | Бывшие шаги 1–2 задачи 14, без изменений. |
+| **F** | Документация фазы + человеческий гейт | — | Ожидает | Бывшие шаги 3–4 задачи 14. Правдивы только после D. Шаг 5 остаётся человеческим гейтом. |
+
+## Статус 2026-08-29 — пауза по требованию пользователя (резюме для возобновления)
+
+**Известные красные после A** (ограничение №2: у каждого — владелец и чинящая задача):
+
+| Красный | Чинит |
+|---|---|
+| guard `render_pipeline`, players=1 — assert `release_to` на N=1, красный намеренно | **B** |
+| `two_players_sit_in_different_heavy_menus`, players=2 — teardown-гонка | **B** |
+| `a_player_in_a_menu_does_not_freeze_their_partner` — hurry-флаг; timing-flaky | **C** |
+
+**Передано в B** (см. «Added 2026-08-29 after Task A» в `task-B-brief.md`):
+
+1. Протокол обязан закрыть N=1 без конкурентности: поток, проснувший в `player_act()`
+   **без** батона, не должен звать `release_to` — `cata_assert( holder_ == from )` в
+   `src/mp/mp_sched.cpp:94`. Только сериализация здесь не пройдёт.
+2. Task A очистил `test_mode` на всё время харнесса, раскрыв 11 сайтов (список —
+   task-A-report.md I-2). Два из них (`src/recipe_dictionary.cpp:482`,
+   `src/cata_utility.cpp:308` и `:338`) становятся достижимы сразу после починки
+   teardown; ожидаемый режим — зависание, а не assertion.
+3. Все player-контексты разделяют один `stdscr` (`src/mp/mp_context.cpp:192`, `:149`) —
+   решение за Task D.
+4. Внешние per-player циклы, которым нужен release раскрутки: `tests/mp_session_harness.cpp`
+   (lambda потока) и `src/mp/mp_server_main.cpp`.
+
+**Состояние на паузе:**
+
+- **A — завершено**: ревью чистое после раунда 2; три «известных» падения
+  `mp_server_backend_test.cpp` зелёные.
+- **B — в работе на момент паузы**: ветка `cs/task-b` @ `572346ebf8`, реализатор
+  (`LevelTick`) запущен, ревью не запущено. Возобновление: прочитать
+  `task-B-report.md`, собрать review package от BASE `572346ebf8`, диспатчить task reviewer;
+  baseline gate-дельты в ledger.
+- **C–F — ожидают**; brief C готов (`task-C-brief.md`).
