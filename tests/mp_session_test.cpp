@@ -11,6 +11,7 @@
 #include "debug.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "input.h"
 #include "mp_session_harness.h"
 #include "map.h"
 #include "map_helpers.h"
@@ -368,15 +369,19 @@ TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
     // The press asks; it does not move the world by itself.
     CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
 
-    // Expire it. The world moves on past the frozen turn -- `+ 1` is where the
-    // first phase already left it -- and the partner's menu is still open:
-    // untouched, just not waited on.
+    // Expire it. It drops everyone still holding -- player 0 too, who pressed
+    // hurry from the map and so still held the turn. Player 0 plays on: they
+    // wait a turn, and the world moves on past the frozen turn -- `+ 1` is
+    // where the first phase already left it -- while the partner's menu is
+    // still open: untouched, just not waited on.
     mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    harness.press( 0, '.' );
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before + 1;
     } ) );
     CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
 }
+
 TEST_CASE( "a_yes_no_prompt_unwinds_when_the_session_ends", "[mp]" )
 {
     restore_active_state restore;
@@ -440,5 +445,56 @@ TEST_CASE( "the_main_screen_outlives_the_end_of_a_session", "[mp]" )
 
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
+}
+TEST_CASE( "a_player_left_behind_by_a_hurry_does_not_let_the_world_run_free", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    g->player_at( 0 ).set_moves( 100 );
+    // The player sits at the map and presses hurry, which costs nothing: they
+    // are still holding the turn when the countdown runs out, so it drops them.
+    // So does a hostile's countdown with nobody pressing anything.
+    harness.press( 0, '`' );
+    REQUIRE( harness.run_until( []() {
+        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+    } ) );
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    const int turn_before = to_turn<int>( calendar::turn );
+
+    // Twenty polls take about a second. The drop lasts while the player sits
+    // at the same input wait, so with nobody else to wait for, every turn
+    // would close the moment it opened and the world would run at CPU speed
+    // around a player who is only thinking.
+    harness.run_until( []() {
+        return false;
+    }, 20 );
+    CHECK( to_turn<int>( calendar::turn ) <= turn_before + 1 );
+}
+
+TEST_CASE( "a_dropped_player_keeps_playing_while_their_partner_holds", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Player 1 reads their inventory; player 0 has acted (fresh avatars have
+    // no moves). Hurrying drops player 1 for as long as they read.
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 1, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    } ) );
+    mp_request_hurry();
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    const int turn_before = to_turn<int>( calendar::turn );
+    REQUIRE( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+
+    // Next turn player 0 has moves and sits at the map: now they hold the
+    // turn. Player 1 closes their inventory. Their key has to be read even
+    // though the world is waiting on somebody else.
+    harness.press( 1, KEY_ESCAPE );
+    CHECK( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    }, 20 ) );
 }
 #endif // MP_SERVER

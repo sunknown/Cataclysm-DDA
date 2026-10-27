@@ -18,8 +18,10 @@ namespace
 // what outlives it is spelled out at mp_turn_reset in the header.
 std::vector<bool> g_waiting_for_input;
 std::vector<bool> g_dropped_by_countdown;
-// Whether a turn is currently open (see mp_turn_is_open in the header).
+// Whether a turn is currently open (see mp_turn_is_open in the header), and
+// since when (see mp_turn_paced).
 bool g_turn_open = false;
+std::chrono::steady_clock::time_point g_turn_opened_at;
 // Whether a player asked for the session to end (see mp_request_session_end).
 bool g_session_end = false;
 
@@ -171,6 +173,40 @@ bool mp_turn_is_open()
 void mp_set_turn_open( const bool open )
 {
     g_turn_open = open;
+    if( open ) {
+        g_turn_opened_at = std::chrono::steady_clock::now();
+    }
+}
+
+bool mp_player_left_behind( const size_t slot )
+{
+    ensure_sized();
+    return slot < g_dropped_by_countdown.size() && g_dropped_by_countdown[slot] &&
+           g_waiting_for_input[slot];
+}
+
+bool mp_turn_paced()
+{
+    ensure_sized();
+    bool anyone_left_behind = false;
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        const avatar &ava = g->player_at( i );
+        if( ava.is_dead_state() ) {
+            continue;
+        }
+        if( mp_player_left_behind( i ) ) {
+            anyone_left_behind = true;
+        } else if( !ava.activity && !ava.has_distant_destination() ) {
+            // Somebody is playing by hand; their actions pace the world.
+            return false;
+        }
+    }
+    if( !anyone_left_behind ) {
+        return false;
+    }
+    const int pace_ms = anyone_is_seen_by_a_hostile() ? MP_HURRY_COMBAT_MS : MP_HURRY_MS;
+    return std::chrono::steady_clock::now() - g_turn_opened_at <
+           std::chrono::milliseconds( pace_ms );
 }
 
 void mp_request_session_end()
@@ -234,9 +270,10 @@ void mp_tick_hurry()
         if( remaining_ms_of( source ) != 0 ) {
             continue;
         }
-        // Expired. Drop everyone still holding -- for this turn only. Their UI
-        // is untouched: their character stands still and skips the turn, their
-        // menu stays open, and they confirm their choice when they are ready.
+        // Expired. Drop everyone still holding, for as long as they sit at the
+        // input wait they are in (mp_turn_reset). Their UI is untouched: their
+        // character stands still and skips turns, their menu stays open, and
+        // they confirm their choice when they are ready.
         for( size_t i = 0; i < g->player_slot_count(); ++i ) {
             if( mp_player_state_of( i ) == mp_player_state::holding ) {
                 g_dropped_by_countdown[i] = true;

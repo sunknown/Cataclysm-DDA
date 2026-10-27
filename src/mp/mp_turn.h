@@ -24,7 +24,8 @@ enum class mp_player_state {
     // Has moves and is sitting at an input wait. The only state that holds the
     // barrier, and therefore the only state a countdown is aimed at.
     holding,
-    // Dropped from the barrier for this turn by a hurry countdown.
+    // Dropped from the barrier by a hurry countdown. Lasts while the player
+    // sits at the input wait they were dropped in (see mp_turn_reset).
     not_waited,
 };
 
@@ -37,6 +38,22 @@ bool mp_player_holds_barrier( size_t slot );
 // True when the world may tick: every living player has either acted or been
 // dropped from the barrier. The single rule the whole turn model rests on.
 bool mp_barrier_satisfied();
+
+// True for a player a hurry countdown dropped who is still sitting at an input
+// wait. They hold nothing, but they are still at the keyboard: when a key
+// brings them back, the world has to hand them the baton even though it is
+// not waiting on them.
+bool mp_player_left_behind( size_t slot );
+
+// True while a satisfied barrier must not close the turn yet. When nobody is
+// playing -- every living player is left behind (above) or busy with an
+// activity, and at least one is left behind -- nothing paces the world but
+// the poll, so each turn would close the moment it opened and the world would
+// run at CPU speed around a player who is only thinking. Such a turn lasts at
+// least as long as the countdown that dropped them would: MP_HURRY_COMBAT_MS
+// while a hostile can see a player, MP_HURRY_MS otherwise. Anyone playing --
+// acting by hand, a left-behind player included once they act -- ends it.
+bool mp_turn_paced();
 
 // Marks `slot` as sitting at an input wait, or no longer sitting at one. Called
 // by the server backend around the point where it blocks on the wire, because
@@ -76,7 +93,8 @@ void mp_turn_reset_all();
 bool mp_turn_is_open();
 
 // Opens or closes the turn. Set true right after world_turn_pre runs, set false
-// once the barrier is satisfied and world_turn_post has run.
+// once the barrier is satisfied and world_turn_post has run. Opening also
+// starts the clock mp_turn_paced() measures.
 void mp_set_turn_open( bool open );
 
 // The session must end: a player quit or died out of the game. Player threads

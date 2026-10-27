@@ -734,7 +734,9 @@ bool game::do_turn()
                 }
             }
         }
-        while( !mp_barrier_satisfied() ) {
+        // mp_turn_paced: a turn nobody is playing in still lasts a countdown's
+        // length, or a hurry that dropped everyone would let the world run free.
+        while( !mp_barrier_satisfied() || mp_turn_paced() ) {
             mp_tick_hurry();
             bool moved = false;
             std::vector<bool> owes_turn( player_slot_count(), false );
@@ -745,9 +747,13 @@ bool game::do_turn()
                 // wait_for_turn for the next one, so they report it too -- and
                 // yielding to them again would spin the world. Hand the baton
                 // only to someone who still owes the turn: acting (not yet
-                // released this turn) or holding (returning from an input wait).
+                // released this turn) or holding (returning from an input wait)
+                // -- or to a player the hurry left behind, coming back from
+                // their input wait with a key. The world is not waiting on them,
+                // but they are still playing, and nobody else reads their keys.
                 owes_turn[i] = state == mp_player_state::acting ||
-                               state == mp_player_state::holding;
+                               state == mp_player_state::holding ||
+                               mp_player_left_behind( i );
                 if( owes_turn[i] && sched->waiting_for_baton( i ) ) {
                     sched->yield_to( mp_sched::world, i );
                     moved = true;
