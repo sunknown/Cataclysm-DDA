@@ -67,6 +67,7 @@
 #include "memorial_logger.h"
 #include "messages.h"
 #include "mod_manager.h"
+#include "mp/mp_context.h"
 #if defined(MP_SERVER)
 #include "mp/mp_server_log.h"
 #endif
@@ -734,6 +735,40 @@ bool game::save_external_options_record()
     return saved_externals;
 }
 
+bool game::save_world_data()
+{
+    return save_achievements() &&
+           save_factions_missions_npcs() &&
+           save_external_options_record() &&
+           save_dimension_data() &&
+           save_maps() &&
+    write_to_file( PATH_INFO::world_base_save_path() / "uistate.json", [&]( std::ostream & fout ) {
+        JsonOut jsout( fout );
+        uistate.serialize( jsout );
+    }, _( "uistate data" ) );
+}
+
+bool game::save_character_data()
+{
+    if( !save_player_data() ||
+        !get_auto_pickup().save_character() ||
+        !get_auto_notes_settings().save( true ) ||
+        !get_safemode().save_character() ||
+        !zone_manager::get_manager().save_zones() ) {
+        return false;
+    }
+    world_generator->active_world->add_save( save_t::from_save_id( u.get_save_id() ) );
+    const std::chrono::seconds total_time_played = time_played_at_last_load +
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - time_of_last_load );
+    write_to_file( PATH_INFO::world_base_save_path() / ( base64_encode(
+    u.get_save_id() ) + ".pt" ), [&total_time_played]( std::ostream & fout ) {
+        fout.imbue( std::locale::classic() );
+        fout << total_time_played.count();
+    } );
+    return true;
+}
+
 bool game::save()
 {
     if( save_is_dirty ) {
@@ -745,49 +780,49 @@ bool game::save()
             std::chrono::steady_clock::now() - time_of_last_load );
     std::chrono::seconds total_time_played = time_played_at_last_load + time_since_load;
     events().send<event_type::game_save>( time_since_load, total_time_played );
-#if defined(MP_SERVER)
-    // A save is the one thing the game does that an operator may have to wait
-    // on, and on the server there is no progress bar to watch.
-    mp_server_log( "saving \"" + u.name + "\"" );
-#endif
     try {
-        if( !save_player_data() ||
-            !save_achievements() ||
-            !save_factions_missions_npcs() ||
-            !save_external_options_record() ||
-            !save_dimension_data() ||
-            !save_maps() ||
-            !get_auto_pickup().save_character() ||
-            !get_auto_notes_settings().save( true ) ||
-            !get_safemode().save_character() ||
-            !zone_manager::get_manager().save_zones() ||
-            !write_to_file( PATH_INFO::world_base_save_path() / "uistate.json", [&](
-        std::ostream & fout ) {
-        JsonOut jsout( fout );
-            uistate.serialize( jsout );
-        }, _( "uistate data" ) ) ) {
+        if( !save_world_data() ) {
             debugmsg( "game not saved" );
             return false;
+        }
+        // Every character gets its own file. The context swap is what makes this
+        // work: save_character_data writes `u`, and `u` is whichever slot the
+        // swap put there. The autosave runs in the world phase, so that is
+        // restored as a phase, not as "whatever slot was active".
+        const bool restore_world = mp_in_world_phase();
+        const size_t restore_slot = active_slot();
+        bool saved_characters = true;
+        for( size_t i = 0; i < player_slot_count() && saved_characters; ++i ) {
+            mp_activate_player( i );
+#if defined(MP_SERVER)
+            // A save is the one thing the game does that an operator may have to
+            // wait on, and on the server there is no progress bar to watch.
+            mp_server_log( "saving \"" + u.name + "\"" );
+#endif
+            saved_characters = save_character_data();
+        }
+        if( restore_world ) {
+            mp_activate_world();
         } else {
-            world_generator->last_world_name = world_generator->active_world->world_name;
-            world_generator->last_character_name = u.name;
-            world_generator->save_last_world_info();
-            world_generator->active_world->add_save( save_t::from_save_id( u.get_save_id() ) );
-            write_to_file( PATH_INFO::world_base_save_path() / ( base64_encode(
-            u.get_save_id() ) + ".pt" ), [&total_time_played]( std::ostream & fout ) {
-                fout.imbue( std::locale::classic() );
-                fout << total_time_played.count();
-            } );
+            mp_activate_player( restore_slot );
+        }
+        if( !saved_characters ) {
+            debugmsg( "game not saved" );
+            return false;
+        }
+
+        world_generator->last_world_name = world_generator->active_world->world_name;
+        world_generator->last_character_name = player_at( 0 ).name;
+        world_generator->save_last_world_info();
 #if defined(EMSCRIPTEN)
-            // This will allow the window to be closed without a prompt, until do_turn()
-            // is called.
-            EM_ASM( window.game_unsaved = false; );
+        // This will allow the window to be closed without a prompt, until do_turn()
+        // is called.
+        EM_ASM( window.game_unsaved = false; );
 #endif
 #if defined(MP_SERVER)
-            mp_server_log( "saved" );
+        mp_server_log( "saved" );
 #endif
-            return true;
-        }
+        return true;
     } catch( std::ios::failure & ) {
         popup( _( "Failed to save game data" ) );
         return false;

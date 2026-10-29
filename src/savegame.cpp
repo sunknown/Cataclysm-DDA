@@ -145,17 +145,10 @@ void game::serialize_json( std::ostream &fout )
     json.member( "stats_tracker", *stats_tracker_ptr );
     json.member( "achievements_tracker", *achievements_tracker_ptr );
 
-    // Slot 0 is written under the legacy "player" key so that a co-op save
-    // remains loadable by a single player build, which reads only that key.
-    json.member( "player", g->player_at( 0 ) );
-    if( g->player_slot_count() > 1 ) {
-        json.member( "extra_players" );
-        json.start_array();
-        for( size_t i = 1; i < g->player_slot_count(); ++i ) {
-            json.write( g->player_at( i ) );
-        }
-        json.end_array();
-    }
+    // One character per save file: whichever slot is active. A co-op world is
+    // an ordinary world with several character saves, so each of them opens in
+    // a single-player build as well.
+    json.member( "player", u );
     json.member( "inactive_global_effect_on_condition_vector",
                  inactive_global_effect_on_condition_vector );
 

@@ -343,6 +343,22 @@ class game
 
         /** Returns false if saving failed. */
         bool save();
+        /**
+         * The part of a save that belongs to the world: achievements, factions,
+         * missions, NPCs, the external options record, dimension data, maps, and
+         * the world's uistate. Written once per save, whoever is active.
+         */
+        bool save_world_data();
+        /**
+         * The part of a save that belongs to one character: their save file,
+         * auto-pickup rules, auto-notes, safemode rules and zones, plus the
+         * playtime file and registering them in the world's save list.
+         *
+         * Writes whichever slot is active, so the caller activates the context
+         * first. Deliberately does not write uistate.json: that is one file per
+         * world, and writing it once per character would mean the last slot won.
+         */
+        bool save_character_data();
 
         /** Returns a list of currently active character saves. */
         std::vector<std::string> list_active_saves();
