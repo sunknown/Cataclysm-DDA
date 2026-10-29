@@ -62,6 +62,10 @@
 #include "wcwidth.h"
 #include "worldfactory.h"
 
+#if defined(MP_SERVER)
+#include "mp/mp_server_log.h"
+#endif
+
 static const mod_id MOD_INFORMATION_dda( "dda" );
 static const mod_id MOD_INFORMATION_dda_tutorial( "dda_tutorial" );
 
@@ -642,6 +646,18 @@ bool main_menu::opening_screen()
         ui.position_from_window( w_open );
     } );
     ui.mark_resize();
+
+    // A world named on the command line that does not exist would leave
+    // get_world() returning nullptr; fall back to the menu instead.
+    if( !queued_world_to_load.empty() && !world_generator->has_world( queued_world_to_load ) ) {
+#if defined(MP_SERVER)
+        mp_server_log( "world \"" + queued_world_to_load +
+                       "\" does not exist; showing the world menu instead" );
+#endif
+        popup( _( "World \"%s\" does not exist." ), queued_world_to_load );
+        queued_world_to_load.clear();
+        queued_save_id_to_load.clear();
+    }
 
     if( !queued_world_to_load.empty() ) {
         WORLD *world_to_load{};
