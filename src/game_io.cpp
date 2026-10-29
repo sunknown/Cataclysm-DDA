@@ -399,6 +399,71 @@ bool game::load_world_state()
     }, abort );
 }
 
+// Reads `name`'s .sav into `u` -- and, unless `character_only`, the game state
+// it carries. False when the file could not be read.
+bool game::read_character_save( const save_t &name, const bool character_only )
+{
+    const cata_path save_file_path = PATH_INFO::world_base_save_path() /
+                                     ( name.base_path() + SAVE_EXTENSION );
+    u = avatar();
+    u.set_save_id( name.decoded_name() );
+    if( world_generator->active_world->has_compression_enabled() ) {
+        std::optional<zzip> z = zzip::load( ( save_file_path + zzip_suffix ).get_unrelative_path() );
+        return z.has_value() &&
+        read_from_zzip_optional( z.value(), save_file_path.get_unrelative_path().filename(),
+        [this, character_only]( std::string_view sv ) {
+            unserialize( std::string{ sv }, character_only );
+        } );
+    }
+    return read_from_file( save_file_path,
+    [this, &save_file_path, character_only]( std::istream & is ) {
+        unserialize( is, save_file_path, character_only );
+    } );
+}
+
+// The world finalization that needs the map, run once per load by whichever
+// read brought the game state in. The bubble is centred on `centre`.
+void game::settle_game_state( Character &centre )
+{
+    mostseen = 0; // ...and mostseen is 0, we haven't seen any monsters yet.
+    reload_npcs();
+    validate_npc_followers();
+    validate_mounted_npcs();
+    validate_camps();
+    validate_linked_vehicles();
+    update_map( centre );
+    events().send<event_type::game_load>( getVersionString() );
+    time_of_last_load = std::chrono::steady_clock::now();
+    time_played_at_last_load = std::chrono::seconds( 0 );
+    std::optional<event_multiset::summaries_type::value_type> last_save =
+        stats().get_events( event_type::game_save ).last();
+    if( last_save ) {
+        auto time_played_it = last_save->first.find( "total_time_played" );
+        if( time_played_it != last_save->first.end() &&
+            time_played_it->second.type() == cata_variant_type::chrono_seconds ) {
+            time_played_at_last_load =
+                time_played_it->second.get<std::chrono::seconds>();
+        }
+    }
+    // recalculate light level for correctly resuming crafting and disassembly
+    map &here = get_map();
+    here.build_map_cache( here.get_abs_sub().z() );
+}
+
+std::optional<tripoint_abs_ms> game::load_game_state( const save_t &name )
+{
+    // The save's character is read only to learn where it stood; the slot's own
+    // character is put back afterwards.
+    avatar kept = std::move( u );
+    std::optional<tripoint_abs_ms> where;
+    if( read_character_save( name, /*character_only=*/false ) ) {
+        settle_game_state( u );
+        where = u.pos_abs();
+    }
+    u = std::move( kept );
+    return where;
+}
+
 bool game::load_character( const save_t &name, const size_t slot, const bool with_game_state )
 {
     // unserialize() reads `u`; `u` is whichever slot the context swap put there.
@@ -409,36 +474,16 @@ bool game::load_character( const save_t &name, const size_t slot, const bool wit
     map &here = get_map();
 
     const cata_path worldpath = PATH_INFO::world_base_save_path();
-    const cata_path save_file_path = PATH_INFO::world_base_save_path() /
-                                     ( name.base_path() + SAVE_EXTENSION );
-    // Past the first character, the save is read for the character alone: its
-    // game state is a copy of what the first one already brought in, possibly
-    // an older copy.
-    const bool character_only = !with_game_state;
 
     bool abort = false;
     return run_load_steps( {
         {
             _( "Character save" ), [&]()
             {
-
-                u = avatar();
-                u.set_save_id( name.decoded_name() );
-
-                if( world_generator->active_world->has_compression_enabled() ) {
-                    std::optional<zzip> z = zzip::load( ( save_file_path + zzip_suffix ).get_unrelative_path() );
-                    abort = !z.has_value() ||
-                    !read_from_zzip_optional( z.value(), save_file_path.get_unrelative_path().filename(),
-                    [this, character_only]( std::string_view sv ) {
-                        unserialize( std::string{ sv }, character_only );
-                    } );
-                } else {
-                    abort = !read_from_file(
-                                save_file_path,
-                    [this, &save_file_path, character_only]( std::istream & is ) {
-                        unserialize( is, save_file_path, character_only );
-                    } );
-                }
+                // Past the first character, the save is read for the character
+                // alone: its game state is a copy of what the first one already
+                // brought in, possibly an older copy.
+                abort = !read_character_save( name, /*character_only=*/!with_game_state );
             }
         },
         {
@@ -486,15 +531,9 @@ bool game::load_character( const save_t &name, const size_t slot, const bool wit
                 get_safemode().load_character(); // Load character safemode rules
                 zone_manager::get_manager().load_zones(); // Load character world zones
                 if( with_game_state ) {
-                    mostseen = 0; // ...and mostseen is 0, we haven't seen any monsters yet.
-                    reload_npcs();
-                    validate_npc_followers();
-                    validate_mounted_npcs();
-                    validate_camps();
-                    validate_linked_vehicles();
                     // The bubble follows the character that brought the game
                     // state; the others are placed relative to it afterwards.
-                    update_map( u );
+                    settle_game_state( u );
                 }
                 for( item *&e : u.inv_dump() ) {
                     e->set_owner( get_player_character() );
@@ -515,27 +554,8 @@ bool game::load_character( const save_t &name, const size_t slot, const bool wit
                 u.reset();
                 u.recalculate_enchantment_cache();
                 u.enchantment_cache->activate_passive( u );
-                if( with_game_state ) {
-                    events().send<event_type::game_load>( getVersionString() );
-                    time_of_last_load = std::chrono::steady_clock::now();
-                    time_played_at_last_load = std::chrono::seconds( 0 );
-                    std::optional<event_multiset::summaries_type::value_type> last_save =
-                        stats().get_events( event_type::game_save ).last();
-                    if( last_save ) {
-                        auto time_played_it = last_save->first.find( "total_time_played" );
-                        if( time_played_it != last_save->first.end() &&
-                            time_played_it->second.type() == cata_variant_type::chrono_seconds ) {
-                            time_played_at_last_load =
-                                time_played_it->second.get<std::chrono::seconds>();
-                        }
-                    }
-                }
 
                 effect_on_conditions::load_existing_character( u );
-                if( with_game_state ) {
-                    // recalculate light level for correctly resuming crafting and disassembly
-                    here.build_map_cache( here.get_abs_sub().z() );
-                }
             }
         },
     }, abort );

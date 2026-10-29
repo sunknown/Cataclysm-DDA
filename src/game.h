@@ -555,6 +555,36 @@ class game
         void prepare_new_character( avatar &ava );
         void finish_new_character( avatar &ava );
         bool start_game(); // Starts a new game in the active world
+        /**
+         * The part of a load that belongs to the world: the master save
+         * (factions), dimension data, the autosave timer, the gamemode, the
+         * world's uistate and the calendar caches. Runs once, before any
+         * character exists.
+         */
+        bool load_world_state();
+        /**
+         * Loads one character save into slot `slot`: replaces that slot's avatar,
+         * then its map memory, diary, memorial and per-character settings.
+         *
+         * Must run with `slot` active -- unserialize() reads `u`, and `u` is
+         * whichever slot the context swap put there. Asserts it.
+         *
+         * A character save also carries the game state it was written with:
+         * calendar, map position, monsters, trackers. `with_game_state` reads
+         * that too, and runs the world finalization that needs the map; it is
+         * set for exactly one character per load, the first, whose position the
+         * bubble then follows. Every other character reads only its own part.
+         */
+        bool load_character( const save_t &name, size_t slot, bool with_game_state );
+        /**
+         * Reads the game state a character save carries -- calendar, bubble,
+         * monsters, trackers -- without taking its character: the active slot
+         * keeps its own. For a session in a world that has been played, where
+         * nobody continues a character to bring that state in. Returns where the
+         * save's character stood, for the others to be placed next to; nullopt
+         * when the save could not be read.
+         */
+        std::optional<tripoint_abs_ms> load_game_state( const save_t &name );
         avatar &add_player_slot();
         /**
          * Destroys every player slot above index 0, ending co-op (which
@@ -1089,27 +1119,8 @@ class game
     private:
         // Game-start procedures
         bool load( const save_t &name ); // Load a player-specific save file
-        /**
-         * The part of a load that belongs to the world: the master save
-         * (factions), dimension data, the autosave timer, the gamemode, the
-         * world's uistate and the calendar caches. Runs once, before any
-         * character exists.
-         */
-        bool load_world_state();
-        /**
-         * Loads one character save into slot `slot`: replaces that slot's avatar,
-         * then its map memory, diary, memorial and per-character settings.
-         *
-         * Must run with `slot` active -- unserialize() reads `u`, and `u` is
-         * whichever slot the context swap put there. Asserts it.
-         *
-         * A character save also carries the game state it was written with:
-         * calendar, map position, monsters, trackers. `with_game_state` reads
-         * that too, and runs the world finalization that needs the map; it is
-         * set for exactly one character per load, the first, whose position the
-         * bubble then follows. Every other character reads only its own part.
-         */
-        bool load_character( const save_t &name, size_t slot, bool with_game_state );
+        bool read_character_save( const save_t &name, bool character_only );
+        void settle_game_state( Character &centre );
         void load_master(); // Load the master data file, with factions &c
 #if defined(__ANDROID__)
         void load_shortcuts( const cata_path &path );

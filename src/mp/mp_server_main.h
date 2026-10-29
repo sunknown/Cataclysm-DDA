@@ -3,9 +3,12 @@
 #define CATA_SRC_MP_MP_SERVER_MAIN_H
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "coordinates.h"
 
 class mp_sched;
 
@@ -27,18 +30,43 @@ constexpr int MP_WATCHDOG_MS = 30000;
 // loop itself after this returns successfully.
 int mp_server_main( int port, const std::string &world_name, int players );
 
-// Assigns each session the slot whose avatar carries its hello name, so that
-// reconnecting in a different order than the slots still puts everyone back
-// in their own body. Does nothing else: raising the baton and the player
-// threads is mp_server_start_player_threads(). Called after the world has
-// loaded, because the avatars do not exist until then. Returns false with
-// `err` set when a name matches no avatar in the save.
-bool mp_server_start_session( std::string &err );
+// Opens the world named on the command line -- creating it with the default
+// mods and options when there is none by that name -- seats one empty slot per
+// connected client, raises the player threads, runs every client's join menu
+// and places the roster. Returns false with `err` set when the world will not
+// load, somebody leaves before choosing, or the roster cannot be placed; the
+// caller then ends the session.
+//
+// Characters no longer have to exist before the server starts: everyone
+// either continues as the character their card names or creates one.
+bool mp_server_open_world( const std::string &world_name, std::string &err );
 
-// Raises the baton and one thread per session, right after
-// mp_server_start_session() matched every name to a slot. The threads park on
-// the baton until game::do_turn() orchestrates turns among them.
+// Raises the baton and one thread per session. The threads park on the baton;
+// during a join phase (mp_join_begin) each first runs its player's join menu,
+// then game::do_turn() orchestrates turns among them.
 void mp_server_start_player_threads();
+
+// The join phase, shared by the server and the in-process test harness.
+//
+// mp_join_begin: called before the player threads start, so that each runs its
+// player's join menu first. `world_anchor` is where new characters go when
+// nobody continues one, for a caller that has placed the bubble itself (the
+// harness); nullopt for the server, which finds it in the world's saves.
+//
+// mp_join_poll: one poll of the join phase by the world, which holds the baton.
+// Hands the baton to every player still choosing who is ready for it, or sleeps
+// one poll interval when none is; there is no barrier and no turn yet. Once the
+// last player has chosen it loads the continued characters, places everyone
+// (mp_place_roster), tells anybody who was moved, and sends every client its
+// character card. Fails with `err` set when somebody quit or dropped, or a
+// character would not load or fit.
+enum class mp_join_progress {
+    choosing,
+    seated,
+    failed,
+};
+void mp_join_begin( size_t players, std::optional<tripoint_abs_ms> world_anchor );
+mp_join_progress mp_join_poll( mp_sched &sched, std::string &err );
 
 // Stops every player thread and clears the sessions. Closes the transports
 // first: shut_down() only wakes threads parked on the baton, and a player
@@ -50,9 +78,9 @@ void mp_server_end_session();
 // a fix to one cannot leave the other behind.
 //
 // mp_run_player_thread: the whole body of player `slot`'s thread. Parks on the
-// baton, runs that player's turn under their own context, hands a "session
-// must end" verdict to the orchestrator, and unwinds holding the unwind right
-// once the scheduler stops.
+// baton, runs that player's join menu during a join phase and then their turns
+// under their own context, hands a "session must end" verdict to the
+// orchestrator, and unwinds holding the unwind right once the scheduler stops.
 //
 // mp_stop_player_threads: closes every session's transport, shuts `sched` down
 // (null when none was raised), joins `threads` and leaves the process in the

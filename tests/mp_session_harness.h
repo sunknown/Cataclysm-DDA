@@ -19,6 +19,8 @@
 #include "mp/mp_transport.h"
 #include "panels.h"              // panel_manager
 
+class avatar;
+
 // The terminal every harness client runs at. A real client reports its own size
 // in the handshake; the harness picks one and uses it for the server grid, the
 // client grids and the root window alike, so a blit is never clipped by a
@@ -148,14 +150,33 @@ class mp_server_startup_for_test
 //
 // The latency is not optional. Without it, code that only works at zero
 // round-trip time gets written and passes, and the first real session finds it.
+enum class mp_harness_mode {
+    // Slots are seeded directly: the session is already playing.
+    playing,
+    // Slots start empty and each client runs the join menu, as a real session
+    // does. run_until() drives the join phase until everyone has chosen and only
+    // then plays turns.
+    join,
+};
+
 class mp_session_harness
 {
     public:
-        explicit mp_session_harness( size_t players, int latency_ms = 5 );
+        explicit mp_session_harness( size_t players, int latency_ms = 5,
+                                     mp_harness_mode mode = mp_harness_mode::playing );
         ~mp_session_harness();
 
         // Sends one keystroke to the server as if player `slot` had pressed it.
         void press( size_t slot, int key );
+
+        // Answers player `slot`'s join menu with "New character: random" and
+        // confirms the creation screen -- keystrokes, not a call into the menu's
+        // internals, so the path under test is the one a person takes.
+        void choose_random_character( size_t slot );
+
+        // Whether the join phase is over and everyone has a character placed.
+        // Always true in playing mode.
+        bool seated() const;
 
         // Runs turns until `predicate` holds or `max_turns` pass. Returns false
         // on running out of turns, so a test fails with a message rather than
@@ -196,6 +217,10 @@ class mp_session_harness
         std::vector<mp_client_state> client_states_;
         std::unique_ptr<mp_sched> sched_;
         std::vector<std::thread> threads_;
+        bool seated_ = true;
+        // Join mode empties slot 0 for the menu to fill; the test avatar it held
+        // is put back afterwards.
+        std::unique_ptr<avatar> stashed_avatar_;
 };
 
 // True when two grids hold the same cells. mp_screen_grid has no comparison of

@@ -29,8 +29,12 @@ struct mp_session {
     bool cursor_changed = false;
     // A resize this client asked for that the curses backend has not applied.
     std::optional<mp_resize> pending_resize;
-    // The character name from the hello, used to pick this client's slot.
+    // The name from the hello: who this client is in the log and on the
+    // waiting screen.
     std::string name;
+    // The save id from the client's character card, empty when it has none.
+    // Offered back as "continue as" in the join menu when the world has it.
+    std::string card_save_id;
     // Index into game::contexts and game::player_slots. The two are parallel,
     // and the session is addressed through this index rather than holding a
     // player_context pointer: player_context ships in every build and must not

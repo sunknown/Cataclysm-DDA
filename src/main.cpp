@@ -52,6 +52,7 @@
 #include "avatar.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
+#include "mp/mp_turn.h"
 #include "worldfactory.h"
 #endif
 #include "game_constants.h"
@@ -601,6 +602,40 @@ bool assure_essential_dirs_exist()
     return true;
 }
 
+#if defined(MP_SERVER)
+// The server's whole game: no main menu, the world named on the command line,
+// and every client choosing their survivor in their own join menu. One session,
+// then the process stops -- the roster is fixed, so there is nobody left to
+// play a second one with.
+static void run_server_session( const std::string &world_name )
+{
+    if( world_name.empty() ) {
+        mp_server_log( "no world given: start the server with --world <name>" );
+        return;
+    }
+    std::string err;
+    if( !mp_server_open_world( world_name, err ) ) {
+        mp_server_log( "cannot start the session: " + err );
+        // Tell the clients why before the wires close.
+        mp_request_session_end( err );
+        mp_server_end_session();
+        return;
+    }
+    {
+        shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
+        get_event_bus().send<event_type::game_begin>( getVersionString() );
+        mp_server_log( "game started in world \"" + world_generator->active_world->world_name +
+                       "\"" );
+        while( !g->do_turn() ) {
+        }
+        mp_server_log( "game ended" );
+        // Stops the threads and leaves the process on player 0's context, the
+        // stack the main screen above registered in and must die in.
+        mp_server_end_session();
+    }
+}
+#endif
+
 // Runs the game proper: everything after the curses interface is up. Both the
 // single-player path and the multiplayer server reach this, so the ~120 lines
 // of startup and the main-menu loop are not duplicated (src/mp/mp_server_main.cpp
@@ -701,6 +736,14 @@ static int run_game( cli_opts &cli )
 #endif
     replay_buffered_debugmsg_prompts();
 
+#if defined(MP_SERVER)
+    if( cli.server_port > 0 ) {
+        run_server_session( cli.world );
+        exit_handler( -999 );
+        return 0;
+    }
+#endif
+
     main_menu::queued_world_to_load = std::move( cli.world );
 
     while( true ) {
@@ -711,42 +754,11 @@ static int run_game( cli_opts &cli )
 
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
         get_event_bus().send<event_type::game_begin>( getVersionString() );
-#if defined(MP_SERVER)
-        // The client drove the menus to get here; this is the first the console
-        // hears of which world and character the session actually landed on.
-        mp_server_log( "game started in world \"" +
-                       ( world_generator->active_world
-                         ? world_generator->active_world->world_name
-                         : std::string( "?" ) ) +
-                       "\" as \"" + get_avatar().get_name() + "\"" );
-        if( cli.server_port > 0 ) {
-            // The world is loaded, so the avatars exist and the slots are stable:
-            // match the roster to its characters by name, then hand every player
-            // the thread that will carry their turns. Without this, do_turn's
-            // baton branch would spin with no body to park on it.
-            std::string err;
-            if( !mp_server_start_session( err ) ) {
-                mp_server_log( "cannot start the session: " + err );
-                exit_handler( -999 );
-                return 0;
-            }
-            mp_server_start_player_threads();
-        }
-#endif
         while( true ) {
             if( g->do_turn() ) {
                 break;
             }
         }
-#if defined(MP_SERVER)
-        mp_server_log( "game ended; back at the main menu" );
-        if( cli.server_port > 0 ) {
-            // The session is over for everybody: stop the player threads and
-            // clear the sessions before the menu loop runs setup() again with
-            // a new world.
-            mp_server_end_session();
-        }
-#endif
     }
 
     exit_handler( -999 );

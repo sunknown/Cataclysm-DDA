@@ -92,7 +92,8 @@ bool place_new_character( avatar &ava, const std::optional<tripoint_abs_ms> near
     return true;
 }
 
-bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved )
+bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved,
+                      const std::optional<tripoint_abs_ms> world_anchor )
 {
     cata_assert( is_new.size() == g->player_slot_count() );
     moved.clear();
@@ -126,7 +127,7 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
     }
 
     // Pass 2: new characters, each under its own context -- the empty-world
-    // path builds the world around `u`. Without an anchor the first of them
+    // path builds the world around `u`. Without any anchor the first of them
     // builds the world and becomes one.
     const bool restore_world = mp_in_world_phase();
     const size_t restore_slot = g->active_slot();
@@ -136,7 +137,7 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
             continue;
         }
         mp_activate_player( i );
-        std::optional<tripoint_abs_ms> near;
+        std::optional<tripoint_abs_ms> near = world_anchor;
         if( anchor ) {
             near = g->player_at( *anchor ).pos_abs();
         }

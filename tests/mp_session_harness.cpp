@@ -2,7 +2,10 @@
 
 #include "mp_session_harness.h"
 
+#include "cata_catch.h"
+
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,7 +66,8 @@ mp_server_startup_for_test::~mp_server_startup_for_test()
     catacurses::stdscr = prev_stdscr_;
 }
 
-mp_session_harness::mp_session_harness( const size_t players, const int latency_ms )
+mp_session_harness::mp_session_harness( const size_t players, const int latency_ms,
+                                        const mp_harness_mode mode )
 {
     mp_ensure_player_context();
     clear_avatar();
@@ -92,8 +96,21 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     // the order run_game() uses -- init_ui() first, then the context.
     mp_ensure_player_context();
 
+    const bool join = mode == mp_harness_mode::join;
+    // Where the test map put P0: in join mode, where the new characters go, as
+    // a played world's state would place them on a real server.
+    const tripoint_abs_ms world_anchor = g->player_at( 0 ).pos_abs();
+    if( join ) {
+        // Every slot starts as the empty avatar the join menu fills. The test
+        // avatar slot 0 held is kept aside and put back by the destructor.
+        stashed_avatar_ = std::make_unique<avatar>( std::move( g->player_at( 0 ) ) );
+        g->player_at( 0 ) = avatar();
+        for( size_t i = 1; i < players; ++i ) {
+            g->add_player_slot();
+        }
+    }
     g->player_at( 0 ).name = "P0";
-    for( size_t i = 1; i < players; ++i ) {
+    for( size_t i = 1; i < players && !join; ++i ) {
         avatar &extra = g->add_player_slot();
         extra.set_body();
         extra.name = "P" + std::to_string( i );
@@ -126,13 +143,19 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
         auto session = std::make_unique<mp_session>();
         session->transport = wire.a;
         session->context_index = i;
-        session->name = g->player_at( i ).name;
+        session->name = "P" + std::to_string( i );
         session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
         mp_sessions().push_back( std::move( session ) );
         client_wires_.push_back( wire.b );
         client_grids_.emplace_back( MP_HARNESS_COLS, MP_HARNESS_ROWS );
         client_states_.emplace_back();
     }
+
+    // Each thread runs its player's join menu first in join mode, and goes
+    // straight to its turns otherwise -- which also clears what a previous
+    // harness's join phase left behind.
+    mp_join_begin( join ? players : 0, world_anchor );
+    seated_ = !join;
 
     sched_ = std::make_unique<mp_sched>( players );
     mp_set_active_sched( sched_.get() );
@@ -152,7 +175,12 @@ mp_session_harness::~mp_session_harness()
     mp_stop_player_threads( sched_.get(), threads_ );
     mp_set_active_sched( nullptr );
     mp_sessions_reset_for_test();
+    mp_join_begin( 0, std::nullopt );
     game_test_helper::reset_player_slots();
+    if( stashed_avatar_ ) {
+        g->player_at( 0 ) = std::move( *stashed_avatar_ );
+        stashed_avatar_.reset();
+    }
     mp_sync_context_count();
     mp_turn_reset_all();
     // A session that ended (a death, a quit) leaves the quit status behind,
@@ -193,10 +221,37 @@ void mp_session_harness::pump_clients()
     }
 }
 
+void mp_session_harness::choose_random_character( const size_t slot )
+{
+    // "New character: random", then the creation screen opens on its summary:
+    // the next-tab key there finishes, and the confirmation takes a capital Y.
+    press( slot, 'r' );
+    press( slot, '\t' );
+    press( slot, 'Y' );
+}
+
+bool mp_session_harness::seated() const
+{
+    return seated_;
+}
+
 bool mp_session_harness::run_until( const std::function<bool()> &predicate, const int max_turns )
 {
     for( int turn = 0; turn < max_turns; ++turn ) {
-        g->do_turn();
+        if( !seated_ ) {
+            // The join phase: no turn runs until everyone has chosen.
+            std::string err;
+            const mp_join_progress progress = mp_join_poll( *sched_, err );
+            if( progress == mp_join_progress::failed ) {
+                // Reported where a test can see it, then treated as running out
+                // of turns.
+                UNSCOPED_INFO( "join phase failed: " << err );
+                return false;
+            }
+            seated_ = progress == mp_join_progress::seated;
+        } else {
+            g->do_turn();
+        }
         pump_clients();
         if( predicate() ) {
             return true;

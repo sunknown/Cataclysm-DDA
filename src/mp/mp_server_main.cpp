@@ -2,6 +2,7 @@
 
 #include "mp/mp_server_main.h"
 
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -13,7 +14,15 @@
 #include "cata_scope_helpers.h"
 #include "debug.h"
 #include "game.h"
+#include "game_constants.h"
+#include "messages.h"
+#include "mod_manager.h"
+#include "path_info.h"
+#include "translations.h"
+#include "worldfactory.h"
 #include "mp/mp_context.h"
+#include "mp/mp_join_menu.h"
+#include "mp/mp_placement.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
@@ -90,47 +99,262 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
     return 0;
 }
 
-bool mp_server_start_session( std::string &err )
+// The join phase in progress: one entry per player, empty until they have
+// chosen. Sized before the player threads start, and from then on only touched
+// by whoever holds the baton.
+static std::vector<std::optional<mp_join_choice>> g_join_choices;
+static std::optional<tripoint_abs_ms> g_join_world_anchor;
+
+void mp_join_begin( const size_t players, const std::optional<tripoint_abs_ms> world_anchor )
 {
-    err.clear();
-    // The roster is fixed at connection time, so a mismatch here means either
-    // fewer clients than bodies (an avatar stalls with no driver) or more
-    // clients than bodies (nothing left to drive). Refuse before the name
-    // loop rather than let one side of the roster go unrepresented.
-    if( mp_sessions().size() != g->player_slot_count() ) {
-        err = std::to_string( mp_sessions().size() ) + " clients connected but this world has "
-              + std::to_string( g->player_slot_count() ) + " characters";
-        return false;
-    }
+    g_join_choices.assign( players, std::nullopt );
+    g_join_world_anchor = world_anchor;
+    mp_join_reset_claims();
+}
+
+static mp_session *session_of_slot( const size_t slot )
+{
     for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
-        bool matched = false;
-        for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-            if( g->player_at( i ).name == session->name ) {
-                session->context_index = i;
-                matched = true;
-                break;
-            }
+        if( session && session->context_index == slot ) {
+            return session.get();
         }
-        if( !matched ) {
-            // Refusing with the name in the message is the difference between
-            // "it did not work" and "you typed Bob and the save has Bo".
-            err = "no character named \"" + session->name + "\" in this world";
+    }
+    return nullptr;
+}
+
+static std::string name_of_slot( const size_t slot )
+{
+    const mp_session *const session = session_of_slot( slot );
+    return session != nullptr ? session->name : "player " + std::to_string( slot + 1 );
+}
+
+// Everyone who has chosen sees who is still choosing. Drawn by the world, under
+// each of those players' contexts in turn, whenever the list changes.
+static void redraw_waiting_screens()
+{
+    std::vector<std::string> still_choosing;
+    for( size_t i = 0; i < g_join_choices.size(); ++i ) {
+        if( !g_join_choices[i] ) {
+            still_choosing.push_back( name_of_slot( i ) );
+        }
+    }
+    for( size_t i = 0; i < g_join_choices.size(); ++i ) {
+        if( g_join_choices[i] ) {
+            mp_activate_player( i );
+            mp_draw_waiting_screen( still_choosing );
+        }
+    }
+    mp_activate_world();
+}
+
+static void send_character_card( mp_session &session, const avatar &ava )
+{
+    mp_control msg;
+    msg.kind = mp_control_kind::character_card;
+    msg.character_card.world_name = world_generator->active_world->world_name;
+    msg.character_card.save_id = ava.get_save_id();
+    msg.character_card.character_name = ava.get_name();
+    const std::string json = mp_control_to_json( msg );
+    if( session.transport ) {
+        session.transport->send( mp_wrap( mp_msg_kind::control,
+                                          std::vector<uint8_t>( json.begin(), json.end() ) ) );
+    }
+}
+
+// The world's most recently written character save: whose game state a session
+// takes when nobody continues a character in a world that has been played.
+static std::optional<save_t> newest_save()
+{
+    std::optional<save_t> newest;
+    std::filesystem::file_time_type newest_time;
+    for( const save_t &save : world_generator->active_world->world_saves ) {
+        const cata_path base = PATH_INFO::world_base_save_path() / ( save.base_path() +
+                               SAVE_EXTENSION );
+        std::error_code ec;
+        std::filesystem::file_time_type when = std::filesystem::last_write_time(
+                ( base + zzip_suffix ).get_unrelative_path(), ec );
+        if( ec ) {
+            ec.clear();
+            when = std::filesystem::last_write_time( base.get_unrelative_path(), ec );
+        }
+        if( !ec && ( !newest || when > newest_time ) ) {
+            newest = save;
+            newest_time = when;
+        }
+    }
+    return newest;
+}
+
+// Everyone has chosen: bring the continued characters in, place the roster and
+// tell every client who it is. Runs on the world, holding the baton.
+static bool seat_roster( std::string &err )
+{
+    const size_t players = g_join_choices.size();
+    std::vector<bool> is_new( players, true );
+    bool have_game_state = false;
+    for( size_t i = 0; i < players; ++i ) {
+        const mp_join_choice &choice = *g_join_choices[i];
+        if( choice.decision != mp_join_choice::kind::continued ) {
+            continue;
+        }
+        is_new[i] = false;
+        mp_activate_player( i );
+        // The first continued character brings the world's game state with it
+        // and is the anchor; the others bring only themselves.
+        mp_server_log( "loading \"" + choice.save->decoded_name() + "\"" );
+        if( !g->load_character( *choice.save, i, /*with_game_state=*/!have_game_state ) ) {
+            err = "loading \"" + choice.save->decoded_name() + "\" failed";
             return false;
         }
+        have_game_state = true;
     }
-    // Matching every name is not a one-to-one mapping: two clients that named
-    // the same character both bind to its slot, leaving the other avatar with
-    // no driver. A second driver for one body would also race its twin for
-    // input, so refuse the whole roster and name the character involved.
-    for( size_t i = 0; i < mp_sessions().size(); ++i ) {
-        for( size_t j = i + 1; j < mp_sessions().size(); ++j ) {
-            if( mp_sessions()[i]->context_index == mp_sessions()[j]->context_index ) {
-                err = "two clients named \"" + mp_sessions()[i]->name + "\" for one character";
+
+    std::optional<tripoint_abs_ms> world_anchor = g_join_world_anchor;
+    if( !have_game_state && !world_anchor ) {
+        if( const std::optional<save_t> newest = newest_save() ) {
+            // The world has been played, but nobody here continues in it. Its
+            // clock and its map still stand, so the new characters start where
+            // the world last was rather than rebuilding it.
+            mp_activate_player( 0 );
+            world_anchor = g->load_game_state( *newest );
+            if( !world_anchor ) {
+                err = "reading the world's state from \"" + newest->decoded_name() + "\" failed";
                 return false;
             }
         }
     }
+
+    std::vector<size_t> moved;
+    if( !mp_place_roster( is_new, moved, world_anchor ) ) {
+        err = "could not find room for everybody near the group";
+        return false;
+    }
+    // Moving somebody's character is said out loud, to them and to everyone:
+    // it is that player's save.
+    for( size_t i = 0; i < players; ++i ) {
+        mp_activate_player( i );
+        for( const size_t slot : moved ) {
+            if( slot == i ) {
+                add_msg( m_info, _( "Your survivor and the others found each other." ) );
+            } else {
+                add_msg( m_info, _( "%s found the group." ), g->player_at( slot ).get_name() );
+            }
+        }
+    }
+    // The card goes out now, not at session end: it does not change during play,
+    // and sending it early means it survives the server crashing.
+    for( size_t i = 0; i < players; ++i ) {
+        if( mp_session *const session = session_of_slot( i ) ) {
+            send_character_card( *session, g->player_at( i ) );
+        }
+        mp_server_log( "\"" + name_of_slot( i ) + "\" plays \"" + g->player_at( i ).get_name() +
+                       "\"" + ( is_new[i] ? " (new)" : "" ) );
+    }
+    mp_activate_world();
     return true;
+}
+
+mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
+{
+    err.clear();
+    mp_activate_world();
+    if( mp_session_end_requested() ) {
+        // A client dropped: its menu got the cancel every wait gives a dead wire.
+        err = mp_session_end_reason();
+        return mp_join_progress::failed;
+    }
+    bool moved = false;
+    std::vector<bool> choosing( g_join_choices.size() );
+    for( size_t i = 0; i < g_join_choices.size(); ++i ) {
+        if( g_join_choices[i] || !sched.waiting_for_baton( i ) ) {
+            continue;
+        }
+        sched.yield_to( mp_sched::world, i );
+        mp_activate_world();
+        moved = true;
+        if( g_join_choices[i] ) {
+            if( g_join_choices[i]->decision == mp_join_choice::kind::quit ) {
+                err = "\"" + name_of_slot( i ) + "\" left before choosing";
+                return mp_join_progress::failed;
+            }
+            redraw_waiting_screens();
+        }
+    }
+    bool anyone_choosing = false;
+    for( size_t i = 0; i < g_join_choices.size(); ++i ) {
+        choosing[i] = !g_join_choices[i];
+        anyone_choosing = anyone_choosing || choosing[i];
+    }
+    if( anyone_choosing ) {
+        if( moved ) {
+            sched.set_world_waiting( false );
+        } else {
+            // Somebody is reading a menu. Sleep until one of them comes back
+            // from their input wait, as a waiting turn does.
+            sched.wait_for_request( MP_POLL_MS, choosing );
+            sched.set_world_waiting( true );
+        }
+        return mp_join_progress::choosing;
+    }
+    sched.set_world_waiting( false );
+    return seat_roster( err ) ? mp_join_progress::seated : mp_join_progress::failed;
+}
+
+bool mp_server_open_world( const std::string &world_name, std::string &err )
+{
+    err.clear();
+    world_generator->init();
+    WORLD *world = world_generator->get_world( world_name );
+    if( world == nullptr ) {
+        // No world by that name: make one with the defaults, so a server can be
+        // started on a fresh world without the game's world menus.
+        world = world_generator->make_new_world( world_name,
+                world_generator->get_mod_manager().get_default_mods() );
+        if( world == nullptr ) {
+            err = "no world named \"" + world_name + "\", and creating one failed";
+            return false;
+        }
+        mp_server_log( "created the world \"" + world_name + "\" with the default mods" );
+    }
+    world_generator->set_active_world( world );
+    try {
+        g->setup();
+    } catch( const std::exception &e ) {
+        err = std::string( "setting the world up failed: " ) + e.what();
+        return false;
+    }
+    if( !g->load_world_state() ) {
+        err = "loading the world state failed";
+        return false;
+    }
+
+    // Slots come after setup(), which clears them. An empty avatar is exactly
+    // what character creation fills, and it is what gives the join menu a
+    // context to draw into -- contexts are parallel to slots, and the menu runs
+    // before any character exists.
+    g->player_at( 0 ) = avatar();
+    while( g->player_slot_count() < mp_sessions().size() ) {
+        g->add_player_slot();
+    }
+    for( size_t i = 0; i < mp_sessions().size(); ++i ) {
+        mp_sessions()[i]->context_index = i;
+    }
+    mp_server_log( "world \"" + world->world_name + "\" is open; waiting for " +
+                   std::to_string( mp_sessions().size() ) + " player" +
+                   ( mp_sessions().size() == 1 ? "" : "s" ) + " to choose a survivor" );
+
+    mp_join_begin( mp_sessions().size(), std::nullopt );
+    mp_server_start_player_threads();
+    while( true ) {
+        switch( mp_join_poll( *g_sched, err ) ) {
+            case mp_join_progress::choosing:
+                continue;
+            case mp_join_progress::seated:
+                return true;
+            case mp_join_progress::failed:
+                return false;
+        }
+    }
 }
 
 void mp_run_player_thread( mp_sched &sched, const size_t slot )
@@ -157,6 +381,24 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             main_ui.reset();
         }
     } );
+    if( slot < g_join_choices.size() && !g_join_choices[slot] ) {
+        // The join phase: this player's menu, on this thread, in this context.
+        // Nothing of the main screen yet -- there is no character to draw.
+        sched.wait_for_turn( slot );
+        if( sched.unwind_if_stopping( slot ) ) {
+            return;
+        }
+        mp_assert_holds( slot );
+        mp_activate_player( slot );
+        const mp_session *const session = session_of_slot( slot );
+        mp_join_choice choice = mp_run_join_menu( session != nullptr ? session->card_save_id :
+                                std::string() );
+        if( sched.unwind_if_stopping( slot ) ) {
+            return;
+        }
+        g_join_choices[slot] = std::move( choice );
+        sched.release_to( slot, mp_sched::world );
+    }
     while( true ) {
         sched.wait_for_turn( slot );
         if( sched.unwind_if_stopping( slot ) ) {

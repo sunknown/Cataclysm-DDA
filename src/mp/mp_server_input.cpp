@@ -211,6 +211,7 @@ bool mp_server_handshake( mp_transport &transport, mp_session &session,
     // the name, then let them in.
     session.grid.resize( hello.hello.width, hello.hello.height );
     session.name = hello.hello.name;
+    session.card_save_id = hello.hello.save_id;
     send_hello_ack( transport, true, std::string() );
     mp_server_log_mark_connected();
     mp_server_log( "client \"" + session.name + "\" connected from " +
