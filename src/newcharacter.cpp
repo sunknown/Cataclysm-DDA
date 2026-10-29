@@ -756,7 +756,18 @@ bool avatar::create( character_type type, const std::string &tempname )
     set_wielded_item( item() );
 
     prof = profession::generic();
+#if defined(MP_SERVER)
+    // Every co-op character starts under the co-op scenario: the same kind of
+    // place for everyone is what keeps the party's anchor safe and roomy. Set
+    // here, not by the join menu, because creation itself resets the scenario.
+    const scenario *const coop = mp_coop_scenario();
+    set_scenario( coop != nullptr ? coop : scenario::generic() );
+    // A random character keeps that scenario rather than rolling one.
+    const bool random_scenario = coop == nullptr;
+#else
     set_scenario( scenario::generic() );
+    const bool random_scenario = true;
+#endif
 
     const bool interactive = type != character_type::NOW &&
                              type != character_type::FULL_RANDOM;
@@ -774,7 +785,7 @@ bool avatar::create( character_type type, const std::string &tempname )
             break;
         case character_type::RANDOM:
             //random scenario, default name if exist
-            randomize( true );
+            randomize( random_scenario );
             //tabs.position.last();
             break;
         case character_type::NOW:
@@ -789,6 +800,12 @@ bool avatar::create( character_type type, const std::string &tempname )
             if( !load_template( tempname, /*out*/ pool ) ) {
                 return false;
             }
+#if defined(MP_SERVER)
+            // The template brings its own scenario; co-op keeps everyone on one.
+            if( coop != nullptr ) {
+                set_scenario( coop );
+            }
+#endif
 
             // We want to prevent recipes known by the template from being applied to the
             // new character. The recipe list will be rebuilt when entering the game.

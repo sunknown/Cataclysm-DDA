@@ -35,7 +35,11 @@ TEST_CASE( "a_missing_card_reads_as_empty_not_as_an_error", "[mp]" )
 }
 
 #if defined(MULTIPLAYER)
+#include <vector>
+
+#include "mp/mp_join_menu.h"
 #include "mp/mp_protocol.h"
+#include "worldfactory.h"
 
 TEST_CASE( "the_hello_carries_the_save_id", "[mp]" )
 {
@@ -66,5 +70,19 @@ TEST_CASE( "the_character_card_message_round_trips", "[mp]" )
     CHECK( back.character_card.world_name == "Falconer" );
     CHECK( back.character_card.save_id == "Ada Lovelace" );
     CHECK( back.character_card.character_name == "Ada Lovelace" );
+}
+
+TEST_CASE( "the_continue_entry_appears_only_for_a_character_in_this_world", "[mp]" )
+{
+    std::vector<save_t> world_saves;
+    world_saves.push_back( save_t::from_save_id( "Ada Lovelace" ) );
+
+    // The card names somebody in this world: continuing is offered.
+    CHECK( mp_continue_target( world_saves, "Ada Lovelace" ).has_value() );
+    // The card names a stranger, or there is no card at all: only creation is
+    // offered. Never an error -- a first connect must not fail.
+    CHECK_FALSE( mp_continue_target( world_saves, "Grace Hopper" ).has_value() );
+    CHECK_FALSE( mp_continue_target( world_saves, "" ).has_value() );
+    CHECK_FALSE( mp_continue_target( {}, "Ada Lovelace" ).has_value() );
 }
 #endif // MULTIPLAYER
