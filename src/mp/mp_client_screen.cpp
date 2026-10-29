@@ -111,6 +111,9 @@ mp_client_event mp_client_apply_message( const std::vector<uint8_t> &payload,
             // The server is closing the session; the caller treats this as the
             // signal to stop the loop and exit cleanly.
             return mp_client_event::closed;
+        case mp_control_kind::character_card:
+            state.card = msg.character_card;
+            return mp_client_event::character_card;
         default:
             // hello, resize and input travel from the client to the server;
             // receiving them back means nothing actionable.

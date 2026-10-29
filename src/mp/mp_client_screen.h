@@ -8,6 +8,7 @@
 
 #include "input_enums.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_protocol.h"
 
 // The pure-logic half of the thin client: parsing the server's messages and
 // turning them into a client screen grid, plus the colour-pair cache and the
@@ -29,6 +30,7 @@ enum class mp_client_event {
     cursor,   // the cursor position was updated
     rejected, // the server refused the connection; see state.reject_reason
     closed,   // the server announced it is leaving (a bye control)
+    character_card, // the server named the character this client plays; see state.card
 };
 
 // The client's mirror of server state: where the cursor should be drawn, and
@@ -39,6 +41,7 @@ struct mp_client_state {
     bool cursor_visible = false;
     std::string reject_reason;
     bool accepted = false;
+    mp_character_card_msg card;
 };
 
 // Applies one framed message from the wire to `screen`/`state`. Never throws

@@ -53,6 +53,8 @@ const char *kind_to_string( const mp_control_kind kind )
             return "cursor";
         case mp_control_kind::bye:
             return "bye";
+        case mp_control_kind::character_card:
+            return "character_card";
     }
     return "bye";
 }
@@ -71,6 +73,8 @@ bool string_to_kind( const std::string &text, mp_control_kind &out )
         out = mp_control_kind::cursor;
     } else if( text == "bye" ) {
         out = mp_control_kind::bye;
+    } else if( text == "character_card" ) {
+        out = mp_control_kind::character_card;
     } else {
         return false;
     }
@@ -140,6 +144,7 @@ std::string mp_control_to_json( const mp_control &msg )
         case mp_control_kind::hello:
             jo.member( "proto", msg.hello.proto );
             jo.member( "name", msg.hello.name );
+            jo.member( "save_id", msg.hello.save_id );
             jo.member( "w", msg.hello.width );
             jo.member( "h", msg.hello.height );
             jo.member( "c256", msg.hello.colors_256 );
@@ -162,6 +167,11 @@ std::string mp_control_to_json( const mp_control &msg )
             break;
         case mp_control_kind::bye:
             jo.member( "reason", msg.bye_reason );
+            break;
+        case mp_control_kind::character_card:
+            jo.member( "world", msg.character_card.world_name );
+            jo.member( "save_id", msg.character_card.save_id );
+            jo.member( "name", msg.character_card.character_name );
             break;
     }
     jo.end_object();
@@ -194,6 +204,9 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
             case mp_control_kind::hello:
                 msg.hello.proto = obj.get_int( "proto" );
                 msg.hello.name = obj.get_string( "name" );
+                // Optional, so an older client's hello still parses and gets the
+                // protocol-version refusal instead of being dropped unread.
+                msg.hello.save_id = obj.get_string( "save_id", "" );
                 msg.hello.width = obj.get_int( "w" );
                 msg.hello.height = obj.get_int( "h" );
                 msg.hello.colors_256 = obj.get_bool( "c256" );
@@ -218,6 +231,11 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 break;
             case mp_control_kind::bye:
                 msg.bye_reason = obj.get_string( "reason" );
+                break;
+            case mp_control_kind::character_card:
+                msg.character_card.world_name = obj.get_string( "world" );
+                msg.character_card.save_id = obj.get_string( "save_id" );
+                msg.character_card.character_name = obj.get_string( "name" );
                 break;
         }
         out = msg;

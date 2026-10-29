@@ -11,7 +11,7 @@
 // Version of the wire protocol. Sent in the client's first message; a
 // mismatch is refused with an explanation rather than tolerated, because the
 // failure mode of a silent mismatch is a garbled screen.
-constexpr int MP_PROTOCOL_VERSION = 1;
+constexpr int MP_PROTOCOL_VERSION = 2;
 
 // Every framed payload starts with one kind byte. Control traffic is JSON, so
 // it can be read in a log by eye; screen traffic is the compact binary of
@@ -32,11 +32,15 @@ enum class mp_control_kind {
     input,
     cursor,
     bye,
+    character_card,
 };
 
 struct mp_hello {
     int proto = 0;
     std::string name;
+    // The save_id from the client's character card, empty when it has none.
+    // The server looks the character up by it (Phase 3b).
+    std::string save_id;
     int width = 0;
     int height = 0;
     bool colors_256 = false;
@@ -58,6 +62,15 @@ struct mp_cursor {
     bool visible = false;
 };
 
+// Server to client, sent the moment the character is established -- not at
+// session end. The card does not change during play, and sending it early means
+// it survives the server crashing.
+struct mp_character_card_msg {
+    std::string world_name;
+    std::string save_id;
+    std::string character_name;
+};
+
 // One control message. Only the member matching `kind` is meaningful; this is
 // a plain struct rather than a variant so that adding a message type later is
 // a local edit.
@@ -69,6 +82,7 @@ struct mp_control {
     mp_cursor cursor;
     input_event event;
     std::string bye_reason;
+    mp_character_card_msg character_card;
 };
 
 std::string mp_control_to_json( const mp_control &msg );

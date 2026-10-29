@@ -15,6 +15,7 @@
 #include "input.h"
 #include "mapsharing.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_character_card.h"
 #include "mp/mp_client_screen.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_tcp_transport.h"
@@ -74,6 +75,21 @@ void send_control( mp_transport &transport, const mp_control &msg )
                              std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
+// The server just told us who we are. Written immediately rather than at session
+// end, so a crash does not cost the player their identity on this server.
+void remember_character( const std::string &server, const mp_character_card_msg &msg )
+{
+    mp_character_card card;
+    card.server = server;
+    card.world_name = msg.world_name;
+    card.save_id = msg.save_id;
+    card.character_name = msg.character_name;
+    if( !mp_save_character_card( card ) ) {
+        DebugLog( D_WARNING, D_MAIN ) << "mp client: could not write the character card for "
+                                      << server;
+    }
+}
+
 } // namespace
 
 int mp_client_main( const std::string &host_and_port )
@@ -114,6 +130,9 @@ int mp_client_main( const std::string &host_and_port )
     hello.kind = mp_control_kind::hello;
     hello.hello.proto = MP_PROTOCOL_VERSION;
     hello.hello.name = MAP_SHARING::getUsername().empty() ? "client" : MAP_SHARING::getUsername();
+    // Who we played here last time, if anybody. The server decides what that is
+    // worth; an empty or stale card just means being offered a new character.
+    hello.hello.save_id = mp_load_character_card( host_and_port ).save_id;
     hello.hello.width = term_w;
     hello.hello.height = term_h;
     hello.hello.colors_256 = catacurses::supports_256_colors();
@@ -172,6 +191,8 @@ int mp_client_main( const std::string &host_and_port )
             const mp_client_event ev = mp_client_apply_message( *msg, screen, state );
             if( ev == mp_client_event::screen ) {
                 mp_client_paint( screen, state );
+            } else if( ev == mp_client_event::character_card ) {
+                remember_character( host_and_port, state.card );
             } else if( ev == mp_client_event::closed ) {
                 break;
             }
