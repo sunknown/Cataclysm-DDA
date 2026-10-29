@@ -49,6 +49,9 @@
 #include "mapsharing.h"
 #include "martialarts.h"
 #include "mission.h"
+#if defined(MP_SERVER)
+#include "mp/mp_placement.h"
+#endif
 #include "mod_manager.h"
 #include "monster.h"
 #include "mutation.h"
@@ -3110,6 +3113,14 @@ void character_creator_uistate::recalc_scenario_list( const avatar &u )
             if( scen.scen_is_blacklisted() ) {
                 continue;
             }
+#if defined(MP_SERVER)
+            // Co-op characters all start under the co-op scenario: the same
+            // kind of place for everyone is what makes the party's anchor a
+            // safe, roomy spot. The list is filtered down to it.
+            if( &scen != mp_coop_scenario() ) {
+                continue;
+            }
+#endif
             new_scenarios.push_back( &scen );
         }
         scenario_sorter scen_sorter{ true, u.male, cities_enabled() };

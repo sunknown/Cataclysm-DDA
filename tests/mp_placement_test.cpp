@@ -16,6 +16,10 @@
 #include "mp/mp_placement.h"
 #include "mp/mp_tether.h"
 #include "player_helpers.h"
+#include "profession.h"
+#include "scenario.h"
+#include "type_id.h"
+#include "visitable.h"
 
 // Placement of characters into a world that already exists. Every test here
 // stands slot 0 on a cleared map and treats its position as the anchor.
@@ -88,13 +92,21 @@ TEST_CASE( "a_new_character_next_to_an_anchor_gets_its_profession_items", "[coop
     mp_sync_context_count();
     // NOW is the random character without the creation screen.
     REQUIRE( fresh.create( character_type::NOW ) );
+    // NOW rolls a random profession; pin one that is known to carry items, or
+    // the item check below depends on the roll.
+    fresh.prof = &profession_id( "unemployed" ).obj();
 
     const time_point turn_before = calendar::turn;
     REQUIRE( place_new_character( fresh, target ) );
 
     // The personal half of start_game ran...
     CHECK( fresh.getID().is_valid() );
-    CHECK_FALSE( fresh.inv_dump().empty() );
+    int items = 0;
+    fresh.visit_items( [&items]( const item *, const item * ) {
+        ++items;
+        return VisitResponse::NEXT;
+    } );
+    CHECK( items > 0 );
     // ...and none of its world steps did. start_calendar() here would reset the
     // clock of a world that has been played for weeks.
     CHECK( calendar::turn == turn_before );
@@ -157,4 +169,14 @@ TEST_CASE( "scattered_continuations_are_pulled_to_the_anchor_and_reported", "[co
 
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
+}
+
+TEST_CASE( "the_coop_scenario_is_loaded_and_costs_nothing", "[coop]" )
+{
+    // The code names the scenario by id; a rename on the JSON side would leave
+    // every co-op character under whatever scenario happened to be selected.
+    const scenario *coop = mp_coop_scenario();
+    REQUIRE( coop != nullptr );
+    // Being in a co-op game is not something a player should spend points on.
+    CHECK( coop->point_cost() == 0 );
 }

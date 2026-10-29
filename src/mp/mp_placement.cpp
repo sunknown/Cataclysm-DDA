@@ -6,12 +6,15 @@
 #include "avatar.h"
 #include "cata_assert.h"
 #include "creature_tracker.h"
+#include "debug.h"
 #include "game.h"
 #include "item.h"
 #include "line.h"
 #include "map.h"
 #include "mp/mp_context.h"
 #include "mp/mp_tether.h"
+#include "scenario.h"
+#include "string_id.h"
 #include "visitable.h"
 
 // The tiles at exactly Chebyshev distance `radius` from `centre`, on its
@@ -148,4 +151,17 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
         mp_activate_player( restore_slot );
     }
     return placed;
+}
+
+const scenario *mp_coop_scenario()
+{
+    static const string_id<scenario> coop_id( "coop_survivors" );
+    if( !coop_id.is_valid() ) {
+        // Content and code disagree -- the JSON was renamed or dropped. Loud,
+        // because the alternative is characters starting under whatever
+        // scenario was selected and landing across the map from each other.
+        debugmsg( "the co-op scenario \"%s\" is missing from the JSON", coop_id.str() );
+        return nullptr;
+    }
+    return &coop_id.obj();
 }

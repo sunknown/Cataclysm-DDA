@@ -1,0 +1,12 @@
+[
+  {
+    "type": "scenario",
+    "id": "coop_survivors",
+    "name": "Co-op Survivors",
+    "points": 0,
+    "description": "You and the others woke up in the same evac shelter.  Whatever comes next, it comes for all of you.",
+    "allowed_locs": [ "sloc_shelter_safe" ],
+    "start_name": "Evac Shelter",
+    "flags": [ "CITY_START" ]
+  }
+]

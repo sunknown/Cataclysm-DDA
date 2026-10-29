@@ -9,6 +9,7 @@
 #include "coordinates.h"
 
 class avatar;
+class scenario;
 
 // Establishes a freshly created character in a world that already exists.
 //
@@ -50,5 +51,12 @@ std::optional<tripoint_abs_ms> mp_find_free_tile_near( const tripoint_abs_ms &ta
 // `moved` with the slots that had to be pulled to the anchor, so the caller can
 // tell those players before the session starts.
 bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved );
+
+// The scenario every co-op character starts under: one start location, an evac
+// shelter, safe and with floor to spare -- which is what keeps the anchor's spot
+// usable for a whole party. It does not put players next to each other; no
+// scenario can, and mp_place_roster() does that. Null, after a debugmsg, when
+// the JSON no longer defines it.
+const scenario *mp_coop_scenario();
 
 #endif // CATA_SRC_MP_MP_PLACEMENT_H
