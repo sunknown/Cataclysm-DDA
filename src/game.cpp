@@ -831,12 +831,8 @@ bool game::start_game()
     refresh_display();
 
     load_master();
-    u.setID( assign_npc_id() ); // should be as soon as possible, but *after* load_master
-
-    // Make sure the items are added after the calendar is started
-    u.add_profession_items();
-    // Move items from the raw inventory to item_location s. See header TODO.
-    u.migrate_items_to_storage( true );
+    // As soon as possible, but *after* load_master and the calendar.
+    prepare_new_character( u );
 
     const start_location &start_loc = u.random_start_location ? scen->random_start_location().obj() :
                                       u.start_location.obj();
@@ -914,19 +910,8 @@ bool game::start_game()
         overmap_buffer.reveal( city_center_omt, city_size );
     }
 
-    u.set_moves( 0 );
-    u.process_turn(); // process_turn adds the initial move points
-    u.set_stamina( u.get_stamina_max() );
     weather.temperature = SPRING_TEMPERATURE;
     weather.update_weather();
-    u.next_climate_control_check = calendar::before_time_starts; // Force recheck at startup
-    u.last_climate_control_ret = false;
-
-    //Reset character safe mode/pickup rules
-    get_auto_pickup().clear_character_rules();
-    get_safemode().clear_character_rules();
-    get_auto_notes_settings().clear();
-    get_auto_notes_settings().default_initialize();
 
     // spawn the starting NPC, assuming it's not disallowed by the scenario
     if( !get_scenario()->has_flag( "LONE_START" ) ) {
@@ -962,10 +947,6 @@ bool game::start_game()
         }
     }
 
-    //Create mutation_category_level
-    u.calc_mutation_levels();
-    //Calculate mutation drench protection stats
-    u.drench_mut_calc();
     if( scen->has_flag( "FIRE_START" ) ) {
         start_loc.burn( omtstart, 3, 3 );
     }
@@ -1043,63 +1024,95 @@ bool game::start_game()
             }
         }
     }
-    for( item *&e : u.inv_dump() ) {
-        e->set_owner( get_avatar_legacy() );
-    }
     // Now that we're done handling coordinates, ensure the player's submap is in the center of the map
     update_map( u );
+    get_event_bus().send<event_type::game_start>( getVersionString() );
+    finish_new_character( u );
+    time_played_at_last_load = std::chrono::seconds( 0 );
+    time_of_last_load = std::chrono::steady_clock::now();
+
+    if( debug_menu::is_debug_character() ) {
+        debug_menu::do_debug_quick_setup();
+        add_msg( m_good, _( "Debug character detected.  Quick setup applied, good luck on the testing!" ) );
+    }
+    return true;
+}
+
+void game::prepare_new_character( avatar &ava )
+{
+    ava.setID( assign_npc_id() );
+    // Make sure the items are added after the calendar is started
+    ava.add_profession_items();
+    // Move items from the raw inventory to item_location s. See header TODO.
+    ava.migrate_items_to_storage( true );
+}
+
+void game::finish_new_character( avatar &ava )
+{
+    ava.set_moves( 0 );
+    ava.process_turn(); // process_turn adds the initial move points
+    ava.set_stamina( ava.get_stamina_max() );
+    ava.next_climate_control_check = calendar::before_time_starts; // Force recheck at startup
+    ava.last_climate_control_ret = false;
+
+    //Reset character safe mode/pickup rules
+    get_auto_pickup().clear_character_rules();
+    get_safemode().clear_character_rules();
+    get_auto_notes_settings().clear();
+    get_auto_notes_settings().default_initialize();
+
+    //Create mutation_category_level
+    ava.calc_mutation_levels();
+    //Calculate mutation drench protection stats
+    ava.drench_mut_calc();
+
+    for( item *&e : ava.inv_dump() ) {
+        e->set_owner( ava );
+    }
     // Profession pets
-    for( const mtype_id &elem : u.starting_pets ) {
-        if( monster *const mon = place_critter_around( elem, u.pos_bub(), 5 ) ) {
+    for( const mtype_id &elem : ava.starting_pets ) {
+        if( monster *const mon = place_critter_around( elem, ava.pos_bub(), 5 ) ) {
             mon->friendly = -1;
             mon->add_effect( effect_pet, 1_turns, true );
         } else {
             add_msg_debug( debugmode::DF_GAME, "cannot place starting pet, no space!" );
         }
     }
-    if( u.starting_vehicle &&
-        !place_vehicle_nearby( u.starting_vehicle, u.pos_abs_omt().xy(), 1, 30,
+    if( ava.starting_vehicle &&
+        !place_vehicle_nearby( ava.starting_vehicle, ava.pos_abs_omt().xy(), 1, 30,
                                std::vector<std::string> {} ) ) {
         debugmsg( "could not place starting vehicle" );
     }
     // Assign all of this scenario's missions to the player.
     for( const mission_type_id &m : scen->missions() ) {
         mission *new_mission = mission::reserve_new( m, character_id() );
-        new_mission->assign( u );
+        new_mission->assign( ava );
     }
 
     // Same for profession missions
-    if( !!u.prof ) {
-        for( const mission_type_id &m : u.prof->missions() ) {
+    if( !!ava.prof ) {
+        for( const mission_type_id &m : ava.prof->missions() ) {
             mission *new_mission = mission::reserve_new( m, character_id() );
-            new_mission->assign( u );
+            new_mission->assign( ava );
         }
     }
     // ... and for hobbies
-    for( const profession *hby : u.hobbies ) {
+    for( const profession *hby : ava.hobbies ) {
         if( !!hby ) {
             for( const mission_type_id &m : hby->missions() ) {
                 mission *new_mission = mission::reserve_new( m, character_id() );
-                new_mission->assign( u );
+                new_mission->assign( ava );
             }
         }
     }
 
-    get_event_bus().send<event_type::game_start>( getVersionString() );
     get_event_bus().send<event_type::game_avatar_new>( /*is_new_game=*/true, /*is_debug=*/false,
-            u.getID(), u.name, u.custom_profession );
-    time_played_at_last_load = std::chrono::seconds( 0 );
-    time_of_last_load = std::chrono::steady_clock::now();
-    tripoint_abs_omt abs_omt = u.pos_abs_omt();
+            ava.getID(), ava.name, ava.custom_profession );
+    tripoint_abs_omt abs_omt = ava.pos_abs_omt();
     const oter_id &cur_ter = overmap_buffer.ter( abs_omt );
     get_event_bus().send<event_type::avatar_enters_omt>( abs_omt.raw(), cur_ter );
 
-    effect_on_conditions::load_new_character( u );
-    if( debug_menu::is_debug_character() ) {
-        debug_menu::do_debug_quick_setup();
-        add_msg( m_good, _( "Debug character detected.  Quick setup applied, good luck on the testing!" ) );
-    }
-    return true;
+    effect_on_conditions::load_new_character( ava );
 }
 
 void game::ensure_gamemode_for_test()

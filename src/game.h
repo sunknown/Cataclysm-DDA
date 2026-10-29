@@ -546,6 +546,15 @@ class game
         size_t active_slot() const;
         void set_active_slot( size_t index );
         avatar &player_at( size_t index );
+        // The personal half of start_game(), split around placing the
+        // character: what a fresh character needs before it is put on the map
+        // (an ID, its profession's items), and what it needs after (moves,
+        // pets, vehicle, missions, its creation event). start_game() runs both
+        // for `u`; place_new_character() runs them for a character joining a
+        // world that already exists.
+        void prepare_new_character( avatar &ava );
+        void finish_new_character( avatar &ava );
+        bool start_game(); // Starts a new game in the active world
         avatar &add_player_slot();
         /**
          * Destroys every player slot above index 0, ending co-op (which
@@ -1105,7 +1114,6 @@ class game
 #if defined(__ANDROID__)
         void load_shortcuts( const cata_path &path );
 #endif
-        bool start_game(); // Starts a new game in the active world
 
         //private save functions.
         // returns false if saving failed for whatever reason

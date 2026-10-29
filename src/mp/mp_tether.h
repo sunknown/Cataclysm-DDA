@@ -13,6 +13,11 @@ tripoint_abs_ms mp_bubble_anchor();
 // design spec: the bubble is 132x132 tiles, so +/-66 from the anchor, and
 // monsters/fields at the bubble edge are not simulated correctly; 24 tiles of
 // margin are reserved, leaving 42.
+//
+// Past the soft limit the player is warned; placement code uses it as the
+// furthest a character may be put from the group.
+constexpr int MP_TETHER_SOFT_LIMIT = 32;
+
 enum class tether_state {
     ok,
     warning,
