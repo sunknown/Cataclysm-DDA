@@ -325,145 +325,197 @@ bool game::load( const std::string &world )
 
 bool game::load( const save_t &name )
 {
+    return load_world_state() && load_character( name, 0, /*with_game_state=*/true );
+}
+
+// Runs the named steps under the loading screen, stopping at the first that
+// sets `abort`.
+static bool run_load_steps( const std::vector<std::pair<std::string, std::function<void()>>>
+                            &steps, const bool &abort )
+{
+    for( const auto &step : steps ) {
+        loading_ui::show( _( "Loading the save…" ), step.first );
+        step.second();
+        if( abort ) {
+            loading_ui::done();
+            return false;
+        }
+    }
+    loading_ui::done();
+    return true;
+}
+
+bool game::load_world_state()
+{
+    const bool abort = false;
+    return run_load_steps( {
+        {
+            _( "Master save" ), [&]()
+            {
+                // Now load up the master game data; factions (and more?)
+                load_master();
+            }
+        },
+        {
+            _( "Dimension data" ), [&]()
+            {
+                // Load up dimension specific data (ie; weather, overmapstate)
+                load_dimension_data();
+            }
+        },
+        {
+            _( "Finalizing" ), [&]()
+            {
+                if( !gamemode ) {
+                    gamemode = std::make_unique<special_game>();
+                }
+                init_autosave();
+                read_from_file_optional_json(
+                    PATH_INFO::world_base_save_path() / "uistate.json",
+                []( const JsonValue & jsin ) {
+                    uistate.deserialize( jsin.get_object() );
+                } );
+
+                // populate calendar caches now, after active world is set, but before we do
+                // anything else, to ensure they pick up the correct value from the save's
+                // worldoptions
+                calendar::set_eternal_season( ::get_option<bool>( "ETERNAL_SEASON" ) );
+                calendar::set_season_length( ::get_option<int>( "SEASON_LENGTH" ) );
+
+                calendar::set_eternal_night(
+                    ::get_option<std::string>( "ETERNAL_TIME_OF_DAY" ) == "night" );
+                calendar::set_eternal_day(
+                    ::get_option<std::string>( "ETERNAL_TIME_OF_DAY" ) == "day" );
+
+                set_zoom( uistate.tileset_zoom );
+                set_overmap_zoom( uistate.overmap_tileset_zoom );
+#if defined(TILES)
+                // Ensure tileset display is synced with loaded zoom level
+                rescale_tileset( uistate.tileset_zoom );
+                overmap_tilecontext->set_draw_scale( uistate.overmap_tileset_zoom );
+#endif
+            }
+        },
+    }, abort );
+}
+
+bool game::load_character( const save_t &name, const size_t slot, const bool with_game_state )
+{
+    // unserialize() reads `u`; `u` is whichever slot the context swap put there.
+    // Loading into the wrong slot is silent and produces two players sharing one
+    // character, so it is asserted rather than documented.
+    cata_assert( active_slot() == slot );
+
     map &here = get_map();
 
     const cata_path worldpath = PATH_INFO::world_base_save_path();
     const cata_path save_file_path = PATH_INFO::world_base_save_path() /
                                      ( name.base_path() + SAVE_EXTENSION );
+    // Past the first character, the save is read for the character alone: its
+    // game state is a copy of what the first one already brought in, possibly
+    // an older copy.
+    const bool character_only = !with_game_state;
 
     bool abort = false;
+    return run_load_steps( {
+        {
+            _( "Character save" ), [&]()
+            {
 
-    using named_entry = std::pair<std::string, std::function<void()>>;
-    const std::vector<named_entry> entries = {{
-            {
-                _( "Master save" ), [&]()
-                {
-                    // Now load up the master game data; factions (and more?)
-                    load_master();
-                }
-            },
-            {
-                _( "Dimension data" ), [&]()
-                {
-                    // Load up dimension specific data (ie; weather, overmapstate)
-                    load_dimension_data();
-                }
-            },
-            {
-                _( "Character save" ), [&]()
-                {
+                u = avatar();
+                u.set_save_id( name.decoded_name() );
 
-                    u = avatar();
-                    u.set_save_id( name.decoded_name() );
-
-                    if( world_generator->active_world->has_compression_enabled() ) {
-                        std::optional<zzip> z = zzip::load( ( save_file_path + zzip_suffix ).get_unrelative_path() );
-                        abort = !z.has_value() ||
-                        !read_from_zzip_optional( z.value(), save_file_path.get_unrelative_path().filename(),
-                        [this]( std::string_view sv ) {
-                            unserialize( std::string{ sv } );
-                        } );
-                    } else {
-                        abort = !read_from_file(
-                                    save_file_path,
-                        [this, &save_file_path]( std::istream & is ) {
-                            unserialize( is, save_file_path );
-                        } );
-                    }
-                }
-            },
-            {
-                _( "Map memory" ), [&]()
-                {
-                    u.load_map_memory();
-                }
-            },
-            {
-                _( "Diary" ), [&]()
-                {
-                    u.get_avatar_diary()->load();
-                }
-            },
-            {
-                _( "Memorial" ), [&]()
-                {
-                    const cata_path log_filename =
-                    worldpath / ( name.base_path() + SAVE_EXTENSION_LOG );
-                    read_from_file_optional(
-                        log_filename.get_unrelative_path(),
-                    [this]( std::istream & is ) {
-                        memorial().load( is );
+                if( world_generator->active_world->has_compression_enabled() ) {
+                    std::optional<zzip> z = zzip::load( ( save_file_path + zzip_suffix ).get_unrelative_path() );
+                    abort = !z.has_value() ||
+                    !read_from_zzip_optional( z.value(), save_file_path.get_unrelative_path().filename(),
+                    [this, character_only]( std::string_view sv ) {
+                        unserialize( std::string{ sv }, character_only );
+                    } );
+                } else {
+                    abort = !read_from_file(
+                                save_file_path,
+                    [this, &save_file_path, character_only]( std::istream & is ) {
+                        unserialize( is, save_file_path, character_only );
                     } );
                 }
-            },
+            }
+        },
+        {
+            _( "Map memory" ), [&]()
             {
-                _( "Finalizing" ), [&]()
-                {
+                u.load_map_memory();
+            }
+        },
+        {
+            _( "Diary" ), [&]()
+            {
+                u.get_avatar_diary()->load();
+            }
+        },
+        {
+            _( "Memorial" ), [&]()
+            {
+                const cata_path log_filename =
+                worldpath / ( name.base_path() + SAVE_EXTENSION_LOG );
+                read_from_file_optional(
+                    log_filename.get_unrelative_path(),
+                [this]( std::istream & is ) {
+                    memorial().load( is );
+                } );
+            }
+        },
+        {
+            _( "Finalizing" ), [&]()
+            {
 
 #if defined(__ANDROID__)
-                    const cata_path shortcuts_filename =
-                    worldpath / ( name.base_path() + SAVE_EXTENSION_SHORTCUTS );
-                    if( file_exist( shortcuts_filename ) ) {
-                        load_shortcuts( shortcuts_filename );
-                    }
+                const cata_path shortcuts_filename =
+                worldpath / ( name.base_path() + SAVE_EXTENSION_SHORTCUTS );
+                if( file_exist( shortcuts_filename ) ) {
+                    load_shortcuts( shortcuts_filename );
+                }
 #endif
 
-                    // Now that the player's worn items are updated, their sight limits need to be
-                    // recalculated. (This would be cleaner if u.worn were private.)
-                    u.recalc_sight_limits();
+                // Now that the player's worn items are updated, their sight limits need to be
+                // recalculated. (This would be cleaner if u.worn were private.)
+                u.recalc_sight_limits();
 
-                    if( !gamemode ) {
-                        gamemode = std::make_unique<special_game>();
-                    }
-
+                get_auto_pickup().load_character(); // Load character auto pickup rules
+                get_auto_notes_settings().load( true ); // Load character auto notes settings
+                get_safemode().load_character(); // Load character safemode rules
+                zone_manager::get_manager().load_zones(); // Load character world zones
+                if( with_game_state ) {
                     mostseen = 0; // ...and mostseen is 0, we haven't seen any monsters yet.
-
-                    init_autosave();
-                    get_auto_pickup().load_character(); // Load character auto pickup rules
-                    get_auto_notes_settings().load( true ); // Load character auto notes settings
-                    get_safemode().load_character(); // Load character safemode rules
-                    zone_manager::get_manager().load_zones(); // Load character world zones
-                    read_from_file_optional_json(
-                        PATH_INFO::world_base_save_path() / "uistate.json",
-                    []( const JsonValue & jsin ) {
-                        uistate.deserialize( jsin.get_object() );
-                    } );
                     reload_npcs();
                     validate_npc_followers();
                     validate_mounted_npcs();
                     validate_camps();
                     validate_linked_vehicles();
+                    // The bubble follows the character that brought the game
+                    // state; the others are placed relative to it afterwards.
                     update_map( u );
-                    for( item *&e : u.inv_dump() ) {
-                        e->set_owner( get_player_character() );
-                    }
-                    // legacy, needs to be here as we access the map.
-                    if( !u.getID().is_valid() ) {
-                        // player does not have a real id, so assign a new one,
-                        u.setID( assign_npc_id() );
-                        // The vehicle stores the IDs of the boarded players, so update it, too.
-                        if( u.in_vehicle ) {
-                            if( const std::optional<vpart_reference> vp = here.veh_at(
-                                        u.pos_bub() ).part_with_feature( "BOARDABLE", true ) ) {
-                                vp->part().passenger_id = u.getID();
-                            }
+                }
+                for( item *&e : u.inv_dump() ) {
+                    e->set_owner( get_player_character() );
+                }
+                // legacy, needs to be here as we access the map.
+                if( !u.getID().is_valid() ) {
+                    // player does not have a real id, so assign a new one,
+                    u.setID( assign_npc_id() );
+                    // The vehicle stores the IDs of the boarded players, so update it, too.
+                    if( u.in_vehicle ) {
+                        if( const std::optional<vpart_reference> vp = here.veh_at(
+                                    u.pos_bub() ).part_with_feature( "BOARDABLE", true ) ) {
+                            vp->part().passenger_id = u.getID();
                         }
                     }
+                }
 
-                    // populate calendar caches now, after active world is set, but before we do
-                    // anything else, to ensure they pick up the correct value from the save's
-                    // worldoptions
-                    calendar::set_eternal_season( ::get_option<bool>( "ETERNAL_SEASON" ) );
-                    calendar::set_season_length( ::get_option<int>( "SEASON_LENGTH" ) );
-
-                    calendar::set_eternal_night(
-                        ::get_option<std::string>( "ETERNAL_TIME_OF_DAY" ) == "night" );
-                    calendar::set_eternal_day(
-                        ::get_option<std::string>( "ETERNAL_TIME_OF_DAY" ) == "day" );
-
-                    u.reset();
-                    u.recalculate_enchantment_cache();
-                    u.enchantment_cache->activate_passive( u );
+                u.reset();
+                u.recalculate_enchantment_cache();
+                u.enchantment_cache->activate_passive( u );
+                if( with_game_state ) {
                     events().send<event_type::game_load>( getVersionString() );
                     time_of_last_load = std::chrono::steady_clock::now();
                     time_played_at_last_load = std::chrono::seconds( 0 );
@@ -477,35 +529,16 @@ bool game::load( const save_t &name )
                                 time_played_it->second.get<std::chrono::seconds>();
                         }
                     }
+                }
 
-                    effect_on_conditions::load_existing_character( u );
+                effect_on_conditions::load_existing_character( u );
+                if( with_game_state ) {
                     // recalculate light level for correctly resuming crafting and disassembly
                     here.build_map_cache( here.get_abs_sub().z() );
-
-                    set_zoom( uistate.tileset_zoom );
-                    set_overmap_zoom( uistate.overmap_tileset_zoom );
-#if defined(TILES)
-                    // Ensure tileset display is synced with loaded zoom level
-                    rescale_tileset( uistate.tileset_zoom );
-                    overmap_tilecontext->set_draw_scale( uistate.overmap_tileset_zoom );
-#endif
-
                 }
-            },
-        }
-    };
-
-    for( const named_entry &e : entries ) {
-        loading_ui::show( _( "Loading the save…" ), e.first );
-        e.second();
-        if( abort ) {
-            loading_ui::done();
-            return false;
-        }
-    }
-
-    loading_ui::done();
-    return true;
+            }
+        },
+    }, abort );
 }
 
 void game::load_world_modfiles()

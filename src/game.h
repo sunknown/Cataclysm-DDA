@@ -331,14 +331,18 @@ class game
         void setup();
         /** Saving and loading functions. */
         void serialize_json( std::ostream &fout ); // for save
-        void unserialize( std::istream &fin, const cata_path &path ); // for load
-        void unserialize( std::string fin ); // for load
+        // With character_only set, reads only the character's own members of the
+        // save and leaves the game state -- calendar, map position, monsters,
+        // trackers -- as it is: that came from the first character loaded.
+        void unserialize( std::istream &fin, const cata_path &path,
+                          bool character_only = false ); // for load
+        void unserialize( std::string fin, bool character_only = false ); // for load
         void unserialize_dimension_data( const cata_path &file_name, std::istream &fin ); // for load
         void unserialize_dimension_data( const JsonValue &jv ); // for load
         void unserialize_master( const cata_path &file_name, std::istream &fin ); // for load
         void unserialize_master( const JsonValue &jv ); // for load
     private:
-        void unserialize_impl( const JsonObject &data );
+        void unserialize_impl( const JsonObject &data, bool character_only );
     public:
 
         /** Returns false if saving failed. */
@@ -1076,6 +1080,27 @@ class game
     private:
         // Game-start procedures
         bool load( const save_t &name ); // Load a player-specific save file
+        /**
+         * The part of a load that belongs to the world: the master save
+         * (factions), dimension data, the autosave timer, the gamemode, the
+         * world's uistate and the calendar caches. Runs once, before any
+         * character exists.
+         */
+        bool load_world_state();
+        /**
+         * Loads one character save into slot `slot`: replaces that slot's avatar,
+         * then its map memory, diary, memorial and per-character settings.
+         *
+         * Must run with `slot` active -- unserialize() reads `u`, and `u` is
+         * whichever slot the context swap put there. Asserts it.
+         *
+         * A character save also carries the game state it was written with:
+         * calendar, map position, monsters, trackers. `with_game_state` reads
+         * that too, and runs the world finalization that needs the map; it is
+         * set for exactly one character per load, the first, whose position the
+         * bubble then follows. Every other character reads only its own part.
+         */
+        bool load_character( const save_t &name, size_t slot, bool with_game_state );
         void load_master(); // Load the master data file, with factions &c
 #if defined(__ANDROID__)
         void load_shortcuts( const cata_path &path );

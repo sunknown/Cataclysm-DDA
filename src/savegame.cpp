@@ -221,7 +221,7 @@ static size_t chkversion( std::istream &fin )
  * Parse an open .sav file.
  */
 
-void game::unserialize( std::istream &fin, const cata_path &path )
+void game::unserialize( std::istream &fin, const cata_path &path, const bool character_only )
 {
     try {
         size_t json_file_offset = chkversion( fin );
@@ -229,27 +229,39 @@ void game::unserialize( std::istream &fin, const cata_path &path )
         if( data.has_member( "savegame_loading_version" ) ) {
             data.read( "savegame_loading_version", savegame_loading_version );
         }
-        unserialize_impl( data );
+        unserialize_impl( data, character_only );
     } catch( const JsonError &jsonerr ) {
         debugmsg( "Bad save json\n%s", jsonerr.c_str() );
         return;
     }
 }
 
-void game::unserialize( std::string fin )
+void game::unserialize( std::string fin, const bool character_only )
 {
     try {
         JsonObject data = json_loader::from_string( std::move( fin ) );
         savegame_loading_version = data.get_int( "savegame_loading_version" );
-        unserialize_impl( data );
+        unserialize_impl( data, character_only );
     } catch( const JsonError &jsonerr ) {
         debugmsg( "Bad save json\n%s", jsonerr.c_str() );
         return;
     }
 }
 
-void game::unserialize_impl( const JsonObject &data )
+void game::unserialize_impl( const JsonObject &data, const bool character_only )
 {
+    if( character_only ) {
+        // Only what belongs to the character. The rest of the document is the
+        // game state as it stood when this file was written, and that state
+        // already came from the first character loaded.
+        data.read( "view_offset_x", u.view_offset.x() );
+        data.read( "view_offset_y", u.view_offset.y() );
+        data.read( "view_offset_z", u.view_offset.z() );
+        data.read( "driving_view_offset", mp_active_context().driving_view_offset );
+        data.read( "player", u );
+        data.allow_omitted_members();
+        return;
+    }
     int tmpturn = 0;
     int tmpcalstart = 0;
     int tmprun = 0;
@@ -316,10 +328,11 @@ void game::unserialize_impl( const JsonObject &data )
     data.read( "kill_tracker", *kill_tracker_ptr );
 
     data.read( "player", u );
+    // Written by the pre-3b format, where a co-op party lived inside slot zero's
+    // file. Characters are their own saves now, so the array is not read; it is
+    // visited only so the reader does not report it as an unvisited member.
     if( data.has_member( "extra_players" ) ) {
-        for( JsonValue jv : data.get_array( "extra_players" ) ) {
-            jv.read( g->add_player_slot() );
-        }
+        data.get_member( "extra_players" );
     }
     data.read( "inactive_global_effect_on_condition_vector",
                inactive_global_effect_on_condition_vector );

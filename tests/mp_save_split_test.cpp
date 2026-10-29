@@ -4,6 +4,7 @@
 #include <string>
 
 #include "avatar.h"
+#include "calendar.h"
 #include "game.h"
 #include "game_test_helper.h"
 #include "json_loader.h"
@@ -73,6 +74,38 @@ TEST_CASE( "each_slot_serializes_as_a_standalone_character", "[coop]" )
     CHECK( reloaded[0].name == slot0 );
     CHECK( reloaded[1].name == "SlotOneProbe" );
 
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+TEST_CASE( "a_second_character_save_leaves_the_world_state_alone", "[coop]" )
+{
+    // Every character save carries the game state it was written with: the
+    // calendar, the bubble's position, the active monsters. Read in full, the
+    // last file loaded would win -- a partner's older save would roll the
+    // world's clock back under maps that have moved on. Past the first
+    // character, a load reads only what belongs to that character.
+    game_test_helper::reset_player_slots();
+    mp_ensure_player_context();
+    mp_sync_context_count();
+    avatar &second = g->add_player_slot();
+    second.name = "SlotOneProbe";
+    mp_sync_context_count();
+
+    mp_activate_player( 1 );
+    std::ostringstream out;
+    g->serialize_json( out );
+    const time_point saved_turn = calendar::turn;
+    calendar::turn = saved_turn + 1_hours;
+    get_avatar().name = "Overwritten";
+
+    g->unserialize( out.str(), /*character_only=*/true );
+
+    CHECK( get_avatar().name == "SlotOneProbe" );
+    CHECK( calendar::turn == saved_turn + 1_hours );
+
+    calendar::turn = saved_turn;
+    mp_activate_player( 0 );
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
 }
