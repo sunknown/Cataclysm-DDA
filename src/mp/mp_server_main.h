@@ -41,6 +41,12 @@ int mp_server_main( int port, const std::string &world_name, int players );
 // either continues as the character their card names or creates one.
 bool mp_server_open_world( const std::string &world_name, std::string &err );
 
+// Says that each of these slots' characters was pulled to the group, one line
+// per character. The message log is one process-wide log, so this must not be
+// called once per player: n players times m moved characters is exactly the
+// duplication this function exists to prevent.
+void mp_announce_moved_characters( const std::vector<size_t> &moved );
+
 // Raises the baton and one thread per session. The threads park on the baton;
 // during a join phase (mp_join_begin) each first runs its player's join menu,
 // then game::do_turn() orchestrates turns among them.

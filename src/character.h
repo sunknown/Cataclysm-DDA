@@ -570,6 +570,17 @@ class Character : public Creature, public visitable
         bool random_start_location = true;
         start_location_id start_location;
 
+        // The gender the starting outfit is cut for. A player sets it on its own
+        // of `male` (the creator's "Outfit:" toggle, Change Outfit), and
+        // Character::randomize rolls it on its own, so it is not `male` and it is
+        // not derived from it. It lives on the character being built rather than
+        // in the creator because add_profession_items() reads it later, on
+        // whichever thread runs that character into the world: as one
+        // process-wide value, two clients creating characters at the same time
+        // gave each other's survivor the wrong set of starting clothes.
+        // Creation-time only, so it is not serialized.
+        bool male_starting_outfit = true;
+
         bool manual_examine = false;
         int volume = 0;
         // The prevalence of getter, setter, and mutator functions here is partially

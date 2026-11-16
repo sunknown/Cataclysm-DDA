@@ -2,10 +2,17 @@
 
 #if defined(MP_SERVER)
 
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "avatar.h"
 #include "calendar.h"
 #include "coordinates.h"
 #include "game.h"
+#include "game_test_helper.h"
+#include "messages.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_tether.h"
 #include "mp_session_harness.h"
 
@@ -53,6 +60,44 @@ TEST_CASE( "two_fresh_characters_start_next_to_each_other", "[mp]" )
     // Real characters, made by the creation screen, not the blank slots.
     CHECK_FALSE( g->player_at( 0 ).name.empty() );
     CHECK( g->player_at( 0 ).name != g->player_at( 1 ).name );
+}
+
+TEST_CASE( "a_client_that_has_chosen_sees_the_waiting_screen", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+    harness.choose_random_character( 0 );
+    // A player who has chosen is parked on the baton, not on its wire, so it
+    // never reaches another input wait during the join phase -- and the input
+    // waits are the only other place a grid is sent. The screen the world draws
+    // for it has to be flushed, or this client sits on the creator's last frame
+    // until the game starts.
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 0 ), "Waiting for the others" );
+    }, 60 ) );
+    // And it names who is still expected: the roster is fixed, so exactly one
+    // player is left.
+    CHECK( mp_grid_contains( harness.screen( 0 ), "P1" ) );
+}
+
+TEST_CASE( "a_character_pulled_to_the_group_is_announced_once", "[mp]" )
+{
+    game_test_helper::reset_player_slots();
+    g->player_at( 0 ).name = "Margaret";
+    g->add_player_slot().name = "Kevin";
+
+    Messages::clear_messages();
+    mp_announce_moved_characters( { 0, 1 } );
+
+    // One line per moved character. The message log is one process-wide log, so
+    // announcing under each player's context in turn repeated every line once
+    // per player and told the players who had not been moved that it was them
+    // (seat_roster used to loop over both). The placement itself is covered by
+    // the placement tests; this pins the log contract seating relies on.
+    const std::vector<std::pair<std::string, std::string>> messages =
+        Messages::recent_messages( 0 );
+    REQUIRE( messages.size() == 2 );
+    CHECK( messages[0].second.find( "Margaret" ) != std::string::npos );
+    CHECK( messages[1].second.find( "Kevin" ) != std::string::npos );
 }
 
 #endif // MP_SERVER

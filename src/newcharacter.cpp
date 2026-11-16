@@ -133,9 +133,6 @@ static character_creator_uistate &cc_uistate_for_active_player()
 static character_creator_uistate cc_uistate;
 #endif
 
-// Whether or not use Outfit (M) at character creation
-static bool outfit = true;
-
 static constexpr int RANDOM_START_LOC_ENTRY = INT_MIN;
 
 // Colors used in this file: (Most else defaults to c_light_gray)
@@ -466,9 +463,9 @@ void Character::randomize( const bool random_scenario, bool play_now )
     bool gender_selection = one_in( 2 );
     male = gender_selection;
     if( one_in( 10 ) ) {
-        outfit = !gender_selection;
+        male_starting_outfit = !gender_selection;
     } else {
-        outfit = gender_selection;
+        male_starting_outfit = gender_selection;
     }
     if( !MAP_SHARING::isSharing() ) {
         play_now ? pick_name() : pick_name( true );
@@ -674,7 +671,7 @@ void Character::add_profession_items()
         return;
     }
 
-    std::list<item> prof_items = prof->items( outfit, get_mutations() );
+    std::list<item> prof_items = prof->items( male_starting_outfit, get_mutations() );
     std::list<item> try_adding_again;
 
     auto attempt_add_items = [this]( std::list<item> &prof_items, std::list<item> &failed_to_add ) {
@@ -1753,7 +1750,8 @@ void draw_profession_inventory( const avatar &u )
     const profession &selected_profession = sorted_profs[selected_profession_index].obj();
 
     if( cc_uistate.cached_profession_inventory.empty() ) {
-        cc_uistate.cached_profession_inventory = selected_profession.items( outfit, u.get_mutations() );
+        cc_uistate.cached_profession_inventory = selected_profession.items(
+            u.male_starting_outfit, u.get_mutations() );
     }
     const std::list<item> &prof_items = cc_uistate.cached_profession_inventory;
 
@@ -2040,7 +2038,7 @@ void draw_outfit()
 {
     draw_action_button( _( "Outfit:" ), "CHANGE_OUTFIT" );
     ImGui::SameLine();
-    cataimgui::draw_colored_text( get_gender_string( outfit ), c_white );
+    cataimgui::draw_colored_text( get_gender_string( get_avatar().male_starting_outfit ), c_white );
 }
 
 void draw_height( const Character &you )
@@ -2343,7 +2341,7 @@ void avatar::save_template( const std::string &name, pool_type pool )
         if( !random_start_location ) {
             jsout.member( "start_location", start_location );
         }
-        jsout.member( "outfit_gender", outfit );
+        jsout.member( "outfit_gender", male_starting_outfit );
         jsout.end_object();
 
         serialize( jsout );
@@ -2376,7 +2374,7 @@ bool avatar::load_template( const std::string &template_name, pool_type &pool )
             random_start_location = jobj.get_bool( "random_start_location", true );
             const std::string jobj_start_location = jobj.get_string( "start_location", "" );
 
-            outfit = jobj.get_bool( "outfit_gender", true );
+            male_starting_outfit = jobj.get_bool( "outfit_gender", true );
 
             // get_scenario()->allowed_start( loc.ident() ) is checked once scenario loads in avatar::load()
             for( const class start_location &loc : start_locations::get_all() ) {
@@ -3526,9 +3524,9 @@ bool character_creator_ui::handle_action( const std::string &action )
         bool gender_selection = one_in( 2 );
         you.male = gender_selection;
         if( one_in( 10 ) ) {
-            outfit = !gender_selection;
+            you.male_starting_outfit = !gender_selection;
         } else {
-            outfit = gender_selection;
+            you.male_starting_outfit = gender_selection;
         }
         if( !MAP_SHARING::isSharing() ) {
             you.pick_name();
@@ -3548,7 +3546,7 @@ bool character_creator_ui::handle_action( const std::string &action )
     } else if( action == "CHANGE_GENDER" ) {
         you.male = !you.male;
     } else if( action == "CHANGE_OUTFIT" ) {
-        outfit = !outfit;
+        you.male_starting_outfit = !you.male_starting_outfit;
     } else if( action == "CHANGE_START_OF_CATACLYSM" ) {
         const scenario *scen = get_scenario();
         scen->change_start_of_cataclysm( calendar_ui::select_time_point( scen->start_of_cataclysm(),

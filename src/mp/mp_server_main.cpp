@@ -142,6 +142,13 @@ static void redraw_waiting_screens()
         if( g_join_choices[i] ) {
             mp_activate_player( i );
             mp_draw_waiting_screen( still_choosing );
+            // doupdate() goes nowhere on the server, and the only other senders
+            // of a grid are the input waits -- which this player never reaches
+            // during the join phase, because a player who has chosen is parked
+            // on the baton, not on the wire. Without the flush the screen is
+            // drawn and never sent, and that player keeps staring at the
+            // creator's last frame until the game starts.
+            mp_server_flush_screen();
         }
     }
     mp_activate_world();
@@ -183,6 +190,13 @@ static std::optional<save_t> newest_save()
         }
     }
     return newest;
+}
+
+void mp_announce_moved_characters( const std::vector<size_t> &moved )
+{
+    for( const size_t slot : moved ) {
+        add_msg( m_info, _( "%s found the group." ), g->player_at( slot ).get_name() );
+    }
 }
 
 // Everyone has chosen: bring the continued characters in, place the roster and
@@ -229,18 +243,12 @@ static bool seat_roster( std::string &err )
         err = "could not find room for everybody near the group";
         return false;
     }
-    // Moving somebody's character is said out loud, to them and to everyone:
-    // it is that player's save.
-    for( size_t i = 0; i < players; ++i ) {
-        mp_activate_player( i );
-        for( const size_t slot : moved ) {
-            if( slot == i ) {
-                add_msg( m_info, _( "Your survivor and the others found each other." ) );
-            } else {
-                add_msg( m_info, _( "%s found the group." ), g->player_at( slot ).get_name() );
-            }
-        }
-    }
+    // Moving somebody's character is said out loud, once per moved character.
+    // The message log is one process-wide log (src/messages.cpp), not one per
+    // player, so adding it under each player's context repeated every line n
+    // times and told the players who had not been moved that it was them.
+    mp_activate_world();
+    mp_announce_moved_characters( moved );
     // Nobody has played a turn yet: the session starts, as single player's does,
     // with every character owing nothing. `moves` is what the barrier reads as
     // "still has a turn to play" (mp_player_state_of), and a character that has
