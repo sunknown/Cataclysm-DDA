@@ -13,6 +13,7 @@
 #include "memory_fast.h"    // weak_ptr_fast
 
 class static_popup;
+struct character_creator_uistate;
 
 struct viewport_params {
     int term_cols = 0, term_rows = 0;
@@ -49,13 +50,27 @@ struct player_context {
     std::unique_ptr<static_popup> wait_popup; // NOLINT(cata-serialize)
     bool first_redraw_since_waiting_started = true; // NOLINT(cata-serialize)
 
+    // This player's character-creator menu state (newcharacter.cpp's
+    // cc_uistate). It is per player for the same reason everything else here
+    // is: two clients can be building a character at the same time, each on its
+    // own thread, so one process-wide instance meant one player's tab switch,
+    // selection or "finished" flag was another's -- a confirmer could watch
+    // their summary tab turn into the scenario tab and never finish. A pointer
+    // rather than a value so this header keeps its forward declarations; built
+    // on first use by creator_state() below.
+    std::unique_ptr<character_creator_uistate> creator_state_ptr; // NOLINT(cata-serialize)
+
     // Declared (not defaulted inline) because wait_popup needs the complete
     // definition of static_popup to construct/destroy, and this header only
     // forward-declares it -- exactly the reason `game` itself declares
     // game()/~game() instead of defaulting them (game.h/game.cpp). Defined in
-    // mp_context.cpp, which includes popup.h.
+    // mp_context.cpp, which includes popup.h. The same holds for
+    // creator_state_ptr's character_creator_uistate.
     player_context();
     ~player_context();
+
+    // The creator state of this player, created on first use.
+    character_creator_uistate &creator_state();
 };
 
 player_context &mp_active_context();       // asserts a non-null active context

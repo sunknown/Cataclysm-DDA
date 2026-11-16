@@ -2,6 +2,7 @@
 
 #include <cassert>
 
+#include "character_creator_ui.h" // character_creator_uistate, for creator_state()
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
@@ -15,6 +16,14 @@
 // static_popup is complete -- see the comment on the declarations.
 player_context::player_context() = default;
 player_context::~player_context() = default;
+
+character_creator_uistate &player_context::creator_state()
+{
+    if( !creator_state_ptr ) {
+        creator_state_ptr = std::make_unique<character_creator_uistate>();
+    }
+    return *creator_state_ptr;
+}
 
 static player_context *active_context = nullptr;
 

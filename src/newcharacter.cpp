@@ -50,6 +50,7 @@
 #include "martialarts.h"
 #include "mission.h"
 #if defined(MP_SERVER)
+#include "mp/mp_context.h"
 #include "mp/mp_placement.h"
 #endif
 #include "mod_manager.h"
@@ -110,7 +111,27 @@ static const trait_id trait_WEAKSCENT( "WEAKSCENT" );
 static const trait_id trait_XS( "XS" );
 static const trait_id trait_XXXL( "XXXL" );
 
+#if defined(MP_SERVER)
+// One creator per player, not one per process: two clients can be building a
+// character at the same time, each on its own thread, so a single instance let
+// one player's tab switch, selection or finished flag be the other's -- the
+// confirmer's summary tab turned into the scenario tab under them and their
+// confirmation went nowhere. It lives in the player's context now, the same
+// place every other per-player global ended up (player_context::wait_popup,
+// last_key_poll). The fallback covers a caller outside any session, e.g. a
+// test that drives the creator without a context.
+static character_creator_uistate &cc_uistate_for_active_player()
+{
+    if( player_context *const ctx = mp_active_context_ptr() ) {
+        return ctx->creator_state();
+    }
+    static character_creator_uistate outside_a_session;
+    return outside_a_session;
+}
+#define cc_uistate cc_uistate_for_active_player()
+#else
 static character_creator_uistate cc_uistate;
+#endif
 
 // Whether or not use Outfit (M) at character creation
 static bool outfit = true;
@@ -388,6 +409,18 @@ static matype_id choose_ma_style( const character_type type, const std::vector<m
     if( type == character_type::NOW || type == character_type::FULL_RANDOM ) {
         return random_entry( styles );
     }
+#if defined(MP_SERVER)
+    // "Random character" in the join menu is the same bargain "Play now" makes:
+    // the game rolls everything and the creator only confirms the summary it
+    // opens on -- there is no configuration left in it. A background that
+    // offers several martial-arts styles would otherwise stop creation behind a
+    // picker after that confirmation, which is not a step the join flow has.
+    // The custom and preset paths keep the picker: those players are working
+    // through the creator anyway.
+    if( type == character_type::RANDOM ) {
+        return random_entry( styles );
+    }
+#endif
     if( styles.size() == 1 ) {
         return styles.front();
     }
@@ -2739,13 +2772,26 @@ void character_creator_ui_impl::draw_controls()
     tab_selected.fill( ImGuiTabItemFlags_None );
 
     // handle tab switch keyboard input
-    if( switched_tab != character_creator_tab_LAST ) {
+    const bool forcing_tab = switched_tab != character_creator_tab_LAST;
+    if( forcing_tab ) {
         tab_selected[static_cast<int>( switched_tab )] = ImGuiTabItemFlags_SetSelected;
         cc_uistate.selected_tab = switched_tab;
         cc_uistate.switched_tab = character_creator_tab_LAST;
     }
 
-    auto check_new_tab = [this]( character_creator_tab new_tab ) {
+    auto check_new_tab = [this, forcing_tab]( character_creator_tab new_tab ) {
+        // ImGui applies ImGuiTabItemFlags_SetSelected on the NEXT frame, so the
+        // frame that asked still reports the tab it had before as selected.
+        // Taking that report as the player's own click undid every programmatic
+        // switch for a frame: the summary tab a random character opens on fell
+        // back to the scenario tab and then bounced, and a key pressed while it
+        // was out of place was handled against the wrong tab -- "next tab" on
+        // the summary tab is what finishes a character, so the character was
+        // never finished. While a switch is pending, only the tab that was asked
+        // for counts.
+        if( forcing_tab && new_tab != cc_uistate.selected_tab ) {
+            return;
+        }
         if( new_tab != cc_uistate.previous_tab ) {
             cc_uistate.selected_tab = new_tab;
             ui_parent->upon_switching_tab();
