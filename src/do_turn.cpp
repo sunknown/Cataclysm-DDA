@@ -775,9 +775,13 @@ bool game::do_turn()
                 // -- or to a player the hurry left behind, coming back from
                 // their input wait with a key. The world is not waiting on them,
                 // but they are still playing, and nobody else reads their keys.
+                // An away player at an input wait is the same case: the turn
+                // may be held open for them by mp_turn_all_away(), and their
+                // key is already read off the wire, so the game has to get it.
                 owes_turn[i] = state == mp_player_state::acting ||
                                state == mp_player_state::holding ||
-                               mp_player_left_behind( i );
+                               mp_player_left_behind( i ) ||
+                               mp_player_is_away_at_input_wait( i );
                 if( owes_turn[i] && sched->waiting_for_baton( i ) ) {
                     sched->yield_to( mp_sched::world, i );
                     moved = true;

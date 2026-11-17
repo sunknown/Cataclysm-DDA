@@ -236,6 +236,12 @@ bool mp_player_left_behind( const size_t slot )
            g_waiting_for_input[slot];
 }
 
+bool mp_player_is_away_at_input_wait( const size_t slot )
+{
+    ensure_sized();
+    return g_away[slot] && g_waiting_for_input[slot];
+}
+
 bool mp_turn_paced()
 {
     ensure_sized();
@@ -247,13 +253,15 @@ bool mp_turn_paced()
         if( ava.is_dead_state() ) {
             continue;
         }
-        if( mp_player_left_behind( i ) ) {
-            anyone_left_behind = true;
+        // Away first, before the left-behind rule: an away player asked not to
+        // be waited on, and a drop they collected before leaving would
+        // otherwise floor every turn at MP_HURRY_MS for a partner who is busy
+        // -- the wait this phase exists to remove.
+        if( mp_player_is_away( i ) ) {
             continue;
         }
-        // An away player is not playing and is not paced for: they asked not to
-        // be waited on, so their partner's activity is the only clock.
-        if( mp_player_is_away( i ) ) {
+        if( mp_player_left_behind( i ) ) {
+            anyone_left_behind = true;
             continue;
         }
         if( !ava.activity && !ava.has_distant_destination() ) {

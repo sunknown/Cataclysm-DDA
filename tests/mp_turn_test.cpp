@@ -523,4 +523,42 @@ TEST_CASE( "a_hostile_in_sight_paces_a_turn_nobody_is_playing_by_hand", "[mp]" )
     mp_turn_reset_all();
 }
 
+TEST_CASE( "an_away_player_is_not_a_left_behind_one", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    clear_map();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    // Slot 0 is busy and never touches a key, so the only floor that could
+    // appear is the one the left-behind rule would set.
+    g->player_at( 0 ).assign_activity( wait_activity_actor( 10_minutes ) );
+    // Slot 1 is dropped by a hurry while reading a menu...
+    b.set_moves( 100 );
+    b.activity = player_activity();
+    mp_set_waiting_for_input( 1, true );
+    mp_request_hurry();
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1 );
+    mp_tick_hurry();
+    REQUIRE( mp_player_left_behind( 1 ) );
+
+    // ...and only then leaves the keyboard. The drop must go with them: a
+    // countdown aimed at somebody who was still reading is not a countdown
+    // aimed at an empty chair, or a busy partner pays MP_HURRY_MS per turn for
+    // a player who is not there -- exactly what going away exists to stop.
+    mp_set_away( 1, true );
+    mp_set_turn_open( true );
+    CHECK_FALSE( mp_turn_paced() );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
 #endif // defined(MULTIPLAYER)

@@ -514,4 +514,44 @@ TEST_CASE( "two_busy_players_do_not_hold_the_world", "[mp]" )
     }, 400 ) );
 }
 
+TEST_CASE( "an_away_player_at_an_input_wait_still_gets_the_baton", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Let both threads reach their input waits -- the first turn only hands
+    // moves back, so run until both are parked holding the barrier. The key
+    // below is then one a parked player really holds, with the turn already
+    // open, so the calendar below cannot move for the wrong reason.
+    REQUIRE( harness.run_until( []() {
+        return mp_player_state_of( 0 ) == mp_player_state::holding &&
+               mp_player_state_of( 1 ) == mp_player_state::holding;
+    } ) );
+    mp_set_away( 0, true );
+    mp_set_away( 1, true );
+    const int turn_before = to_turn<int>( calendar::turn );
+
+    // Nobody owes the turn and nobody paces it: the world holds it open.
+    CHECK_FALSE( harness.run_until( []() {
+        return false;
+    }, 10 ) );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before );
+
+    // Going away is not abandoning the terminal. The away player's key has to
+    // reach the game even though the world is frozen -- otherwise it is read
+    // off the wire and never dispatched, and the only way back from "away" is
+    // a key that never arrives.
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    } ) );
+
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    } ) );
+
+    // Reading a menu while away is still not playing: the world has not moved.
+    CHECK( to_turn<int>( calendar::turn ) == turn_before );
+}
+
 #endif // MP_SERVER

@@ -60,16 +60,24 @@ bool mp_turn_all_away();
 // not waiting on them.
 bool mp_player_left_behind( size_t slot );
 
+// True for a player who has gone away and is sitting at an input wait. They
+// hold nothing -- the barrier does not wait on them and mp_turn_all_away() may
+// be holding the turn open -- but they are still a person at the terminal:
+// nobody else reads their keys, so the orchestrator has to hand them the baton
+// when one arrives or the key is read and never dispatched.
+bool mp_player_is_away_at_input_wait( size_t slot );
+
 // True while a satisfied barrier must not close the turn yet. Not about the
 // barrier: about what paces a turn nobody is playing by hand. A player at the
 // keyboard -- acting, or a left-behind one once they act -- ends it. Otherwise
 // the turn lasts at least as long as the countdown that would have dropped
 // them: MP_HURRY_COMBAT_MS while a hostile can see a player, and MP_HURRY_MS
-// while a left-behind player is still reading. An away player is not a
-// left-behind one: they asked not to be waited for, so their partner's
-// activity pace is not held back on a countdown aimed at nobody. With nobody
-// playing by hand and no hostile in sight it ends too: that is the free run
-// the phase exists for.
+// while a left-behind player is still reading. An away player is checked before
+// the left-behind rule and skipped: they asked not to be waited for, so a drop
+// left over from before they went away cannot become a countdown aimed at an
+// empty chair, and their partner's activity pace is not held back by it. With
+// nobody playing by hand and no hostile in sight it ends too: that is the free
+// run the phase exists for.
 bool mp_turn_paced();
 
 // Marks `slot` as sitting at an input wait, or no longer sitting at one. Called
