@@ -3,6 +3,7 @@
 #include "avatar.h"
 #include "cata_catch.h"
 #include "character.h"
+#include "character_id.h"
 #include "enums.h"
 #include "game.h"
 #include "game_test_helper.h"
@@ -39,6 +40,10 @@ TEST_CASE( "a_vehicle_seat_resolves_a_passenger_in_another_slot", "[coop][vehicl
     map &here = get_map();
 
     avatar &second = g->add_player_slot();
+    // A bare slot carries character_id(), and an unset id must name nobody --
+    // not the first empty slot. The mission effect talker and the training
+    // actor pass ids they may never have set.
+    CHECK( g->critter_by_id<Character>( character_id() ) == nullptr );
     // add_player_slot() hands out a bare avatar: no body, no id, at the world
     // origin. Production slot creation (debug_menu::toggle_coop_slot) fills
     // those in; a test must too.

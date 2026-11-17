@@ -4453,6 +4453,14 @@ template shared_ptr_fast<npc> game::shared_from<npc>( const npc & );
 template<typename T>
 T *game::critter_by_id( const character_id &id )
 {
+    // An unset id names nobody. Bare player slots carry character_id(): the
+    // join lobby creates them before a character exists, and tests leave them
+    // behind. Without this guard such a slot compares equal to any caller that
+    // passes a value it never set (a mission's effect talker, a training
+    // actor's teacher or trainee) and is handed back as a live character.
+    if( !id.is_valid() ) {
+        return nullptr;
+    }
     if( id == u.getID() ) {
         // player is always alive, therefore no is-dead check
         return dynamic_cast<T *>( &u );
