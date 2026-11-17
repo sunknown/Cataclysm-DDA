@@ -650,7 +650,8 @@ static void run_server_session( const std::string &world_name, const std::option
     // session yet -- so filling it in is exactly "leave it as it is".
     const int manual_ms = hurry_ms.value_or( MP_HURRY_MS );
     const int combat_ms = hurry_combat_ms.value_or( MP_HURRY_COMBAT_MS );
-    if( !mp_set_hurry_lengths( manual_ms, combat_ms ) ) {
+    const bool lengths_accepted = mp_set_hurry_lengths( manual_ms, combat_ms );
+    if( !lengths_accepted ) {
         // The setter already logged the detail to the debug log; this is the
         // line an operator watching the console will actually see.
         mp_server_log( "hurry lengths refused: manual " + std::to_string( manual_ms ) +
@@ -664,6 +665,13 @@ static void run_server_session( const std::string &world_name, const std::option
         mp_request_session_end( err );
         mp_server_end_session();
         return;
+    }
+    if( lengths_accepted ) {
+        // Opening the world starts the player threads, and the session-start
+        // reset they run restores the shipped defaults. The operator's lengths
+        // belong to the session, not to the turn, so they go back on here, once
+        // the world is up and before any turn can use them.
+        mp_set_hurry_lengths( manual_ms, combat_ms );
     }
     {
         shared_ptr_fast<ui_adaptor> ui = g->create_or_get_main_ui_adaptor();
