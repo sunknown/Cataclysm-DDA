@@ -3473,6 +3473,23 @@ bool game::handle_action()
         mp_request_hurry();
         return false;
     }
+    if( act == ACTION_COOP_AWAY ) {
+        // With one player there is nobody to step away from, and the key has
+        // to stay harmless in a single player session.
+        if( mp_coop_active() ) {
+            const size_t slot = g->active_slot();
+            mp_set_away( slot, !mp_player_is_away( slot ) );
+        }
+        return false;
+    }
+    // Before any game code runs: a turn action is a player back at the
+    // keyboard. An away player who spends the turn without this would park on
+    // an input wait nobody owes -- the barrier satisfied, mp_turn_all_away()
+    // holding the turn open -- and the session would freeze with nothing to
+    // pace it. A timeout is not a keypress, so it does not count.
+    if( mp_coop_active() && act != ACTION_TIMEOUT && !mp_action_is_free( act ) ) {
+        mp_return_from_away( g->active_slot() );
+    }
 #endif
 
     // This has no action unless we're in a special game mode.

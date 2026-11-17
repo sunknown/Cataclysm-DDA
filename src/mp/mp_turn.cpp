@@ -406,6 +406,7 @@ bool mp_action_is_free( const action_id act )
         case ACTION_TOGGLE_AUTOSAFE:
         // The escape hatch itself, and leaving.
         case ACTION_COOP_HURRY:
+        case ACTION_COOP_AWAY:
         case ACTION_SAVE:
             return true;
         default:

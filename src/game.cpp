@@ -2721,6 +2721,7 @@ input_context get_default_mode_input_context()
         // action that is bound but not registered here never reaches it, and
         // the key falls through to whatever else in this context shares it.
         ctxt.register_action( "coop_hurry" );
+        ctxt.register_action( "coop_away" );
 #endif
         ctxt.register_action( "quicksave" );
 #if !defined(RELEASE)

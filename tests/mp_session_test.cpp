@@ -554,4 +554,71 @@ TEST_CASE( "an_away_player_at_an_input_wait_still_gets_the_baton", "[mp]" )
     CHECK( to_turn<int>( calendar::turn ) == turn_before );
 }
 
+TEST_CASE( "the_away_key_toggles_and_a_costly_action_brings_a_player_back", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+
+    harness.press( 0, ':' );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_away( 0 );
+    } ) );
+
+    // Reading is not coming back: a free action must not put a player who is
+    // away back into the barrier, or the partner freezes while they read.
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    } ) );
+    CHECK( mp_player_is_away( 0 ) );
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    } ) );
+    CHECK( mp_player_is_away( 0 ) );
+
+    // A turn action does bring them back.
+    harness.press( 0, '.' );
+    CHECK( harness.run_until( []() {
+        return !mp_player_is_away( 0 );
+    } ) );
+}
+
+TEST_CASE( "the_away_key_does_nothing_without_a_party", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    g->player_at( 0 ).set_moves( 100 );
+    harness.press( 0, ':' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK_FALSE( mp_player_is_away( 0 ) );
+}
+
+TEST_CASE( "a_death_while_away_still_ends_the_session", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    harness.run_until( []() {
+        return false;
+    }, 1 );
+    mp_set_away( 1, true );
+    avatar &dead = g->player_at( 1 );
+    const std::string name = dead.get_name();
+    dead.set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    REQUIRE( dead.is_dead_state() );
+
+    CHECK( g->do_turn() );
+    CHECK( mp_session_end_reason() == name + " died" );
+
+    // Same teardown as a_death_in_a_session_ends_it_and_saves_the_world.
+    get_map() = map();
+    overmap_special_batch empty_specials( point_abs_om{} );
+    overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
+    get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
+    get_avatar().move_to( tripoint_abs_ms::zero );
+}
+
 #endif // MP_SERVER

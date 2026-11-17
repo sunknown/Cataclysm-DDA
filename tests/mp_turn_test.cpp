@@ -351,6 +351,11 @@ TEST_CASE( "menu_actions_are_free_while_waiting_and_costly_ones_are_not", "[mp]"
     CHECK_FALSE( mp_action_is_free( ACTION_PAUSE ) );
 }
 
+TEST_CASE( "the_away_toggle_is_free", "[mp]" )
+{
+    CHECK( mp_action_is_free( ACTION_COOP_AWAY ) );
+}
+
 TEST_CASE( "the_sidebar_says_who_is_being_waited_on", "[mp]" )
 {
     restore_active_state restore;

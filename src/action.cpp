@@ -311,6 +311,8 @@ std::string action_ident( action_id act )
             return "save";
         case ACTION_COOP_HURRY:
             return "coop_hurry";
+        case ACTION_COOP_AWAY:
+            return "coop_away";
         case ACTION_QUICKSAVE:
             return "quicksave";
         case ACTION_QUICKLOAD:

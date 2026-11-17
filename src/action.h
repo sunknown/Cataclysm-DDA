@@ -361,6 +361,9 @@ enum action_id : int {
     /** Ask everyone still thinking to hurry up: starts a visible countdown,
      *  after which the world moves on without them. Co-op only. */
     ACTION_COOP_HURRY,
+    /** Step away from the keyboard: stop being waited on until the next turn
+     *  action. Co-op only, and free -- it is the way back out again. */
+    ACTION_COOP_AWAY,
     /** Not an action, serves as count of enumerated actions */
     NUM_ACTIONS
     /**@}*/
