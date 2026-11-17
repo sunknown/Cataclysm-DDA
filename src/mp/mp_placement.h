@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "coordinates.h"
@@ -23,8 +24,12 @@ class scenario;
 // With `near` set every world step is skipped and the character is placed on a
 // free tile next to that point.
 //
+// Returns an empty string on success, otherwise why the character could not be
+// placed -- "the world could not be built" and "there is no room next to the
+// group" are different refusals and the join menu shows the one that happened.
+//
 // Also what Phase 5 needs for a replacement character after a death.
-bool place_new_character( avatar &ava, std::optional<tripoint_abs_ms> near );
+std::string place_new_character( avatar &ava, std::optional<tripoint_abs_ms> near );
 
 // A free tile as close to `target` as possible: passable, not occupied by any
 // creature or player, and within the tether's soft limit. Returns nullopt when
@@ -52,8 +57,13 @@ std::optional<tripoint_abs_ms> mp_find_free_tile_near( const tripoint_abs_ms &ta
 // `is_new[i]` says whether slot i was created rather than continued. Fills
 // `moved` with the slots that had to be pulled to the anchor, so the caller can
 // tell those players before the session starts.
-bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved,
-                      std::optional<tripoint_abs_ms> world_anchor );
+//
+// Returns an empty string on success, otherwise the refusal to show the
+// players: which character could not be placed and why. Keeping the reason in
+// the return value keeps "the world could not be built" and "no room near the
+// group" from reading as the same failure in the join phase's log and bye.
+std::string mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved,
+                             std::optional<tripoint_abs_ms> world_anchor );
 
 // The scenario every co-op character starts under: one start location, an evac
 // shelter, safe and with floor to spare -- which is what keeps the anchor's spot

@@ -53,3 +53,13 @@ bool mp_save_character_card( const mp_character_card &card )
         jo.end_object();
     }, "multiplayer character card" );
 }
+
+std::string mp_card_save_id_in_world( const std::string &card_save_id,
+                                      const std::string &card_world,
+                                      const std::string &world_name )
+{
+    if( card_save_id.empty() || card_world != world_name ) {
+        return std::string();
+    }
+    return card_save_id;
+}

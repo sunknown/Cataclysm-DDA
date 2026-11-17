@@ -132,7 +132,12 @@ int mp_client_main( const std::string &host_and_port )
     hello.hello.name = MAP_SHARING::getUsername().empty() ? "client" : MAP_SHARING::getUsername();
     // Who we played here last time, if anybody. The server decides what that is
     // worth; an empty or stale card just means being offered a new character.
-    hello.hello.save_id = mp_load_character_card( host_and_port ).save_id;
+    // The world goes with the id because a card is one per server AND world: the
+    // same address may serve another world next time, whose saves can hold a
+    // character of the same name.
+    const mp_character_card card = mp_load_character_card( host_and_port );
+    hello.hello.save_id = card.save_id;
+    hello.hello.world = card.world_name;
     hello.hello.width = term_w;
     hello.hello.height = term_h;
     hello.hello.colors_256 = catacurses::supports_256_colors();
@@ -197,6 +202,16 @@ int mp_client_main( const std::string &host_and_port )
                 break;
             }
         }
+    }
+
+    // The server said why it is leaving, if it said anything. Printing it is
+    // the only place a join-phase refusal (no room for the party, a character
+    // that would not load) reaches the person it is about: the session's last
+    // screen is already drawn, so silence reads as a dropped connection.
+    if( !state.bye_reason.empty() ) {
+        catacurses::endwin();
+        std::cerr << "mp client: the server ended the session: " << state.bye_reason
+                  << std::endl;
     }
 
     return 0;

@@ -23,6 +23,7 @@
 #include "translations.h"
 #include "worldfactory.h"
 #include "mp/mp_context.h"
+#include "mp/mp_character_card.h"
 #include "mp/mp_join_menu.h"
 #include "mp/mp_placement.h"
 #include "mp/mp_protocol.h"
@@ -110,10 +111,13 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
     }
 
     // The world is loaded later by main() from the same cli_opts it handed us;
-    // name it here so an operator can see what the client is about to get. An
-    // empty name means main() will offer the world-selection menu instead.
+    // name it here so an operator can see what the clients are about to get.
+    // An empty name is not a menu and not a choice left to the clients:
+    // run_server_session() refuses to start a session without --world and says
+    // so on this log, after these clients have connected.
     mp_server_log( "listening on port " + std::to_string( port ) + " (world: " +
-                   ( world_name.empty() ? "chosen by the client" : "\"" + world_name + "\"" ) +
+                   ( world_name.empty() ? "none given; --world is required" :
+                     "\"" + world_name + "\"" ) +
                    ", protocol " + std::to_string( MP_PROTOCOL_VERSION ) + ")" );
 
     mp_server_log( "waiting for " + std::to_string( players ) + " client" +
@@ -296,8 +300,12 @@ static bool seat_roster( std::string &err )
     }
 
     std::vector<size_t> moved;
-    if( !mp_place_roster( is_new, moved, world_anchor ) ) {
-        err = "could not find room for everybody near the group";
+    const std::string refusal = mp_place_roster( is_new, moved, world_anchor );
+    if( !refusal.empty() ) {
+        // The phase ends with the refusal itself, so the bye every client gets
+        // names the character and the reason rather than the old catch-all
+        // "could not find room", which also covered a start_game() failure.
+        err = "the party could not be seated: " + refusal;
         return false;
     }
     // Moving somebody's character is said out loud, once per moved character.
@@ -376,22 +384,39 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
         g_join_phase = false;
         return mp_join_progress::failed;
     }
-    // A seat whose wire dropped while its player is still choosing. Its thread
-    // is parked in its menu, which has nothing left to read: mark the seat and
-    // its next input wait answers QUIT, exactly as Escape does, so the thread
-    // exits through the same path a quitter takes. Left unmarked, the menu would
-    // keep asking for input nothing can answer while the world waits for it.
+    // A seat whose wire dropped during the join phase. What has to happen
+    // depends on whether its player had chosen yet:
+    //
+    //  - still choosing: its thread is parked in a menu, which has nothing left
+    //    to read. Mark the seat and its next input wait answers QUIT, exactly
+    //    as Escape does, so the thread exits through the same path a quitter
+    //    takes and the world drops it below when the choice arrives.
+    //  - already chosen: its thread is parked on the baton (there is no menu
+    //    open), so the QUIT answer reaches nobody. Left alone, seat_roster
+    //    would log the dead client as playing and the first turn would end the
+    //    session for everybody; the seat is woken and freed here instead, and
+    //    the players still choosing keep their choices and their screens.
     bool released = false;
+    bool dropped = false;
     for( size_t i = 0; i < g_join_choices.size(); ++i ) {
-        if( g_join_choices[i] ) {
-            continue;
-        }
         const mp_session *const session = mp_session_of_slot( i );
         if( session == nullptr || ( session->transport && session->transport->connected() ) ) {
             continue;
         }
+        if( g_join_choices[i] ) {
+            sched.abandon_seat( i );
+            drop_seat( i );
+            g_join_choices[i].reset();
+            dropped = true;
+            released = true;
+            continue;
+        }
         sched.request_quit( i );
         released = true;
+    }
+    if( dropped ) {
+        // The freed seat is back in "still choosing" on everybody's screen.
+        redraw_waiting_screens();
     }
     bool moved = false;
     std::vector<bool> choosing( g_join_choices.size() );
@@ -479,6 +504,10 @@ void mp_server_seat_client( const size_t slot, std::unique_ptr<mp_session> sessi
     sched->clear_quit( slot );
     mp_server_start_player_thread( slot );
     mp_server_log( "\"" + who + "\" took the free seat" );
+    // The seat is back in the roster, so the players already on the waiting
+    // screen have one more name to wait for. Without this they sit on the list
+    // from before the previous occupant left.
+    redraw_waiting_screens();
 }
 
 // One attempt at offering `slot` to a new connection. Not blocking: the world
@@ -607,8 +636,15 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         mp_assert_holds( slot );
         mp_activate_player( slot );
         const mp_session *const session = mp_session_of_slot( slot );
-        mp_join_choice choice = mp_run_join_menu( session != nullptr ? session->card_save_id :
-                                std::string() );
+        // The card is honoured only in the world it was written in: see
+        // mp_card_save_id_in_world(). A mismatch is not an error -- this client
+        // merely has no character here -- so it is offered creation.
+        const std::string card_save_id = session != nullptr ?
+                                         mp_card_save_id_in_world( session->card_save_id,
+                                                 session->card_world,
+                                                 world_generator->active_world->world_name ) :
+                                         std::string();
+        mp_join_choice choice = mp_run_join_menu( card_save_id );
         if( sched.unwind_if_stopping( slot ) ) {
             return;
         }
@@ -626,6 +662,15 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
     while( true ) {
         sched.wait_for_turn( slot );
         if( sched.unwind_if_stopping( slot ) ) {
+            return;
+        }
+        if( sched.quit_requested( slot ) ) {
+            // This seat was released while it waited for the party to start
+            // (mp_sched::abandon_seat, after the client's wire died): there is
+            // no menu to cancel and no turn to run, and the world is waiting to
+            // join this thread before it offers the seat again. Return without
+            // the baton -- none was handed over -- exactly as the quit path
+            // above does after releasing it.
             return;
         }
         mp_assert_holds( slot );

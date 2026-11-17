@@ -158,6 +158,108 @@ TEST_CASE( "a_client_whose_wire_drops_in_the_join_menu_loses_only_its_seat", "[m
     CHECK_FALSE( g->player_at( 0 ).name.empty() );
 }
 
+TEST_CASE( "a_client_that_drops_inside_the_character_creator_loses_only_its_seat", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+
+    // P0 has chosen and is waiting for P1, who opens the creator and is then
+    // dropped there -- inside the tab loop, not in a menu. That loop has no
+    // menu action to cancel on (a tab with a uilist answers the synthetic QUIT
+    // as a cancel and asks again; a tab without one asks "return to main
+    // menu?", which nothing can answer), so this is the path that used to wedge
+    // the join phase for everybody.
+    harness.choose_random_character( 0 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 0 ), "P1" );
+    }, 60 ) );
+    harness.press( 1, 'r' );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !mp_grid_contains( harness.screen( 1 ), "Join the game" );
+    }, 60 ) );
+
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !harness.seat_occupied( 1 );
+    }, 100 ) );
+    // P0 never went back to its menu and keeps its choice; the seat is free.
+    CHECK( mp_grid_contains( harness.screen( 0 ), "Waiting for the others" ) );
+
+    harness.connect_replacement_client( 1 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 150 ) );
+    CHECK( g->player_slot_count() == 2 );
+    CHECK_FALSE( g->player_at( 0 ).name.empty() );
+    CHECK_FALSE( g->player_at( 1 ).name.empty() );
+}
+
+TEST_CASE( "a_client_that_quits_inside_the_character_creator_frees_its_seat", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+
+    harness.choose_random_character( 0 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 0 ), "P1" );
+    }, 60 ) );
+    harness.press( 1, 'r' );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !mp_grid_contains( harness.screen( 1 ), "Join the game" );
+    }, 60 ) );
+
+    // 27 is the keycode Escape reaches the input layer as; the creator's QUIT
+    // asks whether to return to the main menu, which a person answers Y. Back
+    // in the join menu, the Quit entry frees the seat.
+    harness.press( 1, 27 );
+    harness.press( 1, 'Y' );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "Join the game" );
+    }, 100 ) );
+    harness.quit_join_menu( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !harness.seat_occupied( 1 );
+    }, 100 ) );
+    CHECK( mp_grid_contains( harness.screen( 0 ), "Waiting for the others" ) );
+
+    harness.connect_replacement_client( 1 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 150 ) );
+    CHECK_FALSE( g->player_at( 1 ).name.empty() );
+}
+
+TEST_CASE( "a_client_that_has_chosen_and_then_drops_frees_its_seat", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+
+    // P0 chooses and is parked on the waiting screen, not on its wire, so only
+    // the world's poll can notice the dead transport. Left undetected, the seat
+    // would be logged as playing and the first turn would end the session for
+    // everybody.
+    harness.choose_random_character( 0 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 0 ), "P1" );
+    }, 60 ) );
+    harness.drop_client( 0 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !harness.seat_occupied( 0 );
+    }, 100 ) );
+
+    // The freed seat is taken again and both players choose: the party starts
+    // with two characters, and P1 never left its menu.
+    harness.connect_replacement_client( 0 );
+    harness.choose_random_character( 0 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 150 ) );
+    CHECK( g->player_slot_count() == 2 );
+    CHECK_FALSE( g->player_at( 0 ).name.empty() );
+    CHECK_FALSE( g->player_at( 1 ).name.empty() );
+    CHECK( g->player_at( 0 ).name != g->player_at( 1 ).name );
+}
+
 TEST_CASE( "a_character_pulled_to_the_group_is_announced_once", "[mp]" )
 {
     game_test_helper::reset_player_slots();

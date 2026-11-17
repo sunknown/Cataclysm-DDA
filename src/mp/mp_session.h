@@ -33,8 +33,13 @@ struct mp_session {
     // waiting screen.
     std::string name;
     // The save id from the client's character card, empty when it has none.
-    // Offered back as "continue as" in the join menu when the world has it.
+    // Offered back as "continue as" in the join menu when the world has it AND
+    // the card came from this world -- see card_world.
     std::string card_save_id;
+    // The world the card was written in. A card is one per server AND world:
+    // restarting the same address on a different world can offer a stranger's
+    // character, so mp_card_save_id_in_world() is what the join menu consults.
+    std::string card_world;
     // Index into game::contexts and game::player_slots. The two are parallel,
     // and the session is addressed through this index rather than holding a
     // player_context pointer: player_context ships in every build and must not

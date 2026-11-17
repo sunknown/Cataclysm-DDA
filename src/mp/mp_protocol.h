@@ -39,8 +39,14 @@ struct mp_hello {
     int proto = 0;
     std::string name;
     // The save_id from the client's character card, empty when it has none.
-    // The server looks the character up by it (Phase 3b).
+    // The server looks the character up by it (Phase 3b), but only inside the
+    // world the card was written in: see mp_card_save_id_in_world().
     std::string save_id;
+    // The world that save_id belongs to, from the same card. A card is one per
+    // server AND world, and the same address may serve another world whose
+    // saves hold a character of the same name, so the save id alone is not
+    // enough to say "this is you". Empty when the client has no card.
+    std::string world;
     int width = 0;
     int height = 0;
     bool colors_256 = false;

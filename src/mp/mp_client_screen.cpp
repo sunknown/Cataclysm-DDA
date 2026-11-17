@@ -109,7 +109,8 @@ mp_client_event mp_client_apply_message( const std::vector<uint8_t> &payload,
             return state.accepted ? mp_client_event::none : mp_client_event::rejected;
         case mp_control_kind::bye:
             // The server is closing the session; the caller treats this as the
-            // signal to stop the loop and exit cleanly.
+            // signal to stop the loop and exit cleanly, and shows the reason.
+            state.bye_reason = msg.bye_reason;
             return mp_client_event::closed;
         case mp_control_kind::character_card:
             state.card = msg.character_card;

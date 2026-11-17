@@ -68,8 +68,9 @@ TEST_CASE( "two_placements_in_a_row_do_not_collide", "[coop]" )
     REQUIRE( a.create( character_type::NOW ) );
     REQUIRE( b.create( character_type::NOW ) );
 
-    REQUIRE( place_new_character( a, target ) );
-    REQUIRE( place_new_character( b, target ) );
+    // An empty string is "placed"; a refusal names what went wrong.
+    REQUIRE( place_new_character( a, target ).empty() );
+    REQUIRE( place_new_character( b, target ).empty() );
 
     // The second placement runs while the first avatar already stands on its
     // tile -- and an avatar outside `u` is in no creature cache at all, which
@@ -97,7 +98,7 @@ TEST_CASE( "a_new_character_next_to_an_anchor_gets_its_profession_items", "[coop
     fresh.prof = &profession_id( "unemployed" ).obj();
 
     const time_point turn_before = calendar::turn;
-    REQUIRE( place_new_character( fresh, target ) );
+    REQUIRE( place_new_character( fresh, target ).empty() );
 
     // The personal half of start_game ran...
     CHECK( fresh.getID().is_valid() );
@@ -135,7 +136,7 @@ TEST_CASE( "the_anchor_is_the_first_continuing_slot_not_slot_zero", "[coop]" )
 
     std::vector<bool> is_new = { true, false };
     std::vector<size_t> moved;
-    REQUIRE( mp_place_roster( is_new, moved, std::nullopt ) );
+    REQUIRE( mp_place_roster( is_new, moved, std::nullopt ).empty() );
 
     // The continuing character stayed put; the new one came to it.
     CHECK( continuing.pos_abs() == saved_pos );
@@ -160,7 +161,7 @@ TEST_CASE( "scattered_continuations_are_pulled_to_the_anchor_and_reported", "[co
 
     std::vector<bool> is_new = { false, false };
     std::vector<size_t> moved;
-    REQUIRE( mp_place_roster( is_new, moved, std::nullopt ) );
+    REQUIRE( mp_place_roster( is_new, moved, std::nullopt ).empty() );
 
     CHECK( rl_dist( far_away.pos_abs(), anchor_pos ) <= MP_TETHER_SOFT_LIMIT );
     // Reported, not silent: it is that player's save, and they must be told

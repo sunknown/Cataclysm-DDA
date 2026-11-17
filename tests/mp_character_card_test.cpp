@@ -25,6 +25,19 @@ TEST_CASE( "a_card_survives_a_round_trip", "[mp]" )
     CHECK_FALSE( back.empty() );
 }
 
+TEST_CASE( "a_card_from_another_world_names_nobody_here", "[mp]" )
+{
+    // One card per server AND world. The same address can serve a different
+    // world next time, whose saves may include a character with the same name,
+    // so an id is only honoured in the world the card was written in -- a
+    // mismatch is not an error, the client is simply offered creation.
+    CHECK( mp_card_save_id_in_world( "Ada Lovelace", "Falconer", "Falconer" ) == "Ada Lovelace" );
+    CHECK( mp_card_save_id_in_world( "Ada Lovelace", "Falconer", "Heron" ).empty() );
+    // No card, or a card from before the world travelled with the hello.
+    CHECK( mp_card_save_id_in_world( "", "Falconer", "Falconer" ).empty() );
+    CHECK( mp_card_save_id_in_world( "Ada Lovelace", "", "Falconer" ).empty() );
+}
+
 TEST_CASE( "a_missing_card_reads_as_empty_not_as_an_error", "[mp]" )
 {
     // Being offered character creation is the correct outcome of having no
@@ -48,12 +61,15 @@ TEST_CASE( "the_hello_carries_the_save_id", "[mp]" )
     hello.hello.proto = MP_PROTOCOL_VERSION;
     hello.hello.name = "Ada";
     hello.hello.save_id = "Ada Lovelace";
+    hello.hello.world = "Falconer";
     hello.hello.width = 80;
     hello.hello.height = 24;
 
     mp_control back;
     REQUIRE( mp_control_from_json( mp_control_to_json( hello ), back ) );
     CHECK( back.hello.save_id == "Ada Lovelace" );
+    // The world travels with the id: a card is one per server and world.
+    CHECK( back.hello.world == "Falconer" );
 }
 
 TEST_CASE( "the_character_card_message_round_trips", "[mp]" )

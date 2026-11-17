@@ -145,6 +145,7 @@ std::string mp_control_to_json( const mp_control &msg )
             jo.member( "proto", msg.hello.proto );
             jo.member( "name", msg.hello.name );
             jo.member( "save_id", msg.hello.save_id );
+            jo.member( "world", msg.hello.world );
             jo.member( "w", msg.hello.width );
             jo.member( "h", msg.hello.height );
             jo.member( "c256", msg.hello.colors_256 );
@@ -207,6 +208,7 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 // Optional, so an older client's hello still parses and gets the
                 // protocol-version refusal instead of being dropped unread.
                 msg.hello.save_id = obj.get_string( "save_id", "" );
+                msg.hello.world = obj.get_string( "world", "" );
                 msg.hello.width = obj.get_int( "w" );
                 msg.hello.height = obj.get_int( "h" );
                 msg.hello.colors_256 = obj.get_bool( "c256" );

@@ -366,7 +366,8 @@ cli_opts parse_commandline( int argc, const char **argv )
             },
             {
                 "--username", "<name>",
-                "Instructs map-sharing code to use this name for your character.",
+                "Instructs map-sharing code to use this name for you. In multiplayer it is the "
+                "label your client is announced by; it is not your character's name.",
                 section_map_sharing,
                 1,
                 []( int, const char **params ) -> int {

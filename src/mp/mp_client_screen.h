@@ -40,6 +40,12 @@ struct mp_client_state {
     int cursor_y = 0;
     bool cursor_visible = false;
     std::string reject_reason;
+    // The reason the server gave when it announced the session was over (a
+    // bye). Empty when the wire simply died. Shown to the player: without it
+    // the only thing a bye does is end the loop, which looks like a drop -- and
+    // a join-phase refusal (no room for the party, a character that would not
+    // load) is exactly what a player needs to read.
+    std::string bye_reason;
     bool accepted = false;
     mp_character_card_msg card;
 };

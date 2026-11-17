@@ -155,6 +155,14 @@ mp_join_choice mp_run_join_menu( const std::string &card_save_id )
                 return choice;
             }
             case CONTINUE:
+                // Re-checked after the menu released the baton: the entry was
+                // built from the saves as they were before this player's own
+                // input wait, and a partner may have claimed the same character
+                // in the meantime. Without this, two clients sharing a card can
+                // both continue one save.
+                if( !resume || claimed( resume->decoded_name() ) ) {
+                    continue;
+                }
                 g_claimed.push_back( resume->decoded_name() );
                 choice.decision = mp_join_choice::kind::continued;
                 choice.save = resume;

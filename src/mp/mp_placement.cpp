@@ -68,18 +68,19 @@ std::optional<tripoint_abs_ms> mp_find_free_tile_near( const tripoint_abs_ms &ta
     return std::nullopt;
 }
 
-bool place_new_character( avatar &ava, const std::optional<tripoint_abs_ms> near )
+std::string place_new_character( avatar &ava, const std::optional<tripoint_abs_ms> near )
 {
     if( !near ) {
         // Empty world: this character builds it. start_game() works on `u`.
         cata_assert( &ava == &get_avatar() );
-        return g->start_game();
+        return g->start_game() ? std::string() : "the world could not be built around \"" +
+               ava.name + "\"";
     }
 
     g->prepare_new_character( ava );
     const std::optional<tripoint_abs_ms> spot = mp_find_free_tile_near( *near );
     if( !spot ) {
-        return false;
+        return "no free tile near the group for \"" + ava.name + "\"";
     }
     ava.setpos( *spot );
     // Starting items remember where they spawned; the map needs that to read them.
@@ -89,11 +90,11 @@ bool place_new_character( avatar &ava, const std::optional<tripoint_abs_ms> near
         return VisitResponse::NEXT;
     } );
     g->finish_new_character( ava );
-    return true;
+    return std::string();
 }
 
-bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved,
-                      const std::optional<tripoint_abs_ms> world_anchor )
+std::string mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &moved,
+                             const std::optional<tripoint_abs_ms> world_anchor )
 {
     cata_assert( is_new.size() == g->player_slot_count() );
     moved.clear();
@@ -119,7 +120,8 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
             }
             const std::optional<tripoint_abs_ms> spot = mp_find_free_tile_near( anchor_pos );
             if( !spot ) {
-                return false;
+                return "no free tile near the group to bring \"" +
+                       g->player_at( i ).name + "\" back from the edge of the tether";
             }
             g->player_at( i ).setpos( *spot );
             moved.push_back( i );
@@ -131,8 +133,8 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
     // builds the world and becomes one.
     const bool restore_world = mp_in_world_phase();
     const size_t restore_slot = g->active_slot();
-    bool placed = true;
-    for( size_t i = 0; i < is_new.size() && placed; ++i ) {
+    std::string refusal;
+    for( size_t i = 0; i < is_new.size() && refusal.empty(); ++i ) {
         if( !is_new[i] ) {
             continue;
         }
@@ -141,8 +143,8 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
         if( anchor ) {
             near = g->player_at( *anchor ).pos_abs();
         }
-        placed = place_new_character( g->player_at( i ), near );
-        if( placed && !anchor ) {
+        refusal = place_new_character( g->player_at( i ), near );
+        if( refusal.empty() && !anchor ) {
             anchor = i;
         }
     }
@@ -151,7 +153,7 @@ bool mp_place_roster( const std::vector<bool> &is_new, std::vector<size_t> &move
     } else {
         mp_activate_player( restore_slot );
     }
-    return placed;
+    return refusal;
 }
 
 const scenario *mp_coop_scenario()

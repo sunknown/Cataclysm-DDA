@@ -40,9 +40,15 @@ TEST_CASE( "a_vehicle_seat_resolves_a_passenger_in_another_slot", "[coop][vehicl
     map &here = get_map();
 
     avatar &second = g->add_player_slot();
-    // A bare slot carries character_id(), and an unset id must name nobody --
-    // not the first empty slot. The mission effect talker and the training
-    // actor pass ids they may never have set.
+    // A bare slot carries character_id(), and that must not resolve to the
+    // slot: the mission effect talker and the training actor pass ids they may
+    // never have set. The unset id is deliberately NOT rejected wholesale --
+    // `id == u.getID()` handing back the default avatar is a legacy lookup that
+    // vanilla map-teardown fixtures depend on -- so the active avatar needs a
+    // real id for this check to be about the empty SLOT and nothing else.
+    if( !g->player_at( 0 ).getID().is_valid() ) {
+        g->player_at( 0 ).setID( g->assign_npc_id() );
+    }
     CHECK( g->critter_by_id<Character>( character_id() ) == nullptr );
     // add_player_slot() hands out a bare avatar: no body, no id, at the world
     // origin. Production slot creation (debug_menu::toggle_coop_slot) fills
