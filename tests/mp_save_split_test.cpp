@@ -15,6 +15,7 @@
 #include "game.h"
 #include "game_test_helper.h"
 #include "item.h"
+#include "itype.h"
 #include "json_loader.h"
 #include "map.h"
 #include "map_extras.h"
@@ -23,6 +24,7 @@
 #include "path_info.h"
 #include "safemode_ui.h"
 #include "worldfactory.h"
+#include "zzip.h"
 
 // The save format is the load-bearing change of this phase: a co-op world stops
 // being "one save with extra avatars nested inside" and becomes an ordinary
@@ -208,6 +210,10 @@ TEST_CASE( "each_character_keeps_its_own_per_character_files", "[coop]" )
     mp_ensure_player_context();
     mp_sync_context_count();
 
+    // The cleanup moved the test avatar out; a fresh one avoids serializing a
+    // moved-from character (whose item_locations are null), and a fresh id
+    // avoids Character::setID() refusing to replace the one it had.
+    g->player_at( 0 ) = avatar();
     avatar &alice = g->player_at( 0 );
     alice.name = "Alice";
     alice.set_save_id( "Alice" );

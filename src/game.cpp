@@ -485,6 +485,7 @@ game::game() :
     reset_light_level();
     events().subscribe( &*stats_tracker_ptr );
     events().subscribe( &*kill_tracker_ptr );
+    events().subscribe( &*memorial_logger_ptr );
     events().subscribe( &*achievements_tracker_ptr );
     events().subscribe( &*spell_events_ptr );
     events().subscribe( &*eoc_events_ptr );
@@ -3060,10 +3061,13 @@ memorial_logger &game::memorial()
         return ctx->memorial_state();
     }
     // Before any player context exists (early startup, a test that reset it).
-    // Nobody can act in that state, so the entries that land here are not lost
-    // gameplay -- the alternative is a null log and a crash.
-    static memorial_logger outside_a_game;
-    return outside_a_game;
+    // Nobody can act in that state, but events do run, so the game-owned log is
+    // subscribed in the constructor and catches them. Keeping this member is
+    // also what keeps `game`'s layout as it was: a build that removed it
+    // misread other members (a vanilla NPC fixture crashed in
+    // faction_manager::create_if_needed with a garbage `this`), which is not a
+    // trade a per-seat accessor is worth.
+    return *memorial_logger_ptr;
 }
 
 void game::update_unique_npc_location( const std::string &id, point_abs_om loc )
