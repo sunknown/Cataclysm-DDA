@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "avatar.h"
+#include "debug.h"
 #include "game.h"
 #include "map.h"
 #include "monster.h"
@@ -48,8 +49,20 @@ void ensure_sized()
 // one flag once, and whichever fired first silently turned the other trigger
 // into a no-op (see mp_turn.h for the semantics).
 using hurry_time_point = std::chrono::steady_clock::time_point;
+
+// The range a configured countdown must fall in, in milliseconds. Inclusive.
+// Outside it a value is refused rather than clamped: silently substituting a
+// length for the operator's is a decision they did not make.
+constexpr int MP_HURRY_MIN_MS = 1000;
+constexpr int MP_HURRY_MAX_MS = 600000;
 std::optional<hurry_time_point> g_hurry_manual_started;
 std::optional<hurry_time_point> g_hurry_combat_started;
+
+// How long each countdown runs. The constants above are their defaults; a
+// server operator overrides them for one session through
+// mp_set_hurry_lengths(), and mp_turn_reset_all() puts the defaults back.
+int g_hurry_ms = MP_HURRY_MS;
+int g_hurry_combat_ms = MP_HURRY_COMBAT_MS;
 
 std::optional<hurry_time_point> &started_of( const mp_hurry_source source )
 {
@@ -58,7 +71,7 @@ std::optional<hurry_time_point> &started_of( const mp_hurry_source source )
 
 int length_ms_of( const mp_hurry_source source )
 {
-    return source == mp_hurry_source::manual ? MP_HURRY_MS : MP_HURRY_COMBAT_MS;
+    return source == mp_hurry_source::manual ? g_hurry_ms : g_hurry_combat_ms;
 }
 
 // Milliseconds left on one countdown, or -1 when it is not running.
@@ -214,6 +227,27 @@ void mp_turn_reset_all()
     g_session_end = false;
     g_session_end_reason.clear();
     clear_hurry_countdowns();
+    // The countdown lengths are the operator's, so this is where a configured
+    // session stops and the next one starts from the shipped values.
+    g_hurry_ms = MP_HURRY_MS;
+    g_hurry_combat_ms = MP_HURRY_COMBAT_MS;
+}
+
+bool mp_set_hurry_lengths( const int manual_ms, const int combat_ms )
+{
+    // Both are checked before either is written: a half-applied pair would be
+    // a session nobody asked for.
+    if( manual_ms < MP_HURRY_MIN_MS || manual_ms > MP_HURRY_MAX_MS ||
+        combat_ms < MP_HURRY_MIN_MS || combat_ms > MP_HURRY_MAX_MS ) {
+        DebugLog( D_ERROR, D_MAIN ) << "mp hurry lengths refused: manual "
+                                    << manual_ms << " ms, combat " << combat_ms
+                                    << " ms; both must be within ["
+                                    << MP_HURRY_MIN_MS << ", " << MP_HURRY_MAX_MS << "]";
+        return false;
+    }
+    g_hurry_ms = manual_ms;
+    g_hurry_combat_ms = combat_ms;
+    return true;
 }
 
 bool mp_turn_is_open()
@@ -271,12 +305,12 @@ bool mp_turn_paced()
     const auto age = std::chrono::steady_clock::now() - g_turn_opened_at;
     // A fight is not a fast-forward, whoever is busy.
     if( anyone_is_seen_by_a_hostile() ) {
-        return age < std::chrono::milliseconds( MP_HURRY_COMBAT_MS );
+        return age < std::chrono::milliseconds( g_hurry_combat_ms );
     }
     // A left-behind player is still reading; the floor lasts as long as the
     // countdown that dropped them would have.
     if( anyone_left_behind ) {
-        return age < std::chrono::milliseconds( MP_HURRY_MS );
+        return age < std::chrono::milliseconds( g_hurry_ms );
     }
     return false;
 }

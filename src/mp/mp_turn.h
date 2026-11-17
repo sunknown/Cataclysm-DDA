@@ -71,13 +71,14 @@ bool mp_player_is_away_at_input_wait( size_t slot );
 // barrier: about what paces a turn nobody is playing by hand. A player at the
 // keyboard -- acting, or a left-behind one once they act -- ends it. Otherwise
 // the turn lasts at least as long as the countdown that would have dropped
-// them: MP_HURRY_COMBAT_MS while a hostile can see a player, and MP_HURRY_MS
-// while a left-behind player is still reading. An away player is checked before
-// the left-behind rule and skipped: they asked not to be waited for, so a drop
-// left over from before they went away cannot become a countdown aimed at an
-// empty chair, and their partner's activity pace is not held back by it. With
-// nobody playing by hand and no hostile in sight it ends too: that is the free
-// run the phase exists for.
+// them: the configured combat length (by default MP_HURRY_COMBAT_MS) while a
+// hostile can see a player, and the configured manual length (by default
+// MP_HURRY_MS) while a left-behind player is still reading. An away player is
+// checked before the left-behind rule and skipped: they asked not to be waited
+// for, so a drop left over from before they went away cannot become a countdown
+// aimed at an empty chair, and their partner's activity pace is not held back
+// by it. With nobody playing by hand and no hostile in sight it ends too: that
+// is the free run the phase exists for.
 bool mp_turn_paced();
 
 // Marks `slot` as sitting at an input wait, or no longer sitting at one. Called
@@ -194,6 +195,21 @@ int mp_hurry_remaining_ms();
 // running. For a caller that has to know which trigger is armed: the overload
 // above cannot tell a press from a hostile in view.
 int mp_hurry_remaining_ms( mp_hurry_source source );
+
+// Sets how long both countdowns run for this session, in milliseconds. Called
+// by the server entry point with the values from the command line, before the
+// world is opened.
+//
+// Both lengths are validated together: if either falls outside
+// [1000, 600000] neither is applied, the previous lengths stay in force, and
+// the refusal is logged as an error. The range is not clamped -- substituting
+// a length for the operator's would be a decision they did not make. The
+// session then runs on the defaults; a refused number is not a reason to stop
+// the server.
+//
+// mp_turn_reset_all() restores the defaults; mp_turn_reset() leaves the
+// lengths alone, because they are the operator's, not the turn's.
+bool mp_set_hurry_lengths( int manual_ms, int combat_ms );
 
 // Advances the countdown and, when it expires, drops every holding player from
 // the barrier for this turn. Called once per orchestrator poll.

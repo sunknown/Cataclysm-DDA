@@ -5,6 +5,7 @@
 #include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "calendar.h"
+#include "debug.h"
 #include "display.h"
 #include "game.h"
 #include "game_test_helper.h"
@@ -598,6 +599,44 @@ TEST_CASE( "the_sidebar_names_who_is_away", "[mp]" )
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
     mp_turn_reset_all();
+}
+
+TEST_CASE( "the_hurry_lengths_can_be_set_for_a_session", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    mp_turn_reset_all();
+
+    REQUIRE( mp_set_hurry_lengths( 3000, 1000 ) );
+    mp_request_hurry();
+    const int left = mp_hurry_remaining_ms( mp_hurry_source::manual );
+    CHECK( left > 0 );
+    CHECK( left <= 3000 );
+
+    // The defaults come back with the session reset, not with the turn reset:
+    // the lengths are the operator's, not the turn's.
+    mp_turn_reset_all();
+    mp_request_hurry();
+    CHECK( mp_hurry_remaining_ms( mp_hurry_source::manual ) <= MP_HURRY_MS );
+}
+
+TEST_CASE( "a_nonsense_hurry_length_is_refused", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    mp_turn_reset_all();
+
+    CHECK_FALSE( mp_set_hurry_lengths( 0, 1000 ) );
+    CHECK_FALSE( mp_set_hurry_lengths( 1000, -1 ) );
+    CHECK_FALSE( mp_set_hurry_lengths( 1000, 600001 ) );
+    // Each refusal above logs at D_ERROR on purpose, and the harness fails the
+    // whole run on any observed error (test_main.cpp). Clear the flag so this
+    // test does not fail its own shard.
+    debug_reset_error_observed();
+    mp_request_hurry();
+    CHECK( mp_hurry_remaining_ms( mp_hurry_source::manual ) > 3000 );
 }
 
 #endif // defined(MULTIPLAYER)

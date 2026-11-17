@@ -19,6 +19,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -273,6 +274,10 @@ struct cli_opts {
     int server_port = 0; /** port to listen on as a multiplayer server; 0 disables */
     int players = 1; /** how many clients the multiplayer server waits for before starting */
     std::string connect_to; /** host:port of a multiplayer server to join */
+    // Countdown lengths for this server session, in milliseconds. Empty means
+    // "leave the shipped default in force".
+    std::optional<int> hurry_ms;
+    std::optional<int> hurry_combat_ms;
 };
 
 cli_opts parse_commandline( int argc, const char **argv )
@@ -463,6 +468,30 @@ cli_opts parse_commandline( int argc, const char **argv )
                     result.connect_to = params[0];
                     return 1;
                 }
+            },
+            {
+                "--hurry-ms", "<milliseconds>",
+                "How long, in milliseconds, the party waits for a player who is reading, "
+                "1000-600000",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    // Malformed input lands on zero, which the range check
+                    // refuses rather than hiding in a default.
+                    result.hurry_ms = std::atoi( params[0] );
+                    return 1;
+                }
+            },
+            {
+                "--hurry-combat-ms", "<milliseconds>",
+                "How long, in milliseconds, the party waits for a player who is reading, "
+                "1000-600000",
+                section_default,
+                1,
+                [&result]( int, const char **params ) -> int {
+                    result.hurry_combat_ms = std::atoi( params[0] );
+                    return 1;
+                }
             }
         }
     };
@@ -608,11 +637,25 @@ bool assure_essential_dirs_exist()
 // and every client choosing their survivor in their own join menu. One session,
 // then the process stops -- the roster is fixed, so there is nobody left to
 // play a second one with.
-static void run_server_session( const std::string &world_name )
+static void run_server_session( const std::string &world_name, const std::optional<int> &hurry_ms,
+                                const std::optional<int> &hurry_combat_ms )
 {
     if( world_name.empty() ) {
         mp_server_log( "no world given: start the server with --world <name>" );
         return;
+    }
+    // Before the world: a refused length is the operator's mistake, and the
+    // session should run on the defaults rather than let it surface later.
+    // An unset flag is still at its default here -- nothing has configured a
+    // session yet -- so filling it in is exactly "leave it as it is".
+    const int manual_ms = hurry_ms.value_or( MP_HURRY_MS );
+    const int combat_ms = hurry_combat_ms.value_or( MP_HURRY_COMBAT_MS );
+    if( !mp_set_hurry_lengths( manual_ms, combat_ms ) ) {
+        // The setter already logged the detail to the debug log; this is the
+        // line an operator watching the console will actually see.
+        mp_server_log( "hurry lengths refused: manual " + std::to_string( manual_ms ) +
+                       " ms, combat " + std::to_string( combat_ms ) +
+                       " ms; running on the defaults" );
     }
     std::string err;
     if( !mp_server_open_world( world_name, err ) ) {
@@ -739,7 +782,7 @@ static int run_game( cli_opts &cli )
 
 #if defined(MP_SERVER)
     if( cli.server_port > 0 ) {
-        run_server_session( cli.world );
+        run_server_session( cli.world, cli.hurry_ms, cli.hurry_combat_ms );
         exit_handler( -999 );
         return 0;
     }
