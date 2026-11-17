@@ -19,6 +19,10 @@ namespace
 // what outlives it is spelled out at mp_turn_reset in the header.
 std::vector<bool> g_waiting_for_input;
 std::vector<bool> g_dropped_by_countdown;
+// Players who left the keyboard on purpose (see mp_set_away in the header).
+// Stored, unlike the other states, because nothing in game state separates them
+// from a player sitting at a menu.
+std::vector<bool> g_away;
 // Whether a turn is currently open (see mp_turn_is_open in the header), and
 // since when (see mp_turn_paced).
 bool g_turn_open = false;
@@ -33,6 +37,7 @@ void ensure_sized()
     const size_t n = g->player_slot_count();
     g_waiting_for_input.resize( n, false );
     g_dropped_by_countdown.resize( n, false );
+    g_away.resize( n, false );
 }
 
 // When each countdown started, or nullopt when it is not running. A time point
@@ -96,6 +101,11 @@ bool anyone_is_seen_by_a_hostile()
 mp_player_state mp_player_state_of( const size_t slot )
 {
     ensure_sized();
+    // Checked first: a player who left the keyboard is not holding and not
+    // acting, whatever their moves and activity say.
+    if( slot < g_away.size() && g_away[slot] ) {
+        return mp_player_state::away;
+    }
     if( slot < g_dropped_by_countdown.size() && g_dropped_by_countdown[slot] ) {
         return mp_player_state::not_waited;
     }
@@ -128,7 +138,8 @@ bool mp_barrier_satisfied()
             continue;
         }
         const mp_player_state state = mp_player_state_of( i );
-        if( state != mp_player_state::acted && state != mp_player_state::not_waited ) {
+        if( state != mp_player_state::acted && state != mp_player_state::not_waited &&
+            state != mp_player_state::away ) {
             return false;
         }
     }
@@ -141,6 +152,25 @@ void mp_set_waiting_for_input( const size_t slot, const bool waiting )
     if( slot < g_waiting_for_input.size() ) {
         g_waiting_for_input[slot] = waiting;
     }
+}
+
+void mp_set_away( const size_t slot, const bool away )
+{
+    ensure_sized();
+    if( slot < g_away.size() ) {
+        g_away[slot] = away;
+    }
+}
+
+bool mp_player_is_away( const size_t slot )
+{
+    ensure_sized();
+    return slot < g_away.size() && g_away[slot];
+}
+
+void mp_return_from_away( const size_t slot )
+{
+    mp_set_away( slot, false );
 }
 
 void mp_turn_reset()
@@ -156,6 +186,8 @@ void mp_turn_reset()
             g_dropped_by_countdown[i] = false;
         }
     }
+    // g_away is deliberately untouched: leaving the keyboard is the player's
+    // own decision and lasts until they come back (see the header).
     clear_hurry_countdowns();
 }
 
@@ -163,6 +195,7 @@ void mp_turn_reset_all()
 {
     g_waiting_for_input.assign( g->player_slot_count(), false );
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
+    g_away.assign( g->player_slot_count(), false );
     g_turn_open = false;
     g_session_end = false;
     g_session_end_reason.clear();
@@ -300,11 +333,13 @@ void mp_forfeit_dropped_moves()
 {
     ensure_sized();
     for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-        if( mp_player_state_of( i ) == mp_player_state::not_waited ) {
-            // Standing still is what the drop means. Taken at the end of the
-            // turn rather than at the moment of the drop, because a drop lasts
-            // as long as the player sits in the same menu while every closed
-            // turn hands out another turn's worth of moves.
+        const mp_player_state state = mp_player_state_of( i );
+        if( state == mp_player_state::not_waited || state == mp_player_state::away ) {
+            // Standing still is what the drop means -- and what being away
+            // means, since nobody is there to spend the moves. Taken at the end
+            // of the turn rather than at the moment of the drop, because a drop
+            // lasts as long as the player sits in the same menu while every
+            // closed turn hands out another turn's worth of moves.
             g->player_at( i ).set_moves( 0 );
         }
     }

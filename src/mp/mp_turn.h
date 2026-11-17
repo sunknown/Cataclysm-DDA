@@ -11,10 +11,16 @@ constexpr int MP_HURRY_MS = 15000;
 // A fight is not the moment to read anything.
 constexpr int MP_HURRY_COMBAT_MS = 4000;
 
-// What a player is doing from the turn loop's point of view. Derived from game
-// state on every query rather than stored: two pieces of state that could
-// disagree is exactly the bug the co-op mode fixed once already.
+// What a player is doing from the turn loop's point of view. Almost all of it
+// is derived from game state on every query rather than stored: two pieces of
+// state that could disagree is exactly the bug the co-op mode fixed once
+// already. The one exception is `away`, which no amount of game state can
+// tell apart from a player staring at an open menu.
 enum class mp_player_state {
+    // Voluntarily left the keyboard. Stored, and checked before activity and
+    // moves, so it outranks every other state: a player who is not there
+    // cannot be holding anything.
+    away,
     // Has moves and is currently executing.
     acting,
     // Out of moves, or occupied by something that will spend the turn without
@@ -36,8 +42,9 @@ mp_player_state mp_player_state_of( size_t slot );
 // the sidebar widget so everyone can see who is being waited on.
 bool mp_player_holds_barrier( size_t slot );
 
-// True when the world may tick: every living player has either acted or been
-// dropped from the barrier. The single rule the whole turn model rests on.
+// True when the world may tick: every living player has either acted, been
+// dropped from the barrier, or gone away. The single rule the whole turn model
+// rests on.
 bool mp_barrier_satisfied();
 
 // True for a player a hurry countdown dropped who is still sitting at an input
@@ -61,6 +68,25 @@ bool mp_turn_paced();
 // that is the only place the game can tell "thinking" from "working".
 void mp_set_waiting_for_input( size_t slot, bool waiting );
 
+// Marks `slot` as having left the keyboard on purpose, or brings them back.
+// This is the player's own decision, not a drop imposed by a countdown, so it
+// stops the barrier waiting for them until they say otherwise. Called by
+// whatever handles the away key.
+//
+// Unlike the hurry drop, this outlives mp_turn_reset(): a player who stepped
+// away for one turn is still away on the next one. Only the end of the session
+// (mp_turn_reset_all) clears it.
+void mp_set_away( size_t slot, bool away );
+
+// True while `slot` has been marked away. Read by the barrier rule and by the
+// sidebar widget, which has to show who is not being waited on.
+bool mp_player_is_away( size_t slot );
+
+// Marks `slot` as back at the keyboard. A separate entry point from
+// mp_set_away so that a caller who only has to bring somebody back does not
+// have to reach for the flag itself.
+void mp_return_from_away( size_t slot );
+
 // Clears the per-turn barrier bookkeeping that belongs to a fresh turn: the
 // hurry countdowns (both), and the countdowns' drops -- but only for players who have
 // since left their input wait.
@@ -78,6 +104,11 @@ void mp_set_waiting_for_input( size_t slot, bool waiting );
 // which is the phase gate ("an evening of play") made unplayable by its own
 // safety valve. Once they press a key and act, the input-wait flag clears and
 // they rejoin the barrier on their own.
+//
+// The away flags are not cleared here either, for the same reason the input-wait
+// flags are not: a player who stepped away is still away in the next turn, and
+// clearing a voluntary state once per turn would make the key press expire on
+// its own. Only mp_turn_reset_all() ends it.
 //
 // Called once per opened turn by the orchestrator.
 void mp_turn_reset();
@@ -155,9 +186,10 @@ int mp_hurry_remaining_ms( mp_hurry_source source );
 // on "hurry up" when something is running at them.
 void mp_tick_hurry();
 
-// Spends the turn's moves of every player the world stopped waiting for.
-// Called by the orchestrator once per closed turn, immediately before
-// avatar_turn_post hands moves back.
+// Spends the turn's moves of every player the world stopped waiting for: the
+// ones a countdown dropped, and the ones who went away. Called by the
+// orchestrator once per closed turn, immediately before avatar_turn_post hands
+// moves back.
 //
 // Not an optimisation and not cosmetic: moves accumulate (Character::
 // process_turn does `moves += get_speed()`), and a dropped player never spends
@@ -165,6 +197,8 @@ void mp_tick_hurry();
 // recipe list for a minute comes back holding a minute's worth of moves and
 // takes sixty actions inside one tick, which is both an exploit and exactly
 // what "their character stands still and skips the turn" says does not happen.
+// The same arithmetic hands a player who stepped away for a while a bank of
+// moves to spend the moment they sit down again.
 void mp_forfeit_dropped_moves();
 
 // Whether `act` may be taken by a player who has already acted this turn.
