@@ -85,6 +85,14 @@ place -- quit any running copy first, or the link fails with "Text file busy".
 - `--userdir <path>` -- keep the server's config, saves, and log under this
   directory instead of your normal single-player profile. Recommended, so the
   server does not share options or savegames with your client.
+- `--hurry-ms <ms>` -- how long, in milliseconds, a countdown started by hand
+  lasts before the players who are still reading stop holding the world
+  (default 15000). The accepted range is `[1000, 600000]`; anything else is
+  refused and logged, and the session runs on the defaults -- a bad value is
+  never quietly clamped.
+- `--hurry-combat-ms <ms>` -- the shorter countdown that paces a turn nobody is
+  playing by hand while a hostile can see a player (default 4000). Same range
+  `[1000, 600000]` and the same refusal rule.
 
 The server binds a TCP listener on `<port>`, waits for `<count>` clients, and
 performs a connection handshake with each (protocol version, terminal size,
@@ -271,6 +279,33 @@ If nobody is left playing -- everyone has been dropped this way or is busy with
 a long activity -- the world does not race ahead: it moves one turn per
 countdown length until somebody acts.
 
+### Stepping away
+
+Press **`:`** (the `coop_away` action, "Go without me") when you are leaving
+the keyboard on purpose. Your partner no longer waits for you: the barrier
+treats you like someone who has already acted, and your moves are forfeited
+each turn instead of piling up, so you cannot come back with a minute of banked
+time and take sixty actions in one go. The sidebar shows `away: <name>` next to
+the `waiting:` list, so everyone can see who is not at their screen.
+
+You come back by taking an action that costs a turn, or by pressing `:` again.
+Free actions do not return you -- opening your inventory, the map, the look
+cursor, the message log and the rest of the free actions leave you away; if
+they did, a partner reading a menu would freeze the world, which is the whole
+reason this mode exists.
+
+When every living player is away, the turn stays open and the world stands
+still: the clock does not move around empty chairs. The key is the exit --
+somebody returns, and the world moves on again.
+
+Away is not a fight fast-forward. While a hostile creature can see a player and
+nobody is playing by hand, the turn never closes faster than the combat
+countdown (4 seconds by default), so a partner crafting across the room cannot
+let a monster eat the character who stepped out.
+
+The server never plays for an away player, never closes their menu and never
+brings them back on its own; that is the player's decision alone.
+
 ## Limitations of this first version
 
 - **A fixed roster, and no rejoin.** The server waits for exactly `--players`
@@ -290,7 +325,9 @@ countdown length until somebody acts.
   parked until the next turn and reads no keys, so they cannot press hurry; only
   a player who is still holding the world can. In practice the waiting player
   asks their partner to press it, or waits; danger starts the countdown on its
-  own. Planned for the next phase, together with a "carry on without me".
+  own. A player who knows they will be a while can step away with `:` before
+  they hold the party up (see [Stepping away](#stepping-away)), but the game
+  cannot press that for them either.
 - **The world cannot ask anyone anything.** An NPC who walks up to talk, a
   monster that asks a question, a popup from an effect: these come from the
   world's half of the turn, which has no player to answer, so they get the
