@@ -1,8 +1,9 @@
 # Several characters in one world: what actually breaks
 
 Audit for phase 3b, task 8. The authority is the code in this tree at
-`000066ec4e` (plus the two fixes landed with this report, `f244c4cee2` and
-`51183bcad2`). Every owner below was checked by reading both the writer and the
+`000066ec4e`, plus the three fixes that landed on top of it: `f244c4cee2`,
+`51183bcad2` and `295ad265e7` (a bare player slot is never resolved as a live
+character). Every owner below was checked by reading both the writer and the
 reader of the state, not by grepping for the name once.
 
 ## 1. Where the warning came from
@@ -54,7 +55,11 @@ the state is saved or, for run-time singletons, where it lives.
 | Camps | world/overmap object owned by a faction (`basecamp::owner`, `src/basecamp.h:491`; `overmap.cpp:3914`); known-camp list is per character (`Character::camps`, `src/character.h:2933-2934`, upstream FIXME) | **breaks materially** — deferred |
 | Map memory | per character: `avatar::player_map_memory` (`src/avatar.h:439`), `<world>/<base64(save_id)>.mm1/` (`src/map_memory.cpp:42-44`, `src/game_io.cpp:1077-1080`) | **works** |
 | Diary | per character: `avatar::a_diary` (`src/avatar.h:471`), `<world>/<base64(save_id+"_diary")>.json` (`src/diary.cpp:619-629`, `:673-683`) | **works** |
-| Zones | one global `zone_manager`; the per-character `.zones.json` holds personal zones *and* all `your_followers` zones (`src/clzones.cpp:1896-1918`, `:1941-1975`), but is filled from the shared manager | **breaks materially** — deferred |
+| Zones | per character `<base>.zones.json` (`src/clzones.cpp:1896-1918`), filled from `zone_manager::get_manager()`; personal and `your_followers` zones are both in that file (`:1941-1975`) | **breaks materially** — fixed: one manager per seat |
+| Memorial log | per character `<base>.log`, written from `memorial()` (`src/game_io.cpp:677-706`) and loaded from it (`:505-516`); the object came from one process-wide `get_memorial()` | **breaks materially** — fixed: one log per seat |
+| Auto notes | per character `<base>.ano.json` (`src/auto_note.cpp:33-46`), filled from `get_auto_notes_settings()`; the object was one process-wide static | **breaks materially** — fixed: one set per seat |
+| Auto pickup | per character `<base>.apu.json` (`src/auto_pickup.cpp:890-903`), filled from `get_auto_pickup()`; the object was one process-wide static | **breaks materially** — fixed: one set per seat |
+| Safemode | per character `<base>.sfm.json` (`src/safemode_ui.cpp:778-790`), filled from `get_safemode()`; the object was one process-wide static | **breaks materially** — fixed: one set per seat |
 | NPC followers | `avatar::follower_ids` per avatar (`src/avatar.h:424`, saved at `src/savegame_json.cpp:1633`/`:1724`), ally test is faction-wide (`src/npc.cpp:2692`), follow target is whoever is nearest (`src/npcmove.cpp:912`, `:2365-2370`) | **breaks materially** — deferred |
 | Vehicles | `vpart::passenger_id` is a `character_id` (`src/vehicle.h:537`), saved with the part (`src/savegame_json.cpp:3712`, `:3778`), resolved by `vehicle::get_passenger()` (`src/vehicle.cpp:3682-3688`) | **breaks materially** — fixed here |
 | Achievements & statistics | world singletons on `game` (`src/game.h:1363-1364`, subscribed `src/game.cpp:484-489`), serialized into every character `.sav` (`src/savegame.cpp:144-146`, `:350-351`) | **breaks materially** — deferred |
@@ -189,34 +194,78 @@ name the file `<world>/<base64(save_id + "_diary")>.json`
 the right avatar in `u` before saving, and load activates the slot before
 `u.get_avatar_diary()->load()` (`src/game_io.cpp:496-500`). No sharing.
 
-### Zones — breaks materially, deferred, and worse than a split
+### Memorial, auto notes, auto pickup, safemode — breaks materially, fixed (per seat)
 
-`zone_manager` is a process-wide singleton. On load, `load_zones()`
-(`src/clzones.cpp:1920-1939`, called for **every** character at
-`src/game_io.cpp:532`) replaces the whole vector (`jv.read( zones )` clears,
-`src/clzones.cpp:1781`) with that character's `.zones.json`, then appends the
+All four are per-character files: `<base>.log`, `<base>.ano.json`,
+`<base>.apu.json`, `<base>.sfm.json`. What filled them was not per character:
+`get_memorial()`, `get_auto_notes_settings()`, `get_auto_pickup()` and
+`get_safemode()` all returned one process-wide object, alongside the single
+`zone_manager`. The load loop made the consequence concrete. Every continued
+character is loaded by `load_character()` (`src/game_io.cpp:471-580`), which
+runs `memorial().load()` (`:505-516`, and `load()` clears the log first),
+`get_auto_pickup().load_character()` (`:533`), `get_auto_notes_settings().load( true )`
+(`:534`, which also clears), `get_safemode().load_character()` (`:535`) and
+`zone_manager::get_manager().load_zones()` (`:536`, which replaces the zone
+vector). After two loads the process holds only the second character's state,
+in game and in every file written afterwards: `save_character_data()`
+(`:823-845`) wrote the surviving object into each slot's own file without
+re-reading it, so on the first save of a two-character session each
+character's `.log`, `.zones.json`, `.ano.json`, `.apu.json` and `.sfm.json` became
+the last-loaded character's. Between saves the consequence was not only on disk:
+each player picked up, ignored and safe-moded by somebody else's rules, saw
+another character's personal zones, and had their memorial entries recorded in
+another character's log.
+
+Fixed by owning one of each in `player_context` (`src/mp/mp_context.h`) and
+pointing the five accessors at the active seat
+(`memorial_state()`, `pickup_rules_state()`, `auto_notes_state()`,
+`safemode_state()`, `zones_state()`, `src/mp/mp_context.cpp`). A seat's objects
+are created on first use, so a process that never leaves the world phase pays
+for none of them, and the drain of a dropped seat unsubscribes its memorial
+from the event bus (`event_subscriber`'s destructor). Each seat's memorial is
+subscribed when it is created, because a log that is not subscribed records
+nothing. Cost: three files for the mechanism plus the five owners, an hour
+each; the playtime baseline (`.pt`, below) had to move with it.
+
+The test is `tests/mp_save_split_test.cpp`,
+`each_character_keeps_its_own_per_character_files`: two characters, distinct
+memorial lines, zones, notes, pickup rules and safemode rules, saved through
+`game::save()`, then read back from the world folder file by file (`.sav`,
+`.sav.log`, `.zones.json`, `.ano.json`, `.apu.json`, `.sfm.json`, `.pt`) and
+loaded again with the production loader.
+
+### Zones — breaks materially, fixed (per seat)
+
+`zone_manager` used to be a process-wide singleton. On load, `load_zones()`
+(`src/clzones.cpp:1925-1945`, called for **every** character at
+`src/game_io.cpp:536`) replaces the whole vector (`jv.read( zones )` clears,
+`src/clzones.cpp:1786`) with that character's `.zones.json`, then appends the
 world file's non-`your_followers` zones. After loading two characters the
-manager holds only the last-loaded character's personal and `your_followers`
-zones. On save, `save_character_data()` calls `save_zones()`
-(`src/game_io.cpp:810`) for each slot, but nothing reloads that slot first, so
-**the same manager contents are written into every character's
-`.zones.json`**: slot 0's zone file is overwritten with slot 1's zones (and
-vice versa) on the first save. Personal zones are also re-anchored to
-`get_avatar().pos_abs()` whenever the cache is rebuilt
-(`zone_manager::cache_data()`, `src/clzones.cpp:1003-1017`), so they apply at
-the wrong place for the other character even before saving.
+manager held only the last-loaded character's personal and `your_followers`
+zones. On save, `save_character_data()` called `save_zones()`
+(`src/game_io.cpp:827`) for each slot, but nothing reloaded that slot first, so
+**the same manager contents were written into every character's
+`.zones.json`**: slot 0's zone file was overwritten with slot 1's zones (and
+vice versa) on the first save. Personal zones were also re-anchored to
+`get_avatar().pos_abs()` whenever the cache was rebuilt
+(`zone_manager::cache_data()`), so they applied at the wrong place for the
+other character even before saving.
 
 The brief's candidate `c` (move non-personal `your_followers` zones to the
 world file) does not fix this. It changes where one class of zone is stored
-(a savegame layout change) while the per-slot save still writes the shared
+(a savegame layout change) while the per-slot save still wrote the shared
 manager into each character's file, and it needs legacy migration for old saves
 that hold those zones in the character file. Rejected for this task.
 
-Correct fix: per-slot `load_zones()`/`save_zones()` around the activation swap
-(an mp-aware pair in `game_io.cpp`, or a reload hook in the slot swap), plus
-splitting world-owned faction zones from personal ones in `clzones.cpp`. Three
-files, a save-layout migration, and only testable with a real two-character
-world load; phase 5, estimate 1-1.5 days.
+Fixed by the same per-seat move as the four sidecars above:
+`zone_manager::get_manager()` returns `player_context::zones_state()`
+(`src/clzones.cpp:105-115`), one manager per seat. `save_zones()` now writes the
+active seat's zones because the save loop activates the seat first, and
+`load_zones()` fills only that seat. The world file is unchanged, so old saves
+need no migration, and the "split world-owned faction zones into their own
+file" question is a separate, cosmetic storage choice again. Cost: two files
+(the accessor moved out of line) and the test above, which checks that each
+character's `.zones.json` holds its own personal zone and not its partner's.
 
 ### NPC followers — breaks materially, deferred
 
@@ -291,9 +340,11 @@ per-slot save loop is `src/game_io.cpp:848-856`). Three concrete consequences:
    `game::save_achievements()` `:701-752`), so it is always stamped with slot
    0's name and character id (`:746-751`). Other characters get no export.
 
-The scout's note that events are "unattributed" is wrong: events carry a
-`character` field (`src/event.h:183-190`) and transformations filter on it. The
-break is the shared tracker plus the single `avatar_id` statistic.
+The scout's note that events are "unattributed" is wrong: the generic
+character events carry the acting `character` (`event_spec_character`,
+`src/event.h:183-190`), the kill events carry `killer` explicitly
+(`src/event.h:370-380`), and transformations filter on those fields. The break
+is the shared tracker plus the single `avatar_id` statistic.
 
 A real fix means a tracker per character (or per-character filtering with a
 current-avatar-relative `avatar_id`) plus a savegame change: phase 5, estimate
@@ -320,7 +371,7 @@ no fix warranted.
 |---|---|
 | a) missions resolve the assignee | **landed** (`51183bcad2`), plus effect attribution in `mission_util.cpp` |
 | b) vehicle lookup sees every slot | **landed** (`f244c4cee2`) |
-| c) non-personal `your_followers` zones move to the world file | **not landed**: savegame layout change, needs legacy migration, and does not fix the per-slot clobbering that is the real break; phase 5 |
+| c) non-personal `your_followers` zones move to the world file | **not needed for correctness**: the per-slot clobbering was the real break and is fixed by the per-seat manager (`295ad265e7` wave); moving the storage is now a separate layout choice, phase 5 if ever |
 | d) camp UI derives known camps from the overmap | **not landed**: the UI would list camps the rest of the camp code (takeover counting, NPC orders, camp conditions) still treats as foreign — a cosmetic patch over a per-character knowledge invariant; phase 5 |
 
 ## 5. Tests: what is covered and what needs a human
@@ -331,6 +382,20 @@ confirm it fails there):
 - `tests/coop_vehicle_test.cpp`, tag `[coop][vehicle]`: slot 1's id resolves
   through `critter_by_id<Character>()` and through a real vehicle part's
   `passenger_id`/`passenger_flag`. Without the fix both return `nullptr`.
+- `tests/mp_save_split_test.cpp`, tag `[coop]`:
+  `each_character_keeps_its_own_per_character_files` saves two characters
+  through `game::save()` and reads each character's own `.sav`, `.log`,
+  `.zones.json` and `.ano.json` back from the world folder, then loads both
+  again through `game::load_character()`. `.apu.json` and `.sfm.json` cannot be
+  checked on disk -- their writers refuse to write unless both `<base>.sav` and
+  `<base>.sav.zzip` exist (`src/auto_pickup.cpp:903`,
+  `src/safemode_ui.cpp:787`), so the per-seat pickup and safemode property is
+  asserted in memory.
+- `tests/mp_join_test.cpp`, tag `[mp]` (server build): a client that drops
+  inside the character creator, one that quits there, and one that drops after
+  choosing all cost only their own seat, and the party still starts.
+- `tests/mp_character_card_test.cpp`, tag `[mp]`: a card written in another
+  world names nobody here.
 - `tests/coop_mission_test.cpp`, tag `[coop][mission]`: a `MGOAL_CONDITION`
   mission assigned to slot 1 completes (condition, completed-mission list and
   the `u_add_morale` end effect) when slot 1 carries the item, and stays open
@@ -340,32 +405,47 @@ confirm it fails there):
 
 Not testable under the current rules, and why:
 
-- Zones, camps, NPC followers, faction reputation and achievements all need a
-  live two-character world: files are written and read through
-  `PATH_INFO`/`world_generator`, and the forbidden `game::unserialize` is the
-  only way to stand up two characters with saves in a unit test. A human gate
-  for phase 5 must: load a save with two characters, switch slots, and check
-  that each `.zones.json` still holds its own personal zones after save+load
-  (the current code overwrites both); that the faction UI lists both camps and
-  both can be ordered; that a follower recruited by slot 1 does not abandon it
-  for slot 0; that faction standing changes only for the character who caused
-  it; and that achievements/scores name the right character.
+- Camps, NPC followers, faction reputation and achievements still need a live
+  two-character world: the state is world-level, so the failure is behaviour
+  rather than a file. A human gate for phase 5 must: check that the faction UI
+  lists both camps and both can be ordered; that a follower recruited by slot 1
+  does not abandon it for slot 0; that faction standing changes only for the
+  character who caused it; and that achievements/scores name the right
+  character.
+- Zones, memorial, auto notes, auto pickup, safemode and playtime no longer
+  need a human: `tests/mp_save_split_test.cpp`,
+  `each_character_keeps_its_own_per_character_files`, saves two characters
+  through `game::save()` and reads each character's own files back from the
+  world folder, then loads them through `game::load_character()` -- the
+  production loader, not the forbidden `game::unserialize`.
 - Mission nemesis attribution has no fixture short of spawning an overmap
   nemesis horde; it is documented, not tested.
 
 ## 6. Verification
 
 - `make -j$(nproc) CCACHE=1 TILES=0 TESTS=1` — clean.
-- `tests/cata_test "[mp],[coop]" --rng-seed 1` — all passed (39 cases, 151
-  assertions).
+- `tests/cata_test "[mp],[coop]" --rng-seed 1 --user-dir=<fresh>` — all passed
+  (40 cases, 197 assertions). The ordinary-build half of the wave's tests.
+- `tests/mpserver-cata_test "[mp]" --rng-seed 1 --user-dir=<fresh>` — all passed
+  (165 cases, 4024 assertions), including the three join-phase harness cases
+  added with the seat-release fixes (a client that drops inside the character
+  creator, one that quits there, and one that drops after choosing).
 - `tests/cata_test "[mission]" --rng-seed 1` — all passed (2 cases, 72
   assertions).
 - `tests/cata_test "[vehicle]" --rng-seed 1` — all passed (109 cases, 487871
   assertions).
 - Negative controls: each landed test was run with its fix removed and failed
-  for the expected reason (output recorded in the task report).
+  for the expected reason (output recorded in the task report). For the
+  per-character round trip, putting `get_auto_notes_settings()` and
+  `zone_manager::get_manager()` back to process-wide statics fails exactly the
+  four zone/note file assertions (39/43 when the fix is present).
+- Finding 12's mandatory replay: shard 03 of the phase gate, replayed with
+  `tests/cata_test -f .../fullrun-final/shard-03.txt -d yes --order decl
+  --rng-seed 1` on a clean build — exit 0 and zero
+  `map::unboard_vehicle: vehicle not found` lines, which is base behaviour for
+  the invalid-id lookup the narrowed guard restores.
 - Full sharded suite (`python3 tools/run_tests_parallel.py -j $(nproc)
-  --seed 1`, fresh outdir): 1877 cases, 2 failed. Both failures
+  --seed 1`, fresh outdir) at the time of the first audit: 1877 cases, 2 failed. Both failures
   (`NPC-rules-close-doors` and
   `monster_cant_enter_reality_bubble_because_wall`) are members of the phase's
   known pre-existing order-dependent set (five members, recorded as proven or
