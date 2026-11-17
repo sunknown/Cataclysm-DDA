@@ -3062,11 +3062,14 @@ memorial_logger &game::memorial()
     }
     // Before any player context exists (early startup, a test that reset it).
     // Nobody can act in that state, but events do run, so the game-owned log is
-    // subscribed in the constructor and catches them. Keeping this member is
-    // also what keeps `game`'s layout as it was: a build that removed it
-    // misread other members (a vanilla NPC fixture crashed in
-    // faction_manager::create_if_needed with a garbage `this`), which is not a
-    // trade a per-seat accessor is worth.
+    // subscribed in the constructor and catches them. That is the only reason
+    // the member exists: it is what records events that happen outside any
+    // player context. It is not kept for `game`'s layout -- the same change moved
+    // time_played_at_last_load into player_context, so the layout changed anyway.
+    // Removing the member was a header change whose real effect during the wave
+    // was a stale-object mix-up (a vanilla NPC fixture crashed in
+    // faction_manager::create_if_needed with a garbage `this`), not a layout
+    // requirement.
     return *memorial_logger_ptr;
 }
 
