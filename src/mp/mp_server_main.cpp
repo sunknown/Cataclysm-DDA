@@ -2,6 +2,7 @@
 
 #include "mp/mp_server_main.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "avatar.h"
+#include "cata_assert.h"
 #include "cata_scope_helpers.h"
 #include "debug.h"
 #include "game.h"
@@ -40,7 +42,56 @@
 // returned.
 
 static std::unique_ptr<mp_sched> g_sched;
-static std::vector<std::thread> g_player_threads;
+// One thread per seat, indexed by seat. A seat whose client left during the
+// join phase has its thread joined and the entry cleared, and the replacement
+// client that takes the seat gets a new thread in the same place -- which is
+// why this cannot be a plain vector of threads: the seats are the index, and
+// they outlast the clients in them.
+static std::vector<std::optional<std::thread>> g_player_threads;
+
+// The listener the server was started with, kept for the life of the process.
+// A client that leaves before the party starts frees its seat, and the server
+// listens again rather than shutting down: the roster is fixed at the moment
+// the party starts, not at the moment of the first connection. Nothing here
+// outlives the process, and the socket closes with it.
+static std::optional<mp_listener> g_listener;
+
+// How a connection attempt ended. `no_client` is both "nobody connected within
+// the budget" and "the listener could not accept at all": mp_listener::accept
+// collapses those two, so the only place they can be told apart is the caller
+// that knows whether a timeout was possible. A refused client is not a reason
+// to end a session that is still waiting for its other seats.
+enum class mp_accept_result {
+    seated,
+    rejected,
+    no_client,
+};
+
+// Accepts one connection -- waiting up to `timeout_ms`, a negative value
+// meaning as long as it takes -- and shakes hands with it: the half of a
+// connection that does not depend on which seat it takes. On success `out`
+// holds the session (its seat is the caller's to set) and `why` is empty;
+// otherwise `why` says what happened and the client, if one arrived at all,
+// has been told.
+static mp_accept_result accept_client( const int timeout_ms, std::unique_ptr<mp_session> &out,
+                                       std::string &why )
+{
+    std::shared_ptr<mp_transport> transport = g_listener->accept( timeout_ms );
+    if( !transport ) {
+        why = "accepting a client failed";
+        return mp_accept_result::no_client;
+    }
+    mp_server_log( "connection from " + transport->peer_description() + "; shaking hands" );
+
+    auto session = std::make_unique<mp_session>();
+    session->transport = transport;
+    if( !mp_server_handshake( *transport, *session, why ) ) {
+        why = "handshake rejected: " + why;
+        return mp_accept_result::rejected;
+    }
+    out = std::move( session );
+    return mp_accept_result::seated;
+}
 
 int mp_server_main( const int port, const std::string &world_name, const int players )
 {
@@ -51,8 +102,8 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
     mp_server_log_enable();
 
     std::string err;
-    std::optional<mp_listener> listener = mp_listener::bind( port, err );
-    if( !listener ) {
+    g_listener = mp_listener::bind( port, err );
+    if( !g_listener ) {
         mp_server_log( "cannot listen on port " + std::to_string( port ) + ": " + err );
         DebugLog( D_ERROR, D_MAIN ) << "mp server: cannot listen on port " << port << ": " << err;
         return 1;
@@ -71,20 +122,14 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
         // A server waits for its roster as long as it takes. Connection
         // timeouts and grace periods are Phase 5, together with the rest of
         // the session lifecycle.
-        std::shared_ptr<mp_transport> transport = listener->accept( -1 );
-        if( !transport ) {
-            mp_server_log( "accepting a client failed" );
+        std::unique_ptr<mp_session> session;
+        std::string why;
+        const mp_accept_result result = accept_client( -1, session, why );
+        if( result != mp_accept_result::seated ) {
+            mp_server_log( why );
             return 1;
         }
-        mp_server_log( "connection from " + transport->peer_description() + "; shaking hands" );
-
-        auto session = std::make_unique<mp_session>();
-        session->transport = transport;
-        std::string reject_reason;
-        if( !mp_server_handshake( *transport, *session, reject_reason ) ) {
-            mp_server_log( "handshake rejected: " + reject_reason );
-            return 1;
-        }
+        session->context_index = static_cast<size_t>( joined );
         mp_sessions().push_back( std::move( session ) );
         mp_server_log( std::to_string( joined + 1 ) + " of " + std::to_string( players ) +
                        " connected" );
@@ -105,26 +150,29 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
 static std::vector<std::optional<mp_join_choice>> g_join_choices;
 static std::optional<tripoint_abs_ms> g_join_world_anchor;
 
+// Whether the join phase is running. A dropped wire means two different things
+// either side of this flag: during the phase it costs that one client its seat
+// while the session waits for a replacement, and once the party has started it
+// ends the session for everybody (Phase 5). Set by mp_join_begin(), cleared the
+// moment the poll seats the roster or gives up on it.
+static bool g_join_phase = false;
+
+bool mp_join_in_progress()
+{
+    return g_join_phase;
+}
+
 void mp_join_begin( const size_t players, const std::optional<tripoint_abs_ms> world_anchor )
 {
     g_join_choices.assign( players, std::nullopt );
     g_join_world_anchor = world_anchor;
+    g_join_phase = players > 0;
     mp_join_reset_claims();
-}
-
-static mp_session *session_of_slot( const size_t slot )
-{
-    for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
-        if( session && session->context_index == slot ) {
-            return session.get();
-        }
-    }
-    return nullptr;
 }
 
 static std::string name_of_slot( const size_t slot )
 {
-    const mp_session *const session = session_of_slot( slot );
+    const mp_session *const session = mp_session_of_slot( slot );
     return session != nullptr ? session->name : "player " + std::to_string( slot + 1 );
 }
 
@@ -154,6 +202,19 @@ static void redraw_waiting_screens()
     mp_activate_world();
 }
 
+// Sends one control message to a client. A session whose wire is already gone
+// is not an error here: the message is about to have nobody to read it, which
+// is the normal case for the last words of a client that left.
+static void send_control( mp_session &session, const mp_control &msg )
+{
+    if( !session.transport || !session.transport->connected() ) {
+        return;
+    }
+    const std::string json = mp_control_to_json( msg );
+    session.transport->send( mp_wrap( mp_msg_kind::control,
+                                      std::vector<uint8_t>( json.begin(), json.end() ) ) );
+}
+
 static void send_character_card( mp_session &session, const avatar &ava )
 {
     mp_control msg;
@@ -161,11 +222,7 @@ static void send_character_card( mp_session &session, const avatar &ava )
     msg.character_card.world_name = world_generator->active_world->world_name;
     msg.character_card.save_id = ava.get_save_id();
     msg.character_card.character_name = ava.get_name();
-    const std::string json = mp_control_to_json( msg );
-    if( session.transport ) {
-        session.transport->send( mp_wrap( mp_msg_kind::control,
-                                          std::vector<uint8_t>( json.begin(), json.end() ) ) );
-    }
+    send_control( session, msg );
 }
 
 // The world's most recently written character save: whose game state a session
@@ -264,7 +321,7 @@ static bool seat_roster( std::string &err )
     // The card goes out now, not at session end: it does not change during play,
     // and sending it early means it survives the server crashing.
     for( size_t i = 0; i < players; ++i ) {
-        if( mp_session *const session = session_of_slot( i ) ) {
+        if( mp_session *const session = mp_session_of_slot( i ) ) {
             send_character_card( *session, g->player_at( i ) );
         }
         mp_server_log( "\"" + name_of_slot( i ) + "\" plays \"" + g->player_at( i ).get_name() +
@@ -274,14 +331,67 @@ static bool seat_roster( std::string &err )
     return true;
 }
 
+// Takes `slot`'s client out of the session during the join phase: says goodbye,
+// closes the wire, removes the session from the roster and joins the seat's
+// thread, leaving the seat free for a replacement. Called by the world holding
+// the baton, after that seat's thread has released it for the last time
+// (mp_run_player_thread returns once its menu has answered quit), so the join
+// below cannot park the world.
+//
+// The seat's choice is not touched here: the caller re-arms it, because the
+// other seats' choices must survive. Nothing is wiped wholesale -- a phase-level
+// reset would send the remaining players back to their menus.
+static void drop_seat( const size_t slot )
+{
+    const std::string who = name_of_slot( slot );
+    if( mp_session *const session = mp_session_of_slot( slot ) ) {
+        // The same goodbye the session teardown sends, so a real client shows
+        // why its wire is about to close instead of treating it as a drop.
+        mp_control bye;
+        bye.kind = mp_control_kind::bye;
+        bye.bye_reason = "left the join menu";
+        send_control( *session, bye );
+        if( session->transport ) {
+            session->transport->close();
+        }
+        const auto it = std::find_if( mp_sessions().begin(), mp_sessions().end(),
+        [session]( const std::unique_ptr<mp_session> &s ) {
+            return s.get() == session;
+        } );
+        mp_sessions().erase( it );
+    }
+    mp_server_join_player_thread( slot );
+    mp_server_log( "\"" + who + "\" left the join menu; the seat is free again" );
+}
+
 mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
 {
     err.clear();
     mp_activate_world();
     if( mp_session_end_requested() ) {
-        // A client dropped: its menu got the cancel every wait gives a dead wire.
+        // The whole session is ending -- somebody died or left the game, or the
+        // server could not start. A single client dropping is not this: during
+        // the join phase it costs that client its seat below.
         err = mp_session_end_reason();
+        g_join_phase = false;
         return mp_join_progress::failed;
+    }
+    // A seat whose wire dropped while its player is still choosing. Its thread
+    // is parked in its menu, which has nothing left to read: mark the seat and
+    // its next input wait answers QUIT, exactly as Escape does, so the thread
+    // exits through the same path a quitter takes. Left unmarked, the menu would
+    // keep asking for input nothing can answer while the world waits for it.
+    bool released = false;
+    for( size_t i = 0; i < g_join_choices.size(); ++i ) {
+        if( g_join_choices[i] ) {
+            continue;
+        }
+        const mp_session *const session = mp_session_of_slot( i );
+        if( session == nullptr || ( session->transport && session->transport->connected() ) ) {
+            continue;
+        }
+        sched.request_quit( i );
+        released = true;
     }
     bool moved = false;
     std::vector<bool> choosing( g_join_choices.size() );
@@ -292,13 +402,21 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
         sched.yield_to( mp_sched::world, i );
         mp_activate_world();
         moved = true;
-        if( g_join_choices[i] ) {
-            if( g_join_choices[i]->decision == mp_join_choice::kind::quit ) {
-                err = "\"" + name_of_slot( i ) + "\" left before choosing";
-                return mp_join_progress::failed;
-            }
-            redraw_waiting_screens();
+        if( !g_join_choices[i] ) {
+            continue;
         }
+        if( g_join_choices[i]->decision == mp_join_choice::kind::quit ) {
+            // The party has not started and there is nothing to simulate, so
+            // the session does not end with the client: its seat is freed and
+            // the server waits for a replacement. Everybody else keeps the
+            // choice they made and the screen they are on.
+            drop_seat( i );
+            g_join_choices[i].reset();
+            redraw_waiting_screens();
+            released = true;
+            continue;
+        }
+        redraw_waiting_screens();
     }
     bool anyone_choosing = false;
     for( size_t i = 0; i < g_join_choices.size(); ++i ) {
@@ -306,7 +424,9 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
         anyone_choosing = anyone_choosing || choosing[i];
     }
     if( anyone_choosing ) {
-        if( moved ) {
+        if( moved || released ) {
+            // Something changed hands or a seat is waiting to be picked up by a
+            // client whose QUIT is on its way: do not sleep on it.
             sched.set_world_waiting( false );
         } else {
             // Somebody is reading a menu. Sleep until one of them comes back
@@ -317,7 +437,75 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
         return mp_join_progress::choosing;
     }
     sched.set_world_waiting( false );
-    return seat_roster( err ) ? mp_join_progress::seated : mp_join_progress::failed;
+    if( !seat_roster( err ) ) {
+        g_join_phase = false;
+        return mp_join_progress::failed;
+    }
+    // The party starts here: from this point a client dropping ends the
+    // session, as it always has (Phase 5 makes it survivable).
+    g_join_phase = false;
+    return mp_join_progress::seated;
+}
+
+// The lowest seat with no client in it, or nullopt while every seat is taken.
+// After mp_join_begin the seats are fixed, so this is the whole record of who
+// has left and not yet been replaced.
+static std::optional<size_t> free_seat()
+{
+    for( size_t i = 0; ; ++i ) {
+        if( i >= g_join_choices.size() ) {
+            return std::nullopt;
+        }
+        if( mp_session_of_slot( i ) == nullptr ) {
+            return i;
+        }
+    }
+}
+
+// Puts a connected client in `slot`: into the roster under that seat, and with
+// a thread of its own running that client's join menu. Called by the world
+// holding the baton, when the seat has no thread (it was dropped and joined)
+// and no session.
+void mp_server_seat_client( const size_t slot, std::unique_ptr<mp_session> session )
+{
+    mp_sched *const sched = mp_active_sched();
+    cata_assert( sched != nullptr );
+    cata_assert( mp_session_of_slot( slot ) == nullptr );
+    session->context_index = slot;
+    const std::string who = session->name;
+    mp_sessions().push_back( std::move( session ) );
+    // The seat is the replacement's now: the Quit mark the last occupant left
+    // behind must not cancel its menu before it has drawn one.
+    sched->clear_quit( slot );
+    mp_server_start_player_thread( slot );
+    mp_server_log( "\"" + who + "\" took the free seat" );
+}
+
+// One attempt at offering `slot` to a new connection. Not blocking: the world
+// keeps polling between attempts, so the clients still in their menus are
+// served while a replacement is on its way. There is no timeout to report,
+// because a seat waits for as long as it takes (Phase 5 adds grace periods).
+static void accept_replacement( const size_t slot )
+{
+    std::unique_ptr<mp_session> session;
+    std::string why;
+    switch( accept_client( 0, session, why ) ) {
+        case mp_accept_result::seated:
+            mp_server_seat_client( slot, std::move( session ) );
+            return;
+        case mp_accept_result::rejected:
+            // A stranger whose hello was refused. Say why and keep the seat
+            // free; a bad handshake is not a reason to end a session that is
+            // still waiting for its other seats.
+            mp_server_log( why );
+            return;
+        case mp_accept_result::no_client:
+            // Almost always "nobody has connected yet", since the attempt does
+            // not wait. A listener that has genuinely failed looks the same and
+            // leaves the seat waiting as well; the blocking accepts in
+            // mp_server_main() are where that is reported as fatal.
+            return;
+    }
 }
 
 bool mp_server_open_world( const std::string &world_name, std::string &err )
@@ -366,6 +554,14 @@ bool mp_server_open_world( const std::string &world_name, std::string &err )
     mp_join_begin( mp_sessions().size(), std::nullopt );
     mp_server_start_player_threads();
     while( true ) {
+        // A seat a client left is offered again before anything else: accepting
+        // is the only thing that can fill it, and until it is filled the phase
+        // cannot seat. The attempt itself does not block -- the world keeps
+        // polling, so the other clients' menus are served while a replacement
+        // is on its way.
+        if( const std::optional<size_t> seat = free_seat() ) {
+            accept_replacement( *seat );
+        }
         switch( mp_join_poll( *g_sched, err ) ) {
             case mp_join_progress::choosing:
                 continue;
@@ -410,14 +606,22 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         }
         mp_assert_holds( slot );
         mp_activate_player( slot );
-        const mp_session *const session = session_of_slot( slot );
+        const mp_session *const session = mp_session_of_slot( slot );
         mp_join_choice choice = mp_run_join_menu( session != nullptr ? session->card_save_id :
                                 std::string() );
         if( sched.unwind_if_stopping( slot ) ) {
             return;
         }
+        const bool quit = choice.decision == mp_join_choice::kind::quit;
         g_join_choices[slot] = std::move( choice );
         sched.release_to( slot, mp_sched::world );
+        if( quit ) {
+            // Nothing of this seat is left to run: the world drops the client,
+            // joins this thread and offers the seat again. Returning here --
+            // rather than falling into the turn loop, where the thread would
+            // park on the baton -- is what lets that join complete.
+            return;
+        }
     }
     while( true ) {
         sched.wait_for_turn( slot );
@@ -452,7 +656,7 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
     }
 }
 
-void mp_stop_player_threads( mp_sched *const sched, std::vector<std::thread> &threads )
+void mp_stop_player_threads( mp_sched *const sched )
 {
     // Close the wires FIRST. shut_down() only wakes threads parked on the
     // baton; a player sitting in a menu is parked on recv() with no timeout,
@@ -470,14 +674,12 @@ void mp_stop_player_threads( mp_sched *const sched, std::vector<std::thread> &th
     bye.kind = mp_control_kind::bye;
     bye.bye_reason = mp_session_end_reason().empty() ? std::string( "the session ended" ) :
                      mp_session_end_reason();
-    const std::string bye_json = mp_control_to_json( bye );
     for( std::unique_ptr<mp_session> &session : mp_sessions() ) {
-        if( session && session->transport ) {
-            if( session->transport->connected() ) {
-                session->transport->send( mp_wrap( mp_msg_kind::control,
-                                                   std::vector<uint8_t>( bye_json.begin(), bye_json.end() ) ) );
+        if( session ) {
+            send_control( *session, bye );
+            if( session->transport ) {
+                session->transport->close();
             }
-            session->transport->close();
         }
     }
     // Called from the world, which holds the baton: the precondition
@@ -485,15 +687,38 @@ void mp_stop_player_threads( mp_sched *const sched, std::vector<std::thread> &th
     if( sched ) {
         sched->shut_down();
     }
-    for( std::thread &t : threads ) {
-        t.join();
+    for( std::optional<std::thread> &t : g_player_threads ) {
+        if( t ) {
+            t->join();
+            t.reset();
+        }
     }
-    threads.clear();
+    g_player_threads.clear();
     // The unwinders ran under their own contexts (mp_sched::unwind_if_stopping),
     // and the last one left its slot active, with its avatar swapped into g->u.
     // Nothing runs any more, so put the process back in the world phase before
     // anything the caller does next reads or reshapes the slots.
     mp_activate_world();
+}
+
+void mp_server_start_player_thread( const size_t slot )
+{
+    mp_sched *const sched = mp_active_sched();
+    cata_assert( sched != nullptr );
+    if( g_player_threads.size() <= slot ) {
+        g_player_threads.resize( slot + 1 );
+    }
+    cata_assert( !g_player_threads[slot] );
+    g_player_threads[slot].emplace( mp_run_player_thread, std::ref( *sched ), slot );
+}
+
+void mp_server_join_player_thread( const size_t slot )
+{
+    if( slot >= g_player_threads.size() || !g_player_threads[slot] ) {
+        return;
+    }
+    g_player_threads[slot]->join();
+    g_player_threads[slot].reset();
 }
 
 void mp_server_start_player_threads()
@@ -510,15 +735,16 @@ void mp_server_start_player_threads()
     mp_set_active_sched( g_sched.get() );
     mp_sched_start_watchdog( *g_sched, MP_WATCHDOG_MS );
     for( size_t i = 0; i < mp_sessions().size(); ++i ) {
-        g_player_threads.emplace_back( mp_run_player_thread, std::ref( *g_sched ), i );
+        mp_server_start_player_thread( i );
     }
 }
 
 void mp_server_end_session()
 {
-    mp_stop_player_threads( g_sched.get(), g_player_threads );
+    mp_stop_player_threads( g_sched.get() );
     mp_set_active_sched( nullptr );
     g_sched.reset();
+    g_join_phase = false;
     mp_sessions().clear();
     mp_turn_reset_all();
     // Hand main() back the process it started the session in: player 0's

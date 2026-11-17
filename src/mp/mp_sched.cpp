@@ -21,7 +21,7 @@ std::atomic<mp_sched *> g_active_sched{ nullptr };
 } // namespace
 
 mp_sched::mp_sched( const size_t players ) : players_( players ),
-    waiting_for_baton_( players_, 0 )
+    waiting_for_baton_( players_, 0 ), quit_requested_( players_, 0 )
 {
 }
 
@@ -101,6 +101,28 @@ bool mp_sched::waiting_for_baton( const size_t who ) const
 {
     std::lock_guard<std::mutex> lock( mutex_ );
     return who < waiting_for_baton_.size() && waiting_for_baton_[who] != 0;
+}
+
+void mp_sched::request_quit( const size_t who )
+{
+    // world is not a participant with a menu, and indexing at SIZE_MAX would be
+    // the same silent out-of-bounds write wait_for_turn guards against.
+    cata_assert( who < players_ );
+    std::lock_guard<std::mutex> lock( mutex_ );
+    quit_requested_[who] = 1;
+}
+
+void mp_sched::clear_quit( const size_t who )
+{
+    cata_assert( who < players_ );
+    std::lock_guard<std::mutex> lock( mutex_ );
+    quit_requested_[who] = 0;
+}
+
+bool mp_sched::quit_requested( const size_t who ) const
+{
+    std::lock_guard<std::mutex> lock( mutex_ );
+    return who < quit_requested_.size() && quit_requested_[who] != 0;
 }
 
 bool mp_sched::wait_for_request( const int timeout_ms, const std::vector<bool> &candidates )
@@ -256,7 +278,25 @@ bool mp_sched_stopping()
 bool mp_input_must_not_wait()
 {
     const mp_sched *const sched = mp_active_sched();
-    return sched && ( sched->stopping() || sched->holds( mp_sched::world ) );
+    if( !sched ) {
+        return false;
+    }
+    if( sched->stopping() || sched->holds( mp_sched::world ) ) {
+        return true;
+    }
+    return mp_seat_released();
+}
+
+bool mp_seat_released()
+{
+    const mp_sched *const sched = mp_active_sched();
+    if( !sched || sched->stopping() || sched->holds( mp_sched::world ) ) {
+        return false;
+    }
+    // The remaining case is a player holding the baton in an input wait, so the
+    // holder IS the asker: a seat the join phase released before the party
+    // started cancels its own menu, while the rest of the session carries on.
+    return sched->quit_requested( sched->holder() );
 }
 
 void mp_assert_holds( const size_t who )

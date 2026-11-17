@@ -174,6 +174,34 @@ class mp_session_harness
         // internals, so the path under test is the one a person takes.
         void choose_random_character( size_t slot );
 
+        // Presses the join menu's Quit entry for `slot` -- keystrokes again, so
+        // what happens is whatever the menu and the server do with a real walk
+        // away from the table (the seat is freed and the server waits for a
+        // replacement).
+        void quit_join_menu( size_t slot );
+
+        // Drops `slot`'s wire from the client end, as a client that closed its
+        // terminal or lost its network would. The server sees a dead transport
+        // and nothing else.
+        void drop_client( size_t slot );
+
+        // Whether `slot` has a client on the wire at all. False once it has
+        // been dropped, whether by the server at a quit or from this end.
+        bool client_connected( size_t slot ) const;
+
+        // Whether the server still holds a session for `slot`. False from the
+        // moment the server drops that client until a replacement takes the
+        // seat: the roster entry is what a real server frees, not just the
+        // socket.
+        bool seat_occupied( size_t slot ) const;
+
+        // Seats a replacement client in `slot`, the way a new connection would:
+        // a loopback pair, a session recording the seat, and a fresh player
+        // thread running that client's join menu. The seat must be free -- the
+        // server joins the previous client's thread when it drops it -- and the
+        // count of seats does not change.
+        void connect_replacement_client( size_t slot );
+
         // Whether the join phase is over and everyone has a character placed.
         // Always true in playing mode.
         bool seated() const;
@@ -216,7 +244,10 @@ class mp_session_harness
         std::vector<mp_screen_grid> client_grids_;
         std::vector<mp_client_state> client_states_;
         std::unique_ptr<mp_sched> sched_;
-        std::vector<std::thread> threads_;
+        // How long a loopback wire takes to deliver anything. A replacement
+        // client needs a pair of its own, with the same latency as the first
+        // ones: code that only works at zero round-trip time must fail here too.
+        int latency_ms_ = 0;
         bool seated_ = true;
         // Join mode empties slot 0 for the menu to fill; the test avatar it held
         // is put back afterwards.

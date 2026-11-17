@@ -173,6 +173,12 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         // session through the entry point instead; the game itself never sees
         // the transport. This is the one place the backend learns about the
         // wire, and it is deliberately the mp layer, not game logic.
+        //
+        // Except during the join phase: the roster is not fixed until the party
+        // starts, so a client that drops there costs only its own seat (the
+        // world frees it and waits for a replacement), and ending the session
+        // for the others would contradict that. Its own menu is told to cancel
+        // by the world, through the scheduler's per-seat quit mark.
         // Once is enough. Every remaining trip round this loop (there can be
         // many -- a menu several frames up keeps asking for its next keystroke)
         // would otherwise re-detect the same disconnect, re-log it and
@@ -180,8 +186,8 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         // without end. Two things say it has already been handled: the end is
         // requested and the world has not acted on it yet, or teardown is
         // already under way.
-        if( !mp_server_peer_connected() && !mp_session_end_requested() &&
-            !mp_sched_stopping() ) {
+        if( !mp_server_peer_connected() && !mp_join_in_progress() &&
+            !mp_session_end_requested() && !mp_sched_stopping() ) {
             // The stop itself is announced by exit_handler(), which also covers
             // the sessions that end without a disconnect.
             std::string who = "a client";

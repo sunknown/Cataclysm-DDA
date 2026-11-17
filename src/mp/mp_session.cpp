@@ -14,6 +14,16 @@ std::vector<std::unique_ptr<mp_session>> &mp_sessions()
     return g_sessions;
 }
 
+mp_session *mp_session_of_slot( const size_t slot )
+{
+    for( const std::unique_ptr<mp_session> &session : g_sessions ) {
+        if( session && session->context_index == slot ) {
+            return session.get();
+        }
+    }
+    return nullptr;
+}
+
 mp_session *mp_active_session()
 {
     if( mp_in_world_phase() ) {
@@ -26,12 +36,7 @@ mp_session *mp_active_session()
     if( ctx == nullptr ) {
         return nullptr;
     }
-    for( const std::unique_ptr<mp_session> &s : g_sessions ) {
-        if( s && s->context_index == ctx->slot_index ) {
-            return s.get();
-        }
-    }
-    return nullptr;
+    return mp_session_of_slot( ctx->slot_index );
 }
 
 void mp_sessions_reset_for_test()

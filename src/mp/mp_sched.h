@@ -160,6 +160,22 @@ class mp_sched
         // an input wait is NOT waiting for the baton and reports false.
         bool waiting_for_baton( size_t who ) const;
 
+        // The join phase's per-seat counterpart of shut_down(): one participant
+        // leaving while the session goes on. A client that quits before the
+        // party starts (its menu's Quit, Escape, or a dropped wire) frees its
+        // seat, and its thread still has a menu open: it has to unwind that
+        // menu without the rest of the session ending, because every other
+        // participant keeps waiting for its replacement.
+        //
+        // Marked by the world, and readable by the participant itself through
+        // mp_input_must_not_wait(): the marked seat -- and only it -- answers
+        // QUIT to its next input wait, which is the same unwind Escape takes.
+        // Cleared when the seat is taken again, so a replacement client's menu
+        // behaves like a first one.
+        void request_quit( size_t who );
+        void clear_quit( size_t who );
+        bool quit_requested( size_t who ) const;
+
         // Blocks the world participant until one of the players named in
         // `candidates` (indexed by slot) is parked waiting for the baton, or
         // until `timeout_ms` passes, or until shut_down(). Returns true when a
@@ -211,6 +227,11 @@ class mp_sched
         // participant has no entry: it never waits for the baton, it waits for
         // somebody to ask for it (wait_for_request).
         std::vector<char> waiting_for_baton_;
+        // Per-participant "your seat was released during the join phase" flag,
+        // indexed the same way. Set and cleared only by the world, read by the
+        // participant itself through mp_input_must_not_wait(); see
+        // request_quit().
+        std::vector<char> quit_requested_;
         // Holder of the unwind right (see unwind_if_stopping), or
         // mp_sched::world while nobody holds it, and the thread that took it.
         // The thread id is only there to catch a re-entry naming a slot that
@@ -268,14 +289,23 @@ void mp_assert_holds( size_t who );
 bool mp_sched_stopping();
 
 // Whether whoever is asking for input right now must get an answer at once
-// instead of a wait: the session is shutting down, or the world is asking --
+// instead of a wait: the session is shutting down, the join phase released the
+// asker's own seat (see mp_sched::request_quit), or the world is asking --
 // it holds the baton, so the asker is the world thread: an NPC opening a
 // conversation or a monster's question in the world's half of the turn, an
 // effect's popup in a player's upkeep (avatar_turn_post runs on the world
 // thread under that player's context). The world has no player of its own,
-// and waiting on any one player would ask them for the baton the asker holds. Both get a timeout from the backend,
-// which handle_input() turns into QUIT: every menu's cancel.
+// and waiting on any one player would ask them for the baton the asker holds.
+// Both get a timeout from the backend, which handle_input() turns into QUIT:
+// every menu's cancel.
 bool mp_input_must_not_wait();
+
+// Whether the baton holder's seat was released during the join phase, so that
+// its menu has to close the way Escape closes it. A subset of
+// mp_input_must_not_wait() -- the part that is about this participant leaving
+// rather than the session ending -- for the menus that distinguish the two: a
+// seat released this way must cancel even when the session is not stopping.
+bool mp_seat_released();
 
 // Starts the watchdog thread owned by `sched`. It logs the current holder
 // whenever the baton has not moved for longer than `threshold_ms`, then keeps

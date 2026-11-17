@@ -69,6 +69,7 @@ mp_server_startup_for_test::~mp_server_startup_for_test()
 mp_session_harness::mp_session_harness( const size_t players, const int latency_ms,
                                         const mp_harness_mode mode )
 {
+    latency_ms_ = latency_ms;
     mp_ensure_player_context();
     clear_avatar();
     build_test_map( ter_id( "t_pavement" ) );
@@ -159,11 +160,13 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
 
     sched_ = std::make_unique<mp_sched>( players );
     mp_set_active_sched( sched_.get() );
-    // The same thread body and watchdog the server raises
-    // (mp_server_start_player_threads), not a copy of them that can drift.
+    // The same thread body, per-seat lifecycle and watchdog the server raises
+    // (mp_server_start_player_threads), not copies of them that can drift: the
+    // harness has to be able to drop a seat and take a replacement in it exactly
+    // as the server does.
     mp_sched_start_watchdog( *sched_, MP_WATCHDOG_MS );
     for( size_t i = 0; i < players; ++i ) {
-        threads_.emplace_back( mp_run_player_thread, std::ref( *sched_ ), i );
+        mp_server_start_player_thread( i );
     }
 }
 
@@ -172,7 +175,7 @@ mp_session_harness::~mp_session_harness()
     // The server's own teardown: wires first, then the shutdown, then the
     // joins, ending in the world phase. Most harness tests end with a player
     // in a menu, which is the case that ordering exists for.
-    mp_stop_player_threads( sched_.get(), threads_ );
+    mp_stop_player_threads( sched_.get() );
     mp_set_active_sched( nullptr );
     mp_sessions_reset_for_test();
     mp_join_begin( 0, std::nullopt );
@@ -228,6 +231,52 @@ void mp_session_harness::choose_random_character( const size_t slot )
     press( slot, 'r' );
     press( slot, '\t' );
     press( slot, 'Y' );
+}
+
+void mp_session_harness::quit_join_menu( const size_t slot )
+{
+    // The Quit entry's hotkey, which is the key a person presses.
+    press( slot, 'q' );
+}
+
+void mp_session_harness::drop_client( const size_t slot )
+{
+    // Closing this end of the loopback pair closes the other end too, so the
+    // server's session sees exactly what a client process dying leaves behind:
+    // a transport that reports itself disconnected.
+    client_wires_[slot]->close();
+}
+
+bool mp_session_harness::client_connected( const size_t slot ) const
+{
+    return slot < client_wires_.size() && client_wires_[slot] &&
+           client_wires_[slot]->connected();
+}
+
+bool mp_session_harness::seat_occupied( const size_t slot ) const
+{
+    return mp_session_of_slot( slot ) != nullptr;
+}
+
+void mp_session_harness::connect_replacement_client( const size_t slot )
+{
+    // The seat is free and its thread is already joined: the world did both
+    // before it stopped polling. What is left is what a new connection does.
+    cata_assert( !seat_occupied( slot ) );
+    cata_assert( !client_connected( slot ) );
+    mp_loopback_pair wire = mp_make_loopback_pair( latency_ms_ );
+    auto session = std::make_unique<mp_session>();
+    session->transport = wire.a;
+    // Name and grid as the constructor sets them, so this client is
+    // indistinguishable from a first connection wherever the session reads it.
+    session->name = "P" + std::to_string( slot );
+    session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    client_wires_[slot] = wire.b;
+    client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    client_states_[slot] = mp_client_state();
+    // The server's own seat path: roster entry, cleared quit mark, new thread
+    // running this client's join menu.
+    mp_server_seat_client( slot, std::move( session ) );
 }
 
 bool mp_session_harness::seated() const

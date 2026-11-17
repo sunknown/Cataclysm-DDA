@@ -45,6 +45,13 @@ struct mp_session {
 // The sessions of the running server, indexed the same way as game::contexts.
 std::vector<std::unique_ptr<mp_session>> &mp_sessions();
 
+// The session seated in `slot`, or nullptr when that seat is empty: before a
+// client has connected, during the world phase (no player is active), and after
+// a client left the join phase until its replacement takes the seat. This is
+// the only way to address a session by seat: the vector is in connection order,
+// not seat order, once a replacement has arrived.
+mp_session *mp_session_of_slot( size_t slot );
+
 // The session of the player whose context is active, or nullptr during the
 // world phase (when no player is active) and in tests without a session.
 mp_session *mp_active_session();

@@ -79,6 +79,85 @@ TEST_CASE( "a_client_that_has_chosen_sees_the_waiting_screen", "[mp]" )
     CHECK( mp_grid_contains( harness.screen( 0 ), "P1" ) );
 }
 
+TEST_CASE( "a_client_that_quits_the_join_menu_frees_its_seat", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+
+    // P0 has chosen and is waiting for P1, who is still reading its menu.
+    harness.choose_random_character( 0 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 0 ), "P1" );
+    }, 60 ) );
+
+    harness.quit_join_menu( 1 );
+    // The quitter is gone: its wire is closed, its session is out of the
+    // roster, and P0 is still on its waiting screen with its choice intact.
+    REQUIRE( harness.run_until( [&harness]() {
+        return !harness.client_connected( 1 ) && !harness.seat_occupied( 1 );
+    }, 100 ) );
+    CHECK( mp_grid_contains( harness.screen( 0 ), "Waiting for the others" ) );
+
+    // A third client takes the same seat and runs its own join menu.
+    harness.connect_replacement_client( 1 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 100 ) );
+
+    // The party starts with exactly the two characters this session chose: P0
+    // was never sent back to its menu, and the quitter's seat was filled.
+    CHECK( g->player_slot_count() == 2 );
+    CHECK_FALSE( g->player_at( 0 ).name.empty() );
+    CHECK_FALSE( g->player_at( 1 ).name.empty() );
+    CHECK( g->player_at( 0 ).name != g->player_at( 1 ).name );
+}
+
+TEST_CASE( "the_server_keeps_listening_after_everybody_quits_the_join_menu", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+
+    harness.quit_join_menu( 0 );
+    harness.quit_join_menu( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !harness.seat_occupied( 0 ) && !harness.seat_occupied( 1 );
+    }, 100 ) );
+
+    // The session did not end with the last client: the world is still loaded,
+    // the two seats are still there, and both can be taken again.
+    harness.connect_replacement_client( 0 );
+    harness.connect_replacement_client( 1 );
+    harness.choose_random_character( 0 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 100 ) );
+    CHECK( g->player_slot_count() == 2 );
+}
+
+TEST_CASE( "a_client_whose_wire_drops_in_the_join_menu_loses_only_its_seat", "[mp]" )
+{
+    mp_session_harness harness( 2, /*latency_ms=*/5, mp_harness_mode::join );
+
+    harness.choose_random_character( 0 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 0 ), "P1" );
+    }, 60 ) );
+
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return !harness.seat_occupied( 1 );
+    }, 100 ) );
+    // Dropping a wire is leaving, not an error: the other client keeps both its
+    // choice and its screen, and the seat can be taken again.
+    CHECK( mp_grid_contains( harness.screen( 0 ), "Waiting for the others" ) );
+    harness.connect_replacement_client( 1 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 100 ) );
+    CHECK_FALSE( g->player_at( 0 ).name.empty() );
+}
+
 TEST_CASE( "a_character_pulled_to_the_group_is_announced_once", "[mp]" )
 {
     game_test_helper::reset_player_slots();
