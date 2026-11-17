@@ -484,8 +484,8 @@ cli_opts parse_commandline( int argc, const char **argv )
             },
             {
                 "--hurry-combat-ms", "<milliseconds>",
-                "How long, in milliseconds, the party waits for a player who is reading, "
-                "1000-600000",
+                "Floor, in milliseconds, for a turn while a hostile can see a player and nobody "
+                "is playing by hand (default 4000), 1000-600000",
                 section_default,
                 1,
                 [&result]( int, const char **params ) -> int {

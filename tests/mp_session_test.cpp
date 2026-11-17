@@ -514,6 +514,35 @@ TEST_CASE( "two_busy_players_do_not_hold_the_world", "[mp]" )
     }, 400 ) );
 }
 
+TEST_CASE( "an_away_player_carrying_an_activity_can_still_come_back", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // A long activity spends the player's moves before game::player_act()
+    // reaches its input wait, so neither player sets the input-wait flag on
+    // its own. Mark both away through the same state the ':' key sets; then
+    // give their activities a turn to drain.
+    for( size_t i = 0; i < 2; ++i ) {
+        g->player_at( i ).assign_activity( wait_activity_actor( 10_minutes ) );
+        mp_set_away( i, true );
+    }
+    harness.run_until( []() { return false; }, 3 );
+
+    const int turn_before = to_turn<int>( calendar::turn );
+    // Every living player is away: the turn stays open and the world stands
+    // still, although neither player has got to an input wait of their own.
+    CHECK_FALSE( harness.run_until( []() { return false; }, 10 ) );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before );
+
+    // ':' is the documented way back. The key is read on this player's own
+    // input loop, and the world must move again once they return.
+    harness.press( 0, ':' );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    }, 20 ) );
+}
+
 TEST_CASE( "an_away_player_at_an_input_wait_still_gets_the_baton", "[mp]" )
 {
     restore_active_state restore;
@@ -565,6 +594,16 @@ TEST_CASE( "the_away_key_toggles_and_a_costly_action_brings_a_player_back", "[mp
         return mp_player_is_away( 0 );
     } ) );
 
+    // The key is a toggle: a second press brings the player back, and a third
+    // sends them away again. Both must work before any costly action is taken.
+    harness.press( 0, ':' );
+    REQUIRE( harness.run_until( []() {
+        return !mp_player_is_away( 0 );
+    } ) );
+    harness.press( 0, ':' );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_away( 0 );
+    } ) );
     // Reading is not coming back: a free action must not put a player who is
     // away back into the barrier, or the partner freezes while they read.
     harness.press( 0, mp_menu_inventory.key );

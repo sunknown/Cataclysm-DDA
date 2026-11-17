@@ -618,7 +618,9 @@ TEST_CASE( "the_hurry_lengths_can_be_set_for_a_session", "[mp]" )
     // the lengths are the operator's, not the turn's.
     mp_turn_reset_all();
     mp_request_hurry();
-    CHECK( mp_hurry_remaining_ms( mp_hurry_source::manual ) <= MP_HURRY_MS );
+    const int reset_left = mp_hurry_remaining_ms( mp_hurry_source::manual );
+    CHECK( reset_left > 3000 );
+    CHECK( reset_left <= MP_HURRY_MS );
 }
 
 TEST_CASE( "a_nonsense_hurry_length_is_refused", "[mp]" )

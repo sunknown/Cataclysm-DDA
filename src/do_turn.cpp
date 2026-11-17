@@ -654,16 +654,31 @@ bool game::player_act( avatar &ava )
             // We only want this to happen if the player had a chance to examine the sounds.
             sounds::reset_markers();
         } else {
-            // Rate limit key polling to 10 times a second. The timestamp lives in
-            // this player's context (player_context::last_key_poll) rather than a
-            // function-local static: see that field's comment for why a shared
-            // static was wrong once every player got their own context.
-            auto &start = mp_active_context().last_key_poll;
-            const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now() );
-            if( ( now - start ).count() > 100 ) {
-                handle_key_blocking_activity();
-                start = now;
+            // An activity drains a player's moves before this branch is
+            // reached, so the normal input wait never runs for them. An away
+            // player still has to be able to press ':' to come back: routing
+            // their key through handle_action() parks them on their own wire
+            // with the input-wait flag set, which is what lets the turn loop
+            // hand the baton back and dispatch the key. The activity poll
+            // below would swallow ':' without acting on it and leave the key
+            // unread while the all-away hold kept the turn open for ever.
+#if defined( MULTIPLAYER )
+            if( mp_player_is_away( g->active_slot() ) ) {
+                handle_action();
+            } else
+#endif
+            {
+                // Rate limit key polling to 10 times a second. The timestamp
+                // lives in this player's context (last_key_poll) rather than
+                // a function-local static: a shared static was wrong once
+                // every player got their own context.
+                auto &start = mp_active_context().last_key_poll;
+                const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() );
+                if( ( now - start ).count() > 100 ) {
+                    handle_key_blocking_activity();
+                    start = now;
+                }
             }
 
             mon_info_update();
