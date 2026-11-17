@@ -314,7 +314,22 @@ void mp_sync_context_count()
         // from toggle_coop_slot(), debug_menu.cpp) would leave owner dangling;
         // state the invariant here, loudly and locally, rather than let it
         // manifest later as a dangling-pointer read inside ~ui_adaptor().
-        cata_assert( g->contexts.back().ui_stack.empty() );
+        //
+        // One adaptor is the context's own, though: the activity progress
+        // popup it holds. A session can end while an activity is still running
+        // -- a player waiting out ten minutes, a server shut down mid-craft --
+        // and the context owns that popup, so it can drop it safely here. Any
+        // other adaptor (a menu open on a thread that did not unwind) still
+        // trips the assertion below.
+        //
+        // ~ui_adaptor requires its owner stack to be the active one, so point
+        // the stack at this context for the drop. The pointer is re-pointed to
+        // a surviving context at the end of this function, before anything can
+        // use it again.
+        player_context &dying = g->contexts.back();
+        ui_manager::set_active_stack( &dying.ui_stack );
+        dying.wait_popup.reset();
+        cata_assert( dying.ui_stack.empty() );
         g->contexts.pop_back();
     }
     mp_activate_player( active < want ? active : 0 );
