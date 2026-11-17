@@ -286,7 +286,9 @@ the keyboard on purpose. Your partner no longer waits for you: the barrier
 treats you like someone who has already acted, and your moves are forfeited
 each turn instead of piling up, so you cannot come back with a minute of banked
 time and take sixty actions in one go. The sidebar shows `away: <name>` next to
-the `waiting:` list, so everyone can see who is not at their screen.
+the `waiting:` list, so everyone can see who is not at their screen. With no
+party formed -- a single server slot -- the key does nothing: there is nobody
+to step away from.
 
 You come back by taking an action that costs a turn, or by pressing `:` again.
 Free actions do not return you -- opening your inventory, the map, the look
