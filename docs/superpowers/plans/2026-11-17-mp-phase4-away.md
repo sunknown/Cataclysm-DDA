@@ -348,7 +348,9 @@ Expected: FAIL — `mp_turn_all_away` не существует; «все ушл
 // A player at the keyboard is the clock: their actions pace the world, and
 // nothing here needs a floor.
 bool anyone_left_behind = false;
-for( each living slot ) {
+for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+    avatar &ava = g->player_at( i );
+    if( ava.is_dead_state() )       { continue; }
     if( mp_player_left_behind( i ) ) { anyone_left_behind = true; continue; }
     if( mp_player_is_away( i ) )    { continue; }
     if( !ava.activity && !ava.has_distant_destination() ) return false;
@@ -420,14 +422,14 @@ TEST_CASE( "the_away_key_toggles_and_a_costly_action_brings_a_player_back", "[mp
 
     // Reading is not coming back: a free action must not put a player who is
     // away back into the barrier, or the partner freezes while they read.
-    harness.press( 0, 'i' );
+    harness.press( 0, mp_menu_inventory.key );
     REQUIRE( harness.run_until( [&]() {
-        return mp_grid_contains( harness.screen( 0 ), "Inventory" );
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
     } ) );
     CHECK( mp_player_is_away( 0 ) );
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
-        return !mp_grid_contains( harness.screen( 0 ), "Inventory" );
+        return !mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
     } ) );
     CHECK( mp_player_is_away( 0 ) );
 
@@ -652,7 +654,7 @@ Expected: ошибка компиляции на `mp_set_hurry_lengths`.
 
 - [ ] **Step 3: Реализовать**
 
-- `mp_turn.cpp`: `int g_hurry_ms = MP_HURRY_MS; int g_hurry_combat_ms = MP_HURRY_COMBAT_MS;`, `length_ms_of( source )` читает их вместо констант; `mp_set_hurry_lengths()` с проверкой диапазона; `mp_turn_reset_all()` возвращает значения по умолчанию.
+- `mp_turn.cpp`: `int g_hurry_ms = MP_HURRY_MS; int g_hurry_combat_ms = MP_HURRY_COMBAT_MS;`, `length_ms_of( source )` **и** `mp_turn_paced()` (два её читателя из задачи 2) читают их вместо констант, сами константы остаются значениями по умолчанию; `mp_set_hurry_lengths()` с проверкой диапазона; `mp_turn_reset_all()` возвращает значения по умолчанию.
 - `main.cpp`: в `cli_opts` — `std::optional<int> hurry_ms; std::optional<int> hurry_combat_ms;`; флаги `--hurry-ms` и `--hurry-combat-ms` в общий список (описание: «How long, in milliseconds, the party waits for a player who is reading, 1000-600000»); `run_server_session` получает эти два значения и сразу после `mp_server_open_world()` зовёт `mp_set_hurry_lengths()`, логируя отказ в `mp_server_log()`.
 - Значения по умолчанию не передаются: `std::nullopt` значит «оставить как есть».
 
