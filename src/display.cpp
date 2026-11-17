@@ -1354,14 +1354,26 @@ std::string display::coop_player_text( const Character &u )
             waiting += ( waiting.empty() ? std::string() : ", " ) + g->player_at( i ).name;
         }
     }
+    // Who has stepped away is reported separately: the barrier never waits on
+    // them, but their absence is why the turn is still open. Dead slots are
+    // skipped, as they are everywhere else.
+    std::string away;
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( g->player_at( i ).is_dead_state() || !mp_player_is_away( i ) ) {
+            continue;
+        }
+        away += ( away.empty() ? std::string() : ", " ) + g->player_at( i ).name;
+    }
+    const std::string away_suffix = away.empty() ? std::string() :
+                                    string_format( _( " — away: %s" ), away );
     if( waiting.empty() ) {
-        return string_format( _( "P%d: %s" ), g->active_slot() + 1, u.get_name() );
+        return string_format( _( "P%d: %s" ), g->active_slot() + 1, u.get_name() ) + away_suffix;
     }
     const int left = mp_hurry_remaining_ms();
     if( left < 0 ) {
-        return string_format( _( "waiting: %s" ), waiting );
+        return string_format( _( "waiting: %s" ), waiting ) + away_suffix;
     }
-    return string_format( _( "waiting: %s (%d)" ), waiting, ( left + 999 ) / 1000 );
+    return string_format( _( "waiting: %s (%d)" ), waiting, ( left + 999 ) / 1000 ) + away_suffix;
 #else
     ( void )u;
     return std::string();

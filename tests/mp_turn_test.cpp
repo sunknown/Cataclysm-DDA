@@ -566,4 +566,38 @@ TEST_CASE( "an_away_player_is_not_a_left_behind_one", "[mp]" )
     mp_turn_reset_all();
 }
 
+TEST_CASE( "the_sidebar_names_who_is_away", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    // Freshly constructed avatars carry no name, and every assertion below
+    // compares against it. Name both slots so the checks cannot pass vacuously.
+    g->player_at( 0 ).name = "Alice";
+    b.name = "Bob";
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    const std::string away_name = g->player_at( 1 ).get_name();
+    mp_set_away( 1, true );
+    g->player_at( 0 ).set_moves( 100 );
+    mp_set_waiting_for_input( 0, true );
+
+    const std::string text = display::coop_player_text( g->player_at( 1 ) );
+
+    // Both halves matter: the away player is reported, and is NOT reported as
+    // somebody the world is waiting on.
+    CHECK( text.find( "away: " + away_name ) != std::string::npos );
+    CHECK( text.find( away_name + "," ) == std::string::npos );
+    CHECK( text.find( "waiting: " + away_name ) == std::string::npos );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
 #endif // defined(MULTIPLAYER)
