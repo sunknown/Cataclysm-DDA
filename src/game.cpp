@@ -3066,10 +3066,9 @@ memorial_logger &game::memorial()
     // the member exists: it is what records events that happen outside any
     // player context. It is not kept for `game`'s layout -- the same change moved
     // time_played_at_last_load into player_context, so the layout changed anyway.
-    // Removing the member was a header change whose real effect during the wave
-    // was a stale-object mix-up (a vanilla NPC fixture crashed in
-    // faction_manager::create_if_needed with a garbage `this`), not a layout
-    // requirement.
+    // Removing it is unsafe in ways we did not fully explain: a clean build with
+    // the member gone crashed in npc_can_target_player, and restoring it fixed
+    // that.
     return *memorial_logger_ptr;
 }
 

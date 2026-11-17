@@ -210,9 +210,9 @@ struct restore_rule_file {
     explicit restore_rule_file( cata_path p ) : path( std::move( p ) ) {
         std::string contents;
         if( read_from_file_optional( path.get_unrelative_path(), [&contents]( std::istream & fin ) {
-        std::ostringstream buffer;
-        buffer << fin.rdbuf();
-        contents = buffer.str();
+            std::ostringstream buffer;
+            buffer << fin.rdbuf();
+            contents = buffer.str();
         } ) ) {
             original = std::move( contents );
         }
