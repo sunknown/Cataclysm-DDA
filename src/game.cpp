@@ -4457,6 +4457,18 @@ T *game::critter_by_id( const character_id &id )
         // player is always alive, therefore no is-dead check
         return dynamic_cast<T *>( &u );
     }
+    // Every player slot is a live character, not just the one currently in `u`.
+    // A co-op avatar keeps its id across a slot swap, and code that stores ids
+    // rather than pointers -- a vehicle's `passenger_id` is the one that bites
+    // in practice -- must still resolve the partner's character. Slots are
+    // visited in index order and ids are unique, so the first match is the
+    // only match. NPCs are looked up after this loop: an avatar id cannot also
+    // belong to an npc.
+    for( avatar *slot : player_slots ) {
+        if( slot->getID() == id ) {
+            return dynamic_cast<T *>( slot );
+        }
+    }
     return find_npc( id );
 }
 
