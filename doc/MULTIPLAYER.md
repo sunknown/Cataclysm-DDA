@@ -19,10 +19,10 @@ Because the server is a full game build, everything you can do in single-player
 (move, fight, craft, read, sleep) is available, with every player in their own
 menus at the same time -- but only the server's own keybindings are in effect.
 
-The server also owns the world and the party. It opens the world named on its
-command line, waits for its players, and gives each of them their own join menu,
-in which the player creates a survivor or continues the one they played last
-time. Nothing has to be prepared in the world beforehand.
+The server also owns the world and the party. It waits for its players, opens
+the world named on its command line, and gives each of them their own join
+menu, in which the player creates a survivor or continues the one they played
+last time. Nothing has to be prepared in the world beforehand.
 
 ## Building
 
@@ -73,10 +73,10 @@ place -- quit any running copy first, or the link fails with "Text file busy".
 - `--server <port>` -- run this instance as a multiplayer server that streams a
   screen to each connected client (main.cpp, `--server` handler).
 - `--world <name>` -- the world to open, and it is required: a server started
-  without one says `no world given: start the server with --world <name>` on its
-  console and stops. A name that is not in the save folder yet is created with
-  the default mods, so `--world coop` on a machine with no such world gives you
-  a fresh empty one.
+  without one accepts its clients first and only then says `no world given:
+  start the server with --world <name>` on its console and stops. A name that
+  is not in the save folder yet is created with the default mods, so
+  `--world coop` on a machine with no such world gives you a fresh empty one.
 - `--players <count>` -- how many clients the server waits for before the game
   can start (default 1). It waits at the listener, then opens the world and
   waits for every one of those clients to choose a survivor (see
@@ -133,7 +133,8 @@ turned away, and a named world whose creation failed.
 - `--username <name>` -- optional, and it does not choose your character. It is
   the label this client announces in its handshake: the server puts it in its
   console log and on the other players' waiting screen while they wait for you
-  to choose. Without it the client announces `client`. Which survivor you play
+  to choose. Without it the client announces your system user name (`$USER`),
+  or `client` if the environment does not provide one. Which survivor you play
   is decided inside the join menu, not on the command line.
 
 The client needs a terminal of at least 80x24. On connect it announces its
@@ -163,7 +164,7 @@ mods:
 
 1. Decide on a world name. If you want specific mods or a particular
    world-generation preset, create the world first in the normal game
-   (World -> New World) and quit without making a character.
+   (World -> Create World) and quit without making a character.
 2. Start the server on it. A name that does not exist yet is created with the
    default mods, which is fine for a first session.
 
@@ -203,9 +204,9 @@ creator's scenario list is filtered down to it, so the party gets one safe,
 roomy place to wake up in.
 
 Whoever chooses first sees a waiting screen that lists the players who have not
-chosen yet, by the name their client announced (`--username`, or `client` if
-they gave none -- the menu does not know their survivor yet). When the last one
-confirms, the party starts.
+chosen yet, by the name their client announced (`--username`, or your system
+user name if you gave none -- the menu does not know their survivor yet). When
+the last one confirms, the party starts.
 
 ### The character card
 
@@ -279,10 +280,12 @@ countdown length until somebody acts.
   There is no reconnect and no spectator mode.
 - **Some world state is still shared.** The game itself warns that many features
   "will not work correctly with multiple characters in the same world", and
-  co-op now lives on exactly that path. Missions and vehicle seats are per
-  character as of this phase; base camps and zones, NPC followers, faction
-  reputation, and achievements are not, and are deferred to Phase 5 with
-  estimates in `docs/superpowers/reports/2026-08-08-multi-character-world-audit.md`.
+  co-op now lives on exactly that path. Missions are per character for
+  completion, failure and rewards, but kill-count and recruit-class goals and
+  nemesis missions still count on the world map; vehicle seats are per
+  character. Base camps and zones, NPC followers, faction reputation, and
+  achievements are not, and are deferred to Phase 5 with estimates in
+  `docs/superpowers/reports/2026-08-08-multi-character-world-audit.md`.
 - **Hurry is pressed by the wrong player.** A player who has already acted is
   parked until the next turn and reads no keys, so they cannot press hurry; only
   a player who is still holding the world can. In practice the waiting player
