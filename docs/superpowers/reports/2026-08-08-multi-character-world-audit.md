@@ -49,7 +49,7 @@ the state is saved or, for run-time singletons, where it lives.
 
 | Mechanic | State owner (file:line) | Verdict |
 |---|---|---|
-| Missions | world map `world_missions` (`src/mission.cpp:103`); assignee `mission::player_id` (`src/mission.h:325`) | **breaks materially** — fixed here for completion/fail/rewards; nemesis missions still broken |
+| Missions | world map `world_missions` (`src/mission.cpp:103`); assignee `mission::player_id` (`src/mission.h:325`) | **breaks materially** — completion, failure and rewards fixed; kill-count and recruit-class goals plus nemesis still world-wide |
 | Faction reputation | one `faction` object per faction: `likes_u`/`respects_u`/`trusts_u` (`src/faction.h:148-150`), saved in the master save (`src/savegame_json.cpp:4213`, `src/game_io.cpp:628`); every avatar is `your_followers` (`src/avatar.cpp:1167-1170`) | **breaks materially** — deferred |
 | Camps | world/overmap object owned by a faction (`basecamp::owner`, `src/basecamp.h:491`; `overmap.cpp:3914`); known-camp list is per character (`Character::camps`, `src/character.h:2933-2934`, upstream FIXME) | **breaks materially** — deferred |
 | Map memory | per character: `avatar::player_map_memory` (`src/avatar.h:439`), `<world>/<base64(save_id)>.mm1/` (`src/map_memory.cpp:42-44`, `src/game_io.cpp:1077-1080`) | **works** |
@@ -62,7 +62,7 @@ the state is saved or, for run-time singletons, where it lives.
 
 ## 3. Per-mechanic detail
 
-### Missions — breaks materially, completion path fixed
+### Missions — breaks materially; completion fixed, kill counts still world-shared
 
 `world_missions` is a file-static map in `src/mission.cpp:103`; `mission::player_id`
 (`src/mission.h:325`) names the owner. `mission::process_all()` is called once
@@ -87,6 +87,28 @@ Fixed in `51183bcad2`:
 
 Residual gaps, still material:
 
+- Kill-count goals are still world-shared. `MGOAL_KILL_MONSTER_TYPE` and
+  `MGOAL_KILL_MONSTER_SPEC` compare against
+  `g->get_kill_tracker().kill_count(...)` (`src/mission.cpp:644-649`); that is
+  one world map (`src/kill_tracker.cpp:24-31`), filled by `notify()` for the
+  active avatar and its followers (`:109-119`), and `mission::assign()`
+  baselines the goal against the same world count
+  (`src/mission.cpp:345-350`). Slot 0's zombie kills therefore complete slot
+  1's "kill N zombies" mission and vice versa — materially broken by this
+  audit's definition. Fix: attribute the tracker by killer (the event already
+  carries `character`, `src/event.h:183-190`) and keep per-character counts, or
+  count per character on the avatar and baseline the mission against its
+  owner. One or two files plus a persisted per-character count (savegame
+  field); estimate ~1 day, phase 5. Not patched here: there is no unit test
+  without a live two-character kill and `game::unserialize` is forbidden.
+- `MGOAL_RECRUIT_NPC_CLASS` searches
+  `overmap_buffer.get_npcs_near_player( 100 )` (`src/mission.cpp:628`), which
+  centres on the active avatar, not on the mission's owner. A follower
+  recruited by slot 0 completes slot 1's recruit-class mission. Fix: search
+  around the owner's `pos_abs_omt()` (one file, an overmap query that takes a
+  position) and add a two-slot test with a spawned follower NPC; estimate ~2-4
+  hours, phase 5. Deferred because this round is documentation for mission
+  residuals; it is cheap but not free.
 - `mission::on_creature_death()` looks for a nemesis mission by comparing
   `get_avatar().getID()` (`src/mission.cpp:197`). A nemesis belonging to a
   non-active slot is never completed by anyone; the kill is simply lost for
@@ -246,9 +268,15 @@ event bus (`src/game.cpp:484-489`). They are serialized into **every**
 character `.sav` (`src/savegame.cpp:144-146`; loaded back at `:350-351`; the
 per-slot save loop is `src/game_io.cpp:848-856`). Three concrete consequences:
 
-1. Every character file carries the same tracker, so each save contains the
-   other players' events. Loading two characters loads two copies of the same
-   data; the last file wins.
+1. Every character file carries a copy of the same tracker. Those copies are
+   not a last-writer-wins load: the co-op loader brings the game state in with
+   the **first** continued character (`with_game_state = !have_game_state`,
+   `src/mp/mp_server_main.cpp:270-277`), and every later character is read with
+   `character_only=true`, which returns after the view offsets and the player
+   (`src/savegame.cpp:253-263`). The authoritative tracker is therefore the
+   first loaded character's copy; the copies in later characters' `.sav` files
+   are never read — dead weight that inflates those saves and misleads anyone
+   reading them, not a last-file-wins conflict.
 2. Statistics decide "the avatar" from the `avatar_id` statistic, defined as
    the *last value* of the `game_avatar_new` event
    (`data/json/statistics.json:1-8`); kill/achievement statistics filter on it
