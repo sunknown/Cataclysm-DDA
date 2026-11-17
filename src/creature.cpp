@@ -1820,6 +1820,15 @@ void Creature::set_fake( const bool fake_value )
     fake = fake_value;
 }
 
+// The string id of a bodypart for storage in an effect. The null bodypart is a sentinel in
+// the factory, not a loaded entry, so converting it back through the factory would emit a
+// debugmsg -- and a debugmsg while the core data is unloaded recurses through add_msg().
+// Nothing is lost here: the sentinel's id is the null id.
+static bodypart_str_id bp_string_id( const bodypart_id &bp )
+{
+    return bp.to_i() == 0 ? bodypart_str_id::NULL_ID() : bp.id();
+}
+
 void Creature::add_effect( const effect_source &source, const effect &eff, bool force,
                            bool deferred )
 {
@@ -1907,11 +1916,13 @@ void Creature::add_effect( const effect_source &source, const efftype_id &eff_id
         // Now we can make the new effect for application
 
         time_duration duration = permanent ? std::max( dur, 1_seconds ) : dur;
-        effect e( effect_source( source ), &type, duration, bp.id(), permanent, intensity, calendar::turn );
+        effect e( effect_source( source ), &type, duration, bp_string_id( bp ), permanent,
+                  intensity, calendar::turn );
 
         ( *effects )[eff_id][bp] = e;
         if( Character *ch = as_character() ) {
-            get_event_bus().send<event_type::character_gains_effect>( ch->getID(), bp.id(), eff_id, intensity );
+            get_event_bus().send<event_type::character_gains_effect>( ch->getID(),
+                    bp_string_id( bp ), eff_id, intensity );
             if( is_avatar() ) {
                 eff_id->add_apply_msg( e.get_intensity() );
             }
@@ -1927,7 +1938,7 @@ void Creature::add_effect( const effect_source &source, const efftype_id &eff_id
 void Creature::add_effect( const effect_source &source, const efftype_id &eff_id,
                            const time_duration &dur, bool permanent, int intensity, bool force, bool deferred )
 {
-    add_effect( source, eff_id, dur, bodypart_str_id::NULL_ID(), permanent, intensity, force,
+    add_effect( source, eff_id, dur, bodypart_id(), permanent, intensity, force,
                 deferred );
 }
 
@@ -1948,7 +1959,7 @@ void Creature::schedule_effect( const efftype_id &eff_id,
                                 const time_duration &dur, bool permanent, int intensity, bool force,
                                 bool deferred )
 {
-    scheduled_effects.push( scheduled_effect{eff_id, dur, bodypart_str_id::NULL_ID(),
+    scheduled_effects.push( scheduled_effect{eff_id, dur, bodypart_id(),
                             permanent, intensity, force, deferred} );
 }
 
@@ -1971,7 +1982,7 @@ bool Creature::add_env_effect( const efftype_id &eff_id, const bodypart_id &vect
 bool Creature::add_env_effect( const efftype_id &eff_id, const bodypart_id &vector, int strength,
                                const time_duration &dur, bool permanent, int intensity, bool force )
 {
-    return add_env_effect( eff_id, vector, strength, dur, bodypart_str_id::NULL_ID(), permanent,
+    return add_env_effect( eff_id, vector, strength, dur, bodypart_id(), permanent,
                            intensity, force );
 }
 
@@ -1987,7 +1998,7 @@ void Creature::clear_effects()
 }
 bool Creature::remove_effect( const efftype_id &eff_id, const bodypart_id &bp )
 {
-    if( !has_effect( eff_id, bp.id() ) ) {
+    if( !has_effect( eff_id, bp ) ) {
         //Effect doesn't exist, so do nothing
         return false;
     }
@@ -1996,21 +2007,22 @@ bool Creature::remove_effect( const efftype_id &eff_id, const bodypart_id &bp )
     if( Character *ch = as_character() ) {
         if( is_avatar() ) {
             if( !type.get_remove_message().empty() ) {
-                add_msg( type.lose_game_message_type( get_effect( eff_id, bp.id() ).get_intensity() ),
+                add_msg( type.lose_game_message_type( get_effect( eff_id, bp ).get_intensity() ),
                          type.get_remove_message() );
             }
         }
-        get_event_bus().send<event_type::character_loses_effect>( ch->getID(), bp.id(), eff_id );
+        get_event_bus().send<event_type::character_loses_effect>( ch->getID(),
+                bp_string_id( bp ), eff_id );
     }
 
     // bp_null means remove all of a given effect id
-    if( bp == bodypart_str_id::NULL_ID() ) {
+    if( bp.to_i() == 0 ) {
         for( auto &it : ( *effects )[eff_id] ) {
             on_effect_int_change( eff_id, 0, it.first );
         }
         effects->erase( eff_id );
     } else {
-        ( *effects )[eff_id].erase( bp.id() );
+        ( *effects )[eff_id].erase( bp );
         on_effect_int_change( eff_id, 0, bp );
         // If there are no more effects of a given type remove the type map
         if( ( *effects )[eff_id].empty() ) {
@@ -2022,7 +2034,7 @@ bool Creature::remove_effect( const efftype_id &eff_id, const bodypart_id &bp )
 }
 bool Creature::remove_effect( const efftype_id &eff_id )
 {
-    return remove_effect( eff_id, bodypart_str_id::NULL_ID() );
+    return remove_effect( eff_id, bodypart_id() );
 }
 
 void Creature::schedule_effect_removal( const efftype_id &eff_id, const bodypart_id &bp )
@@ -2031,18 +2043,20 @@ void Creature::schedule_effect_removal( const efftype_id &eff_id, const bodypart
 }
 void Creature::schedule_effect_removal( const efftype_id &eff_id )
 {
-    schedule_effect_removal( eff_id, bodypart_str_id::NULL_ID() );
+    schedule_effect_removal( eff_id, bodypart_id() );
 }
 
 bool Creature::has_effect( const efftype_id &eff_id, const bodypart_id &bp ) const
 {
-    // bp_null means anything targeted or not
-    if( bp.id() == bodypart_str_id::NULL_ID() ) {
-        return effects->count( eff_id );
+    // bp_null means anything targeted or not. It is the factory's sentinel rather than a
+    // loaded entry, so it must not be converted back to a string id: doing that would ask
+    // the factory, whose debugmsg comes back here through add_msg() while data is unloaded.
+    if( bp.to_i() == 0 ) {
+        return effects->count( eff_id ) > 0;
     } else {
         auto got_outer = effects->find( eff_id );
         if( got_outer != effects->end() ) {
-            auto got_inner = got_outer->second.find( bp.id() );
+            auto got_inner = got_outer->second.find( bp );
             if( got_inner != got_outer->second.end() ) {
                 return true;
             }
@@ -2053,7 +2067,7 @@ bool Creature::has_effect( const efftype_id &eff_id, const bodypart_id &bp ) con
 
 bool Creature::has_effect( const efftype_id &eff_id ) const
 {
-    return has_effect( eff_id, bodypart_str_id::NULL_ID() );
+    return effects->count( eff_id ) > 0;
 }
 
 bool Creature::has_effect_with_flag( const flag_id &flag, const bodypart_id &bp ) const

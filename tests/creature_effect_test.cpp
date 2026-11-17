@@ -331,6 +331,25 @@ TEST_CASE( "has_effect", "[creature][effect][has]" )
     }
 }
 
+// Creature::has_effect without any effects must not consult the body part factory. The
+// factory's debugmsg for a missing id comes back through add_msg(), which decorates the
+// message by asking the player for effects, and a debugmsg raised while the core data is
+// unloaded therefore recurses until the stack dies. No id is converted on this path, so
+// the question is answered from the effect map alone.
+TEST_CASE( "has_effect_empty_does_not_touch_bodyparts", "[creature][effect][has]" )
+{
+    avatar dummy;
+    dummy.clear_effects();
+
+    CHECK_FALSE( dummy.has_effect( effect_downed ) );
+    CHECK_FALSE( dummy.has_effect( effect_downed, bodypart_id() ) );
+
+    // The queries that default to the null bodypart take the same path.
+    CHECK( dummy.get_effect( effect_downed ).is_null() );
+    CHECK( dummy.get_effect_dur( effect_downed ) == 0_turns );
+    CHECK( dummy.get_effect_int( effect_downed ) == 0 );
+}
+
 // Creature::has_effect_with_flag
 //
 TEST_CASE( "has_effect_with_flag", "[creature][effect][has][flag]" )

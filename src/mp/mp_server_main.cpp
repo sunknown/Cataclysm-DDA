@@ -541,7 +541,10 @@ bool mp_server_open_world( const std::string &world_name, std::string &err )
 {
     err.clear();
     world_generator->init();
-    WORLD *world = world_generator->get_world( world_name );
+    // has_world() first: get_world() reports a missing world as a debugmsg, and creating it
+    // from --world is a supported flow, not an error.
+    WORLD *world = world_generator->has_world( world_name )
+                   ? world_generator->get_world( world_name ) : nullptr;
     if( world == nullptr ) {
         // No world by that name: make one with the defaults, so a server can be
         // started on a fresh world without the game's world menus.
