@@ -224,8 +224,16 @@ are created on first use, so a process that never leaves the world phase pays
 for none of them, and the drain of a dropped seat unsubscribes its memorial
 from the event bus (`event_subscriber`'s destructor). Each seat's memorial is
 subscribed when it is created, because a log that is not subscribed records
-nothing. Cost: three files for the mechanism plus the five owners, an hour
-each; the playtime baseline (`.pt`, below) had to move with it.
+nothing; since the bus broadcasts while the avatar-id filter only asks whether
+the acting avatar did it, `memorial_logger::notify()` now returns unless the
+receiving log is the acting seat's, compared through a non-creating
+`memorial_ptr()` so the check cannot create and subscribe a log while
+`event_bus::send()` walks its subscriber list. Seats other than 0 load the
+user's global auto-pickup, auto-note and safemode files on first use, because
+`game::load_static_data()` loads them into seat 0 only; that load runs before
+the seat's character file is read, so it cannot clobber character rules. Cost:
+three files for the mechanism plus the five owners, an hour each; the playtime
+baseline (`.pt`, below) had to move with it.
 
 The test is `tests/mp_save_split_test.cpp`,
 `each_character_keeps_its_own_per_character_files`: two characters, distinct
@@ -391,6 +399,15 @@ confirm it fails there):
   `<base>.sav.zzip` exist (`src/auto_pickup.cpp:903`,
   `src/safemode_ui.cpp:787`), so the per-seat pickup and safemode property is
   asserted in memory.
+- `tests/mp_save_split_test.cpp`, tag `[coop][memorial]`:
+  `a_memorial_line_reaches_only_the_acting_seat` subscribes two seats' logs to
+  the one bus and sends the memorial events the existing memorial tests use;
+  only the acting seat's log gains the line, in both directions.
+- `tests/mp_save_split_test.cpp`, tag `[coop]`:
+  `a_seat_added_later_loads_the_users_global_rules` writes probe content to the
+  user's auto-pickup, safemode and auto-note files, then adds a second player
+  slot and checks that its seat reports those global rules while its
+  character-side state is still the default.
 - `tests/mp_join_test.cpp`, tag `[mp]` (server build): a client that drops
   inside the character creator, one that quits there, and one that drops after
   choosing all cost only their own seat, and the party still starts.
@@ -425,7 +442,7 @@ Not testable under the current rules, and why:
 
 - `make -j$(nproc) CCACHE=1 TILES=0 TESTS=1` — clean.
 - `tests/cata_test "[mp],[coop]" --rng-seed 1 --user-dir=<fresh>` — all passed
-  (40 cases, 197 assertions). The ordinary-build half of the wave's tests.
+  (42 cases, 208 assertions). The ordinary-build half of the wave's tests.
 - `tests/mpserver-cata_test "[mp]" --rng-seed 1 --user-dir=<fresh>` — all passed
   (165 cases, 4024 assertions), including the three join-phase harness cases
   added with the seat-release fixes (a client that drops inside the character
