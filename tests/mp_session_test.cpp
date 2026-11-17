@@ -10,6 +10,7 @@
 #include "calendar.h"
 #include "cata_scope_helpers.h"
 
+#include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "bodypart.h"
 #include "debug.h"
@@ -457,4 +458,60 @@ TEST_CASE( "a_death_in_a_session_ends_it_and_saves_the_world", "[mp]" )
     get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
     get_avatar().move_to( tripoint_abs_ms::zero );
 }
+
+TEST_CASE( "a_session_where_everyone_is_away_does_not_advance_the_world", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    mp_set_away( 0, true );
+    mp_set_away( 1, true );
+    const int turn_before = to_turn<int>( calendar::turn );
+
+    // Ten polls take about a second. With every living player away there is
+    // nobody to wait for and nobody to pace: the turn must not close at all.
+    CHECK_FALSE( harness.run_until( []() {
+        return false;
+    }, 10 ) );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before );
+
+    // One comes back and waits out a turn; the world moves again.
+    mp_set_away( 0, false );
+    g->player_at( 0 ).set_moves( 100 );
+    harness.press( 0, '.' );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+}
+
+TEST_CASE( "an_away_player_does_not_slow_a_busy_partner", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 1 ).assign_activity( wait_activity_actor( 10_minutes ) );
+    mp_set_away( 0, true );
+    const int turn_before = to_turn<int>( calendar::turn );
+
+    // The away player is not a left-behind one: they cost the partner nothing
+    // and, alone, nothing paces the world either.
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before + 20;
+    }, 400 ) );
+}
+
+TEST_CASE( "two_busy_players_do_not_hold_the_world", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // The phase's criterion, pinned: a long activity is a player telling the
+    // game what to do, and the world is free to run while both do it.
+    g->player_at( 0 ).assign_activity( wait_activity_actor( 10_minutes ) );
+    g->player_at( 1 ).assign_activity( wait_activity_actor( 10_minutes ) );
+    const int turn_before = to_turn<int>( calendar::turn );
+
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before + 20;
+    }, 400 ) );
+}
+
 #endif // MP_SERVER

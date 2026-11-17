@@ -47,20 +47,29 @@ bool mp_player_holds_barrier( size_t slot );
 // rests on.
 bool mp_barrier_satisfied();
 
+// True when every living player has left the keyboard on purpose. A satisfied
+// barrier would let such a turn close, and closing it moves the world around
+// empty chairs, so the orchestrator keeps the turn open on this as well.
+// Vacuously true when no living player is left, which is the same "nobody is
+// at the table" case.
+bool mp_turn_all_away();
+
 // True for a player a hurry countdown dropped who is still sitting at an input
 // wait. They hold nothing, but they are still at the keyboard: when a key
 // brings them back, the world has to hand them the baton even though it is
 // not waiting on them.
 bool mp_player_left_behind( size_t slot );
 
-// True while a satisfied barrier must not close the turn yet. When nobody is
-// playing -- every living player is left behind (above) or busy with an
-// activity, and at least one is left behind -- nothing paces the world but
-// the poll, so each turn would close the moment it opened and the world would
-// run at CPU speed around a player who is only thinking. Such a turn lasts at
-// least as long as the countdown that dropped them would: MP_HURRY_COMBAT_MS
-// while a hostile can see a player, MP_HURRY_MS otherwise. Anyone playing --
-// acting by hand, a left-behind player included once they act -- ends it.
+// True while a satisfied barrier must not close the turn yet. Not about the
+// barrier: about what paces a turn nobody is playing by hand. A player at the
+// keyboard -- acting, or a left-behind one once they act -- ends it. Otherwise
+// the turn lasts at least as long as the countdown that would have dropped
+// them: MP_HURRY_COMBAT_MS while a hostile can see a player, and MP_HURRY_MS
+// while a left-behind player is still reading. An away player is not a
+// left-behind one: they asked not to be waited for, so their partner's
+// activity pace is not held back on a countdown aimed at nobody. With nobody
+// playing by hand and no hostile in sight it ends too: that is the free run
+// the phase exists for.
 bool mp_turn_paced();
 
 // Marks `slot` as sitting at an input wait, or no longer sitting at one. Called

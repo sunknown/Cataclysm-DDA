@@ -146,6 +146,20 @@ bool mp_barrier_satisfied()
     return true;
 }
 
+bool mp_turn_all_away()
+{
+    ensure_sized();
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( g->player_at( i ).is_dead_state() ) {
+            continue;
+        }
+        if( !mp_player_is_away( i ) ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void mp_set_waiting_for_input( const size_t slot, const bool waiting )
 {
     ensure_sized();
@@ -225,25 +239,38 @@ bool mp_player_left_behind( const size_t slot )
 bool mp_turn_paced()
 {
     ensure_sized();
+    // A player at the keyboard is the clock: their actions pace the world, and
+    // nothing here needs a floor.
     bool anyone_left_behind = false;
     for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-        const avatar &ava = g->player_at( i );
+        avatar &ava = g->player_at( i );
         if( ava.is_dead_state() ) {
             continue;
         }
         if( mp_player_left_behind( i ) ) {
             anyone_left_behind = true;
-        } else if( !ava.activity && !ava.has_distant_destination() ) {
-            // Somebody is playing by hand; their actions pace the world.
+            continue;
+        }
+        // An away player is not playing and is not paced for: they asked not to
+        // be waited on, so their partner's activity is the only clock.
+        if( mp_player_is_away( i ) ) {
+            continue;
+        }
+        if( !ava.activity && !ava.has_distant_destination() ) {
             return false;
         }
     }
-    if( !anyone_left_behind ) {
-        return false;
+    const auto age = std::chrono::steady_clock::now() - g_turn_opened_at;
+    // A fight is not a fast-forward, whoever is busy.
+    if( anyone_is_seen_by_a_hostile() ) {
+        return age < std::chrono::milliseconds( MP_HURRY_COMBAT_MS );
     }
-    const int pace_ms = anyone_is_seen_by_a_hostile() ? MP_HURRY_COMBAT_MS : MP_HURRY_MS;
-    return std::chrono::steady_clock::now() - g_turn_opened_at <
-           std::chrono::milliseconds( pace_ms );
+    // A left-behind player is still reading; the floor lasts as long as the
+    // countdown that dropped them would have.
+    if( anyone_left_behind ) {
+        return age < std::chrono::milliseconds( MP_HURRY_MS );
+    }
+    return false;
 }
 
 void mp_request_session_end( const std::string &reason )

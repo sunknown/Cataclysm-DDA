@@ -2,7 +2,9 @@
 
 #if defined(MULTIPLAYER)
 
+#include "activity_actor_definitions.h"
 #include "avatar.h"
+#include "calendar.h"
 #include "display.h"
 #include "game.h"
 #include "game_test_helper.h"
@@ -451,6 +453,74 @@ TEST_CASE( "returning_from_away_makes_the_player_hold_again", "[mp]" )
 
     CHECK_FALSE( mp_player_is_away( 0 ) );
     CHECK( mp_player_state_of( 0 ) == mp_player_state::acting );
+}
+
+TEST_CASE( "the_turn_stays_open_while_every_living_player_is_away", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    CHECK_FALSE( mp_turn_all_away() );
+    mp_set_away( 0, true );
+    CHECK_FALSE( mp_turn_all_away() );
+    mp_set_away( 1, true );
+    CHECK( mp_turn_all_away() );
+    mp_set_away( 0, false );
+    CHECK_FALSE( mp_turn_all_away() );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
+TEST_CASE( "a_hostile_in_sight_paces_a_turn_nobody_is_playing_by_hand", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    clear_map();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    // Both busy with an activity, so nobody is playing by hand: without a
+    // hostile that is exactly the free run the phase exists for.
+    g->player_at( 0 ).assign_activity( wait_activity_actor( 10_minutes ) );
+    b.assign_activity( wait_activity_actor( 10_minutes ) );
+    mp_set_turn_open( true );
+    CHECK_FALSE( mp_turn_paced() );
+
+    mp_set_turn_open( false );
+    spawn_test_monster( "mon_zombie", g->player_at( 0 ).pos_bub() + tripoint::east );
+    mp_set_turn_open( true );
+    CHECK( mp_turn_paced() );
+
+    // Same rule with one player away instead of busy: the floor does not care
+    // who is absent, only that a fight is on and nobody is playing by hand.
+    mp_set_away( 1, true );
+    b.activity = player_activity();
+    CHECK( mp_turn_paced() );
+
+    // A player back at the keyboard paces the world by themselves, hostile or
+    // not: their actions are the clock.
+    mp_set_away( 1, false );
+    b.set_moves( 100 );
+    mp_set_waiting_for_input( 1, true );
+    CHECK_FALSE( mp_turn_paced() );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
 }
 
 #endif // defined(MULTIPLAYER)

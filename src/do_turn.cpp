@@ -758,7 +758,9 @@ bool game::do_turn()
         }
         // mp_turn_paced: a turn nobody is playing in still lasts a countdown's
         // length, or a hurry that dropped everyone would let the world run free.
-        while( !mp_barrier_satisfied() || mp_turn_paced() ) {
+        // mp_turn_all_away: with every living player away there is nobody to
+        // wait for and nobody to pace, and the world must not move either.
+        while( !mp_barrier_satisfied() || mp_turn_paced() || mp_turn_all_away() ) {
             mp_tick_hurry();
             bool moved = false;
             std::vector<bool> owes_turn( player_slot_count(), false );
