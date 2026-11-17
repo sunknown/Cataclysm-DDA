@@ -176,6 +176,17 @@ class mp_sched
         void clear_quit( size_t who );
         bool quit_requested( size_t who ) const;
 
+        // Ends a seat whose client is gone after it had already chosen, still
+        // during the join phase. request_quit() is not enough there: a player
+        // that has chosen has no menu open -- its thread is parked on
+        // wait_for_turn waiting for the party to start -- so the QUIT answer
+        // reaches nobody and the world would block for ever joining the thread
+        // while the other players wait on a seat whose client no longer exists.
+        // This marks the seat (as request_quit does, so an input wait still
+        // answers QUIT) and wakes a thread parked on wait_for_turn, which then
+        // returns without the baton. Cleared by clear_quit(), like request_quit.
+        void abandon_seat( size_t who );
+
         // Blocks the world participant until one of the players named in
         // `candidates` (indexed by slot) is parked waiting for the baton, or
         // until `timeout_ms` passes, or until shut_down(). Returns true when a
@@ -232,6 +243,13 @@ class mp_sched
         // participant itself through mp_input_must_not_wait(); see
         // request_quit().
         std::vector<char> quit_requested_;
+        // Per-participant "your seat's client is gone and you are not in a menu"
+        // flag: the wake-up half of abandon_seat(). Kept apart from
+        // quit_requested_ because request_quit() must NOT wake a participant
+        // that has not drawn its menu yet -- it would then run the menu without
+        // the baton -- while abandon_seat() applies only to a participant that
+        // has already chosen and is parked on the baton.
+        std::vector<char> abandoned_;
         // Holder of the unwind right (see unwind_if_stopping), or
         // mp_sched::world while nobody holds it, and the thread that took it.
         // The thread id is only there to catch a re-entry naming a slot that
@@ -306,6 +324,17 @@ bool mp_input_must_not_wait();
 // rather than the session ending -- for the menus that distinguish the two: a
 // seat released this way must cancel even when the session is not stopping.
 bool mp_seat_released();
+
+// Whether a menu open on this thread has to unwind now: the session is
+// stopping, or this player's seat was released during the join phase. This is
+// the question every menu loop asks after its input wait, and it is one
+// function so that the loops which have an action to cancel on (uilist's
+// QUIT), the loops that have to quit out of a text field
+// (string_input_popup) and the character creator's tab loop -- which has no
+// action to reach at all when its current tab owns a uilist -- cannot drift
+// apart. The world's own menus are answered for by mp_input_must_not_wait()
+// instead and are not unwound: the world has no seat to lose.
+bool mp_menu_must_unwind();
 
 // Starts the watchdog thread owned by `sched`. It logs the current holder
 // whenever the baton has not moved for longer than `threshold_ms`, then keeps

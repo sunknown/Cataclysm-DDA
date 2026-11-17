@@ -9,6 +9,7 @@
 #include "input.h"
 #include "input_context.h"
 #include "input_enums.h"
+#include "mp/mp_sched.h"
 #include "output.h"
 #include "point.h"
 #include "ret_val.h"
@@ -470,6 +471,19 @@ const std::string &string_input_popup::query_string( const bool loop, const bool
         const input_event ev = ctxt->get_raw_input();
         ch = ev.type == input_event_t::keyboard_char ? ev.get_first_input() : 0;
         _handled = true;
+
+        if( mp_menu_must_unwind() ) {
+            // The session is ending or this player's seat was released during
+            // the join phase: handle_input() answers the input wait with the
+            // synthetic QUIT, which a text field has no action for -- it would
+            // swallow it as an unknown key and ask again for ever, parking the
+            // unwind right (and the server's shutdown) behind it. Cancel is the
+            // only answer a field can give, and it is what Escape gives.
+            _text.clear();
+            _position = -1;
+            _canceled = true;
+            return _text;
+        }
 
         bool next_loop = false;
         for( const auto &cb : callbacks ) {

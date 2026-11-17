@@ -53,6 +53,7 @@
 #include "mp/mp_context.h"
 #include "mp/mp_placement.h"
 #endif
+#include "mp/mp_sched.h"
 #include "mod_manager.h"
 #include "monster.h"
 #include "mutation.h"
@@ -2943,6 +2944,18 @@ bool character_creator_ui::display()
     cc_uistate.finished_character_creator = false;
 
     while( !cc_uistate.finished_character_creator ) {
+        if( mp_menu_must_unwind() ) {
+            // The session is ending, or this player's seat was released during
+            // the join phase. A tab with a uilist answers the synthetic QUIT as
+            // a cancel (uilist::query_once), which only closes that one menu and
+            // asks again; the tabs without one reach handle_action( "QUIT" ),
+            // whose "return to main menu?" prompt cannot be answered either.
+            // There is nothing left to choose, so the creator unwinds here,
+            // exactly as it does when its Quit is confirmed -- and that is also
+            // what lets the join menu answer quit and the world join the thread.
+            cc_uistate.quit_to_main_menu = true;
+            return false;
+        }
 
         input_context &current_tab_input = get_current_tab_input();
         input_context::scoped_activation active_tab_context( current_tab_input );
@@ -3169,25 +3182,42 @@ static int find_index( const std::vector<T> &vec, const T &obj )
 void character_creator_uistate::recalc_scenario_list( const avatar &u )
 {
     if( recalc_scenarios ) {
-        std::vector<const scenario *> new_scenarios;
+        std::vector<const scenario *> all_scenarios;
         for( const scenario &scen : scenario::get_all() ) {
             if( scen.scen_is_blacklisted() ) {
                 continue;
             }
-#if defined(MP_SERVER)
-            // Co-op characters all start under the co-op scenario: the same
-            // kind of place for everyone is what makes the party's anchor a
-            // safe, roomy spot. The list is filtered down to it.
-            if( &scen != mp_coop_scenario() ) {
-                continue;
-            }
-#endif
-            new_scenarios.push_back( &scen );
+            all_scenarios.push_back( &scen );
         }
+        std::vector<const scenario *> new_scenarios = all_scenarios;
+#if defined(MP_SERVER)
+        // Co-op characters all start under the co-op scenario: the same kind of
+        // place for everyone is what makes the party's anchor a safe, roomy
+        // spot, so the list is filtered down to it. Filtered, not replaced: when
+        // the co-op scenario is missing, renamed or blacklisted the filter
+        // would leave nothing, and an empty list crashes the first draw
+        // (sorted_scenarios[0], get_selected_scenario()). Falling back to every
+        // scenario keeps character creation usable with bad content.
+        const scenario *const coop = mp_coop_scenario();
+        if( coop != nullptr ) {
+            new_scenarios.clear();
+            for( const scenario *scen : all_scenarios ) {
+                if( scen == coop ) {
+                    new_scenarios.push_back( scen );
+                }
+            }
+        }
+#endif
         scenario_sorter scen_sorter{ true, u.male, cities_enabled() };
         std::stable_sort( new_scenarios.begin(), new_scenarios.end(), scen_sorter );
         sorted_scenarios = new_scenarios;
         selected_scenario_index = find_index( sorted_scenarios, get_scenario() );
+        // find_index() answers "size" for a scenario that is not listed (the
+        // current one can be blacklisted, or the co-op filter can have removed
+        // it), which is one past the end. Select the first entry instead.
+        if( selected_scenario_index >= static_cast<int>( sorted_scenarios.size() ) ) {
+            selected_scenario_index = 0;
+        }
         recalc_scenarios = false;
     }
 }
@@ -3329,7 +3359,8 @@ void character_creator_uistate::set_initial_tab( character_creator_tab first_tab
 
 const scenario *character_creator_uistate::get_selected_scenario()
 {
-    if( selected_scenario_index < 0 ) {
+    if( selected_scenario_index < 0 ||
+        selected_scenario_index >= static_cast<int>( sorted_scenarios.size() ) ) {
         return nullptr;
     }
     return sorted_scenarios[selected_scenario_index];
@@ -3475,8 +3506,17 @@ bool character_creator_ui::handle_action( const std::string &action )
         you.mod_knowledge_level( selected_skill, mod_value );
     };
 
-    if( action == "QUIT" && query_yn( _( "Return to main menu?" ) ) ) {
-        cc_uistate.quit_to_main_menu = true;
+    if( action == "QUIT" ) {
+        if( mp_menu_must_unwind() ) {
+            // Nobody can answer "return to main menu?": the session is ending
+            // or this seat was released. Ask anyway and the answer is "not
+            // yes", the flag stays clear, and the loop asks again for ever.
+            cc_uistate.quit_to_main_menu = true;
+            return true;
+        }
+        if( query_yn( _( "Return to main menu?" ) ) ) {
+            cc_uistate.quit_to_main_menu = true;
+        }
     } else if( action == "PREV_TAB" ) {
         if( cc_uistate.selected_tab == CHARCREATOR_SCENARIO ) {
             if( query_yn( _( "Return to main menu?" ) ) ) {
@@ -3662,6 +3702,12 @@ void character_creator_callback::confirm( uilist *menu )
             cc_uistate.selected_scenario_index = uilist_returned;
 
             const scenario *selected_scenario = cc_uistate.get_selected_scenario();
+            if( selected_scenario == nullptr ) {
+                // No scenario is listed at all (every one blacklisted): there is
+                // nothing to confirm, and dereferencing would be the crash the
+                // fallback in recalc_scenario_list() exists to avoid.
+                return;
+            }
             ret_val<void> can_pick = selected_scenario->can_pick();
 
             scenario_sorter sorter{ true, u.male, cities_enabled() };

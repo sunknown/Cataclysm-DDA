@@ -21,7 +21,8 @@ std::atomic<mp_sched *> g_active_sched{ nullptr };
 } // namespace
 
 mp_sched::mp_sched( const size_t players ) : players_( players ),
-    waiting_for_baton_( players_, 0 ), quit_requested_( players_, 0 )
+    waiting_for_baton_( players_, 0 ), quit_requested_( players_, 0 ),
+    abandoned_( players_, 0 )
 {
 }
 
@@ -81,7 +82,7 @@ void mp_sched::wait_for_turn( const size_t who )
     ++parked_;
     cv_.notify_all();
     cv_.wait( lock, [this, who] {
-        return holder_ == who || stopping_;
+        return holder_ == who || stopping_ || abandoned_[who] != 0;
     } );
     waiting_for_baton_[who] = 0;
     --parked_;
@@ -117,6 +118,18 @@ void mp_sched::clear_quit( const size_t who )
     cata_assert( who < players_ );
     std::lock_guard<std::mutex> lock( mutex_ );
     quit_requested_[who] = 0;
+    abandoned_[who] = 0;
+}
+
+void mp_sched::abandon_seat( const size_t who )
+{
+    cata_assert( who < players_ );
+    std::lock_guard<std::mutex> lock( mutex_ );
+    quit_requested_[who] = 1;
+    abandoned_[who] = 1;
+    // Wakes a thread parked on wait_for_turn (its predicate now sees the flag)
+    // as well as the world, which may be waiting for this seat.
+    cv_.notify_all();
 }
 
 bool mp_sched::quit_requested( const size_t who ) const
@@ -297,6 +310,15 @@ bool mp_seat_released()
     // holder IS the asker: a seat the join phase released before the party
     // started cancels its own menu, while the rest of the session carries on.
     return sched->quit_requested( sched->holder() );
+}
+
+bool mp_menu_must_unwind()
+{
+    // Deliberately not mp_input_must_not_wait(): that one is also true for the
+    // world thread, whose menus are ordinary NPC dialogue and popups and must
+    // keep their answers. Only the end of the session and the loss of this
+    // player's own seat take a menu away from the player.
+    return mp_sched_stopping() || mp_seat_released();
 }
 
 void mp_assert_holds( const size_t who )

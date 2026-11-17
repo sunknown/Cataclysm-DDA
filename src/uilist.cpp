@@ -993,7 +993,7 @@ void uilist::query_once( input_context &ctxt, int timeout,
                          bool allow_unfiltered_hotkeys )
 {
     ret_act = ctxt.handle_input( timeout );
-    if( ret_act == "QUIT" && ( mp_sched_stopping() || mp_seat_released() ) ) {
+    if( ret_act == "QUIT" && mp_menu_must_unwind() ) {
         // The multiplayer session is ending, or this player's seat was released
         // during the join phase: handle_input() answers QUIT to every menu loop
         // so that each one unwinds (input_context.cpp). A uilist cancels on its
