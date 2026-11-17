@@ -1,6 +1,7 @@
 #include "cata_catch.h"
 
 #include <chrono>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -10,8 +11,12 @@
 #include "calendar.h"
 #include "cata_path.h"
 #include "cata_utility.h"
+#include "character_id.h"
 #include "clzones.h"
 #include "enums.h"
+#include "event.h"
+#include "event_bus.h"
+#include "filesystem.h"
 #include "game.h"
 #include "game_test_helper.h"
 #include "item.h"
@@ -22,6 +27,7 @@
 #include "memorial_logger.h"
 #include "mp/mp_context.h"
 #include "path_info.h"
+#include "player_helpers.h"
 #include "safemode_ui.h"
 #include "worldfactory.h"
 #include "zzip.h"
@@ -194,7 +200,131 @@ void seed_seat( const std::string &mark, const item &rock )
                                      tripoint_rel_ms::zero, tripoint_rel_ms::zero );
 }
 
+// Restores one of the user's global rule files on scope exit -- writing back
+// what was there, or deleting the file this test created -- so the probe rules
+// below do not become the next test's global rules.
+struct restore_rule_file {
+    cata_path path;
+    std::optional<std::string> original;
+
+    explicit restore_rule_file( cata_path p ) : path( std::move( p ) ) {
+        std::string contents;
+        if( read_from_file_optional( path.get_unrelative_path(), [&contents]( std::istream & fin ) {
+        std::ostringstream buffer;
+        buffer << fin.rdbuf();
+        contents = buffer.str();
+        } ) ) {
+            original = std::move( contents );
+        }
+    }
+
+    ~restore_rule_file() {
+        if( original ) {
+            write_to_file( path, [this]( std::ostream & fout ) {
+                fout << *original;
+            }, "restoring a global rule file" );
+        } else {
+            remove_file( path );
+        }
+    }
+
+    restore_rule_file( const restore_rule_file & ) = delete;
+    restore_rule_file &operator=( const restore_rule_file & ) = delete;
+};
+
 } // namespace
+
+// One event bus, one subscriber per seat log. event_bus::send() broadcasts, and
+// memorial_logger::notify() filters only on the acting avatar, so each seat's
+// log used to record every other seat's lines too. The guard under test is that
+// a line belongs to the log get_memorial() returns, i.e. the acting seat's.
+TEST_CASE( "a_memorial_line_reaches_only_the_acting_seat", "[coop][memorial]" )
+{
+    // Two seats, each with a log of its own subscribed to the shared bus.
+    player_context seat_a;
+    player_context seat_b;
+    // Declared last so it is destroyed first, restoring the active context
+    // before the seats above unsubscribe and die.
+    restore_active_state restore;
+    mp_set_active_context( &seat_a );
+    memorial_logger &log_a = get_memorial();
+    mp_set_active_context( &seat_b );
+    memorial_logger &log_b = get_memorial();
+    log_a.clear();
+    log_b.clear();
+
+    clear_avatar();
+    const character_id ch = get_avatar().getID();
+
+    // Seat A acts. Seat B's log is subscribed to the same bus and must ignore
+    // the line: "the avatar did it" is true for both subscribers.
+    mp_set_active_context( &seat_a );
+    get_event_bus().send(
+        cata::event::make<event_type::activates_artifact>( ch, "seat_probe_artifact" ) );
+    CHECK( contains( log_a.dump(), "Activated the seat_probe_artifact." ) );
+    CHECK_FALSE( contains( log_b.dump(), "seat_probe_artifact" ) );
+
+    // And symmetrically: B acts, A ignores.
+    mp_set_active_context( &seat_b );
+    get_event_bus().send( cata::event::make<event_type::activates_mininuke>( ch ) );
+    CHECK( contains( log_b.dump(), "Activated a mininuke." ) );
+    CHECK_FALSE( contains( log_a.dump(), "mininuke" ) );
+}
+
+// The global auto-pickup, auto-note and safe-mode files are one per process, not
+// one per character. game::load_static_data() loads them into seat 0 only, so a
+// seat that joins later used to run with no global rules at all: its only other
+// loader, load_character(), fills the character lists.
+TEST_CASE( "a_seat_added_later_loads_the_users_global_rules", "[coop]" )
+{
+    restore_active_state restore;
+    game_test_helper::reset_player_slots();
+    mp_ensure_player_context();
+    mp_sync_context_count();
+
+    restore_rule_file restore_pickup( PATH_INFO::autopickup() );
+    restore_rule_file restore_safemode( PATH_INFO::safemode() );
+    restore_rule_file restore_notes( PATH_INFO::autonote() );
+    write_to_file( PATH_INFO::autopickup(), []( std::ostream & fout ) {
+        fout << R"([{"rule":"seat_global_probe","active":true,"exclude":false}])";
+    } );
+    write_to_file( PATH_INFO::safemode(), []( std::ostream & fout ) {
+        fout << R"([{"rule":"seat_global_probe","active":true,"whitelist":false,)"
+             R"("attitude":0,"proximity":0}])";
+    } );
+    write_to_file( PATH_INFO::autonote(), []( std::ostream & fout ) {
+        fout << R"({"disabled":["mx_seat_global_probe"]})";
+    } );
+
+    // What load_global() yields for the same files, as the reference a seat's
+    // state has to match.
+    auto_pickup::player_settings pickup_probe;
+    pickup_probe.load_global();
+    safemode safemode_probe;
+    safemode_probe.load_global();
+    REQUIRE_FALSE( pickup_probe.empty() );
+    REQUIRE_FALSE( safemode_probe.empty() );
+
+    // A second seat, created the way a joining client creates one.
+    avatar &second = g->add_player_slot();
+    second.name = "SeatGlobalProbe";
+    mp_sync_context_count();
+    mp_activate_player( 1 );
+
+    CHECK_FALSE( get_auto_pickup().empty() );
+    CHECK( pickup_probe.check_item( "seat_global_probe" ) ==
+           get_auto_pickup().check_item( "seat_global_probe" ) );
+    CHECK_FALSE( get_safemode().empty() );
+    const map_extra_id probe_note( "mx_seat_global_probe" );
+    CHECK_FALSE( get_auto_notes_settings().has_auto_note_enabled( probe_note, false ) );
+    // The lazy load reads globals only: this seat's character-side state is
+    // still untouched, not something a character file filled in.
+    CHECK_FALSE( get_auto_notes_settings().has_auto_note_enabled( probe_note, true ) );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
 
 // The per-slot save loop writes each character's own .sav and the four sidecar
 // files next to it. Those five used to be one process-wide object of each kind:

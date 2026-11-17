@@ -115,6 +115,10 @@ struct player_context {
     // not subscribed never records anything, and one shared subscriber would
     // put every player's deeds in one file.
     memorial_logger &memorial_state();
+    // This seat's memorial if it has already been created, nullptr otherwise.
+    // Read by memorial_logger::notify(), which must not create one: doing so
+    // would mutate the event bus's subscriber list mid-broadcast.
+    memorial_logger *memorial_ptr() const;
     auto_pickup::player_settings &pickup_rules_state();
     auto_notes::auto_note_settings &auto_notes_state();
     safemode &safemode_state();

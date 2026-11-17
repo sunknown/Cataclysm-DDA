@@ -52,10 +52,26 @@ memorial_logger &player_context::memorial_state()
     return *memorial;
 }
 
+memorial_logger *player_context::memorial_ptr() const
+{
+    return memorial.get();
+}
+
 auto_pickup::player_settings &player_context::pickup_rules_state()
 {
     if( !pickup_rules ) {
         pickup_rules = std::make_unique<auto_pickup::player_settings>();
+        // The global rules live in one file per process, not one per character,
+        // and game::load_static_data() loads them into the seat it runs under,
+        // which is always seat 0 (main.cpp and the test harness both create the
+        // context before loading static data). A seat added later would
+        // otherwise play with an empty list: its other loader, load_character(),
+        // fills character_rules only. Seat 0 is skipped here because
+        // load_static_data() has already done it -- loading again would read the
+        // same file into the same list a second time.
+        if( slot_index != 0 ) {
+            pickup_rules->load_global();
+        }
     }
     return *pickup_rules;
 }
@@ -64,6 +80,13 @@ auto_notes::auto_note_settings &player_context::auto_notes_state()
 {
     if( !auto_notes ) {
         auto_notes = std::make_unique<auto_notes::auto_note_settings>();
+        // As above: load_static_data() loaded the global notes settings into
+        // seat 0 only. load( false ) clears the object first, which is safe here
+        // because this is the seat's first use, before its character file is
+        // read; it must never be called on a seat that has loaded a character.
+        if( slot_index != 0 ) {
+            auto_notes->load( false );
+        }
     }
     return *auto_notes;
 }
@@ -72,6 +95,13 @@ safemode &player_context::safemode_state()
 {
     if( !safemode_rules ) {
         safemode_rules = std::make_unique<safemode>();
+        // As above: load_static_data() loaded the global safe-mode rules into
+        // seat 0 only. create_rules() composes the effective rules from
+        // global_rules plus character_rules, so without this a third and fourth
+        // player would run with no safe mode at all.
+        if( slot_index != 0 ) {
+            safemode_rules->load_global();
+        }
     }
     return *safemode_rules;
 }

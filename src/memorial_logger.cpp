@@ -42,6 +42,7 @@
 #include "martialarts.h"
 #include "messages.h"
 #include "monstergenerator.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "omdata.h"
@@ -434,6 +435,25 @@ void memorial_logger::write_json_memorial( std::ostream &memorial_file ) const
 
 void memorial_logger::notify( const cata::event &e )
 {
+    // Every seat's log is subscribed to the same bus, and event_bus::send()
+    // broadcasts to all of them, so without this guard each seat's log (and the
+    // game-owned one) would record the acting player's lines: the comparisons
+    // below only ask whether the acting avatar did it, and every subscriber
+    // compares against that same avatar.
+    //
+    // An event belongs to the seat that is acting, which is exactly the log
+    // get_memorial() returns; with no player context the game-owned log is the
+    // only one that should record.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        // Compare against the member directly: memorial_state() would create
+        // and subscribe a log on first use, mutating the subscriber list while
+        // event_bus::send() is walking it.
+        if( ctx->memorial_ptr() != this ) {
+            return;
+        }
+    } else if( &get_memorial() != this ) {
+        return;
+    }
     Character &player_character = get_player_character();
     character_id avatar_id = player_character.getID();
     std::string &avatar_name = player_character.name;
