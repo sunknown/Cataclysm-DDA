@@ -16,6 +16,7 @@
 #include "input_popup.h"
 #include "json.h"
 #include "map_extras.h"
+#include "mp/mp_context.h"
 #include "options.h"
 #include "output.h"
 #include "path_info.h"
@@ -585,6 +586,12 @@ void auto_note_manager_gui::show()
 
 auto_notes::auto_note_settings &get_auto_notes_settings()
 {
-    static auto_notes::auto_note_settings staticSettings;
-    return staticSettings;
+    // The active seat's notes. One process-wide instance meant the last
+    // character loaded (load(true) clears) owned everyone's, and the per-slot
+    // save wrote that one set into every character's .ano.json.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->auto_notes_state();
+    }
+    static auto_notes::auto_note_settings outside_a_game;
+    return outside_a_game;
 }

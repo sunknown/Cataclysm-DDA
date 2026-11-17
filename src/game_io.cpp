@@ -408,7 +408,8 @@ bool game::read_character_save( const save_t &name, const bool character_only )
     u = avatar();
     u.set_save_id( name.decoded_name() );
     if( world_generator->active_world->has_compression_enabled() ) {
-        std::optional<zzip> z = zzip::load( ( save_file_path + zzip_suffix ).get_unrelative_path() );
+        std::optional<zzip> z =
+            zzip::load( ( save_file_path + zzip_suffix ).get_unrelative_path() );
         return z.has_value() &&
         read_from_zzip_optional( z.value(), save_file_path.get_unrelative_path().filename(),
         [this, character_only]( std::string_view sv ) {
@@ -434,14 +435,17 @@ void game::settle_game_state( Character &centre )
     update_map( centre );
     events().send<event_type::game_load>( getVersionString() );
     time_of_last_load = std::chrono::steady_clock::now();
-    time_played_at_last_load = std::chrono::seconds( 0 );
+    // The seat the load is happening in, not one shared total: a character-only
+    // load must not inherit the first character's hours. `load_character()`
+    // then prefers this seat's own `.pt` file when it has one.
+    mp_active_context().time_played_at_last_load = std::chrono::seconds( 0 );
     std::optional<event_multiset::summaries_type::value_type> last_save =
         stats().get_events( event_type::game_save ).last();
     if( last_save ) {
         auto time_played_it = last_save->first.find( "total_time_played" );
         if( time_played_it != last_save->first.end() &&
             time_played_it->second.type() == cata_variant_type::chrono_seconds ) {
-            time_played_at_last_load =
+            mp_active_context().time_played_at_last_load =
                 time_played_it->second.get<std::chrono::seconds>();
         }
     }
@@ -556,6 +560,21 @@ bool game::load_character( const save_t &name, const size_t slot, const bool wit
                 u.enchantment_cache->activate_passive( u );
 
                 effect_on_conditions::load_existing_character( u );
+            }
+        },
+        {
+            _( "Play time" ), [&]()
+            {
+                // This character's own total. The game-state half of a load
+                // carries the total as of the save that was read, but a
+                // character-only load carries none, and a co-op session reads
+                // exactly one character with the game state -- so without this
+                // every other character would be saved with the first one's
+                // hours. Absent file: keep whatever the load established.
+                if( const std::optional<std::chrono::seconds> played =
+                        get_playtime_from_save( world_generator->active_world, name ) ) {
+                    mp_active_context().time_played_at_last_load = *played;
+                }
             }
         },
     }, abort );
@@ -811,7 +830,9 @@ bool game::save_character_data()
         return false;
     }
     world_generator->active_world->add_save( save_t::from_save_id( u.get_save_id() ) );
-    const std::chrono::seconds total_time_played = time_played_at_last_load +
+    // The seat's own baseline: each character has its own `.pt`, and one
+    // shared baseline wrote the first-loaded character's hours into every file.
+    const std::chrono::seconds total_time_played = mp_active_context().time_played_at_last_load +
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - time_of_last_load );
     write_to_file( PATH_INFO::world_base_save_path() / ( base64_encode(
@@ -831,7 +852,8 @@ bool game::save()
     std::chrono::seconds time_since_load =
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - time_of_last_load );
-    std::chrono::seconds total_time_played = time_played_at_last_load + time_since_load;
+    std::chrono::seconds total_time_played =
+        mp_active_context().time_played_at_last_load + time_since_load;
     events().send<event_type::game_save>( time_since_load, total_time_played );
     try {
         if( !save_world_data() ) {

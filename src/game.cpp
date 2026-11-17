@@ -162,6 +162,8 @@
 #if defined(MULTIPLAYER)
 #include "mp/mp_mode.h"
 #endif
+#include "mp/mp_context.h"
+#include "mp/mp_placement.h"
 #include "mp/mp_sched.h"
 #include "monstergenerator.h"
 #include "move_mode.h"
@@ -483,7 +485,6 @@ game::game() :
     reset_light_level();
     events().subscribe( &*stats_tracker_ptr );
     events().subscribe( &*kill_tracker_ptr );
-    events().subscribe( &*memorial_logger_ptr );
     events().subscribe( &*achievements_tracker_ptr );
     events().subscribe( &*spell_events_ptr );
     events().subscribe( &*eoc_events_ptr );
@@ -1028,7 +1029,9 @@ bool game::start_game()
     update_map( u );
     get_event_bus().send<event_type::game_start>( getVersionString() );
     finish_new_character( u );
-    time_played_at_last_load = std::chrono::seconds( 0 );
+    // Per seat: a character created now has played no time, and the seat it is
+    // in may have carried somebody else's total before it.
+    mp_active_context().time_played_at_last_load = std::chrono::seconds( 0 );
     time_of_last_load = std::chrono::steady_clock::now();
 
     if( debug_menu::is_debug_character() ) {
@@ -1084,6 +1087,19 @@ void game::finish_new_character( avatar &ava )
         debugmsg( "could not place starting vehicle" );
     }
     // Assign all of this scenario's missions to the player.
+#if defined(MP_SERVER)
+    // `scen` is process-global and avatar::load() sets it, so by the time a new
+    // character is finished in a mixed party it may name the last continued
+    // character's scenario rather than this one's. Every character created in
+    // a co-op session starts under the co-op scenario (avatar::create() sets
+    // it), so re-applying it here is what makes the mission list this
+    // character's and not a partner's. Server-only: single player keeps the
+    // scenario it selected, and asking for the co-op one there would log a
+    // missing-content error in builds without the multiplayer data.
+    if( const scenario *const coop = mp_coop_scenario() ) {
+        set_scenario( coop );
+    }
+#endif
     for( const mission_type_id &m : scen->missions() ) {
         mission *new_mission = mission::reserve_new( m, character_id() );
         new_mission->assign( ava );
@@ -3037,7 +3053,17 @@ achievements_tracker &game::achievements()
 
 memorial_logger &game::memorial()
 {
-    return *memorial_logger_ptr;
+    // Per seat: each character has its own log, written to its own .log file.
+    // The one process-wide instance this replaced held whichever character was
+    // loaded last, so a two-character save wrote that log into every file.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->memorial_state();
+    }
+    // Before any player context exists (early startup, a test that reset it).
+    // Nobody can act in that state, so the entries that land here are not lost
+    // gameplay -- the alternative is a null log and a crash.
+    static memorial_logger outside_a_game;
+    return outside_a_game;
 }
 
 void game::update_unique_npc_location( const std::string &id, point_abs_om loc )
@@ -4453,14 +4479,12 @@ template shared_ptr_fast<npc> game::shared_from<npc>( const npc & );
 template<typename T>
 T *game::critter_by_id( const character_id &id )
 {
-    // An unset id names nobody. Bare player slots carry character_id(): the
-    // join lobby creates them before a character exists, and tests leave them
-    // behind. Without this guard such a slot compares equal to any caller that
-    // passes a value it never set (a mission's effect talker, a training
-    // actor's teacher or trainee) and is handed back as a live character.
-    if( !id.is_valid() ) {
-        return nullptr;
-    }
+    // The unset id is NOT rejected here, and must not be: before the slot loop
+    // existed, `id == u.getID()` handed the default avatar to a caller passing
+    // the same unset id, and vanilla test fixtures depend on that lookup (a
+    // map-teardown path leaves an NPC boarded with an unresolved passenger and
+    // unwinds it through this call). The real hazard is a bare SLOT, handled
+    // below, not the caller's id.
     if( id == u.getID() ) {
         // player is always alive, therefore no is-dead check
         return dynamic_cast<T *>( &u );
@@ -4472,7 +4496,16 @@ T *game::critter_by_id( const character_id &id )
     // visited in index order and ids are unique, so the first match is the
     // only match. NPCs are looked up after this loop: an avatar id cannot also
     // belong to an npc.
+    //
+    // A slot with no id (the join lobby creates slots before a character
+    // exists, and tests leave bare ones behind) is skipped: it compares equal
+    // to every caller that passes an id it never set (a mission's effect
+    // talker, a training actor's teacher or trainee) and would be handed back
+    // as a live character.
     for( avatar *slot : player_slots ) {
+        if( !slot->getID().is_valid() ) {
+            continue;
+        }
         if( slot->getID() == id ) {
             return dynamic_cast<T *>( slot );
         }

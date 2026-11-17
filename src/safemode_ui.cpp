@@ -23,6 +23,7 @@
 #include "json.h"
 #include "json_loader.h"
 #include "monstergenerator.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "options.h"
 #include "output.h"
@@ -38,8 +39,14 @@
 
 safemode &get_safemode()
 {
-    static safemode single_instance;
-    return single_instance;
+    // The active seat's safe-mode rules. One process-wide instance meant the
+    // last character loaded (load_character) owned everyone's, and the per-slot
+    // save wrote that one set into every character's .sfm.json.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->safemode_state();
+    }
+    static safemode outside_a_game;
+    return outside_a_game;
 }
 
 void safemode::show()

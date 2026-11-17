@@ -620,10 +620,11 @@ class zone_manager
         zone_manager &operator=( zone_manager && ) = default;
         zone_manager &operator=( const zone_manager & ) = default;
 
-        static zone_manager &get_manager() {
-            static zone_manager manager;
-            return manager;
-        }
+        // The active seat's zones. Out of line (clzones.cpp) because it reads
+        // the player context, which this header must not pull in: one shared
+        // manager meant the last character loaded owned everyone's zones, and
+        // the per-slot save wrote them into every character's .zones.json.
+        static zone_manager &get_manager();
 
         void clear();
 

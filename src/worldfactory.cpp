@@ -106,6 +106,25 @@ cata_path WORLD::folder_path() const
     return PATH_INFO::savedir_path() / world_name;
 }
 
+std::optional<std::chrono::seconds> get_playtime_from_save( const WORLD *world,
+        const save_t &save )
+{
+    const cata_path playtime_file = world->folder_path() / ( save.base_path() + ".pt" );
+    std::optional<std::chrono::seconds> pt_seconds;
+    if( file_exist( playtime_file ) ) {
+        read_from_file( playtime_file, [&pt_seconds]( std::istream & fin ) {
+            if( fin.eof() ) {
+                return;
+            }
+            std::chrono::seconds::rep dur_seconds = 0;
+            fin.imbue( std::locale::classic() );
+            fin >> dur_seconds;
+            pt_seconds = std::chrono::seconds( dur_seconds );
+        } );
+    }
+    return pt_seconds;
+}
+
 bool WORLD::save_exists( const save_t &name ) const
 {
     return std::find( world_saves.begin(), world_saves.end(), name ) != world_saves.end();

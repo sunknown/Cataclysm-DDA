@@ -2,14 +2,20 @@
 
 #include <cassert>
 
+#include "auto_note.h"
+#include "auto_pickup.h"
 #include "character_creator_ui.h" // character_creator_uistate, for creator_state()
+#include "clzones.h"
+#include "event_bus.h"
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
+#include "memorial_logger.h"
 #include "mp/mp_sched.h"
 #include "output.h"
 #include "panels.h"
 #include "popup.h" // static_popup's complete definition, for wait_popup
+#include "safemode_ui.h"
 
 // Out-of-line so the compiler-generated bodies (including the exception-
 // unwind logic the constructor may need) are emitted only here, where
@@ -23,6 +29,59 @@ character_creator_uistate &player_context::creator_state()
         creator_state_ptr = std::make_unique<character_creator_uistate>();
     }
     return *creator_state_ptr;
+}
+
+// The five below are the per-seat counterparts of what used to be process-wide
+// singletons (see the comment on the members in mp_context.h). They are
+// out-of-line because the complete definitions of those types are not in the
+// header, and created on first use rather than when the context is made: a
+// zone_manager copies the loaded zone types in its constructor, and the marker
+// of a seat that has not been used yet must not be "a manager built before the
+// JSON was read".
+memorial_logger &player_context::memorial_state()
+{
+    if( !memorial ) {
+        memorial = std::make_unique<memorial_logger>();
+        // Events are the only source of memorial lines (src/memorial_logger.cpp
+        // notify()), so an unsubscribed log stays empty for ever. Subscribing
+        // here rather than once for the process is what keeps one player's
+        // deeds out of another player's file; the subscriber unsubscribes itself
+        // on destruction, so a seat that is dropped leaves nothing behind.
+        get_event_bus().subscribe( memorial.get() );
+    }
+    return *memorial;
+}
+
+auto_pickup::player_settings &player_context::pickup_rules_state()
+{
+    if( !pickup_rules ) {
+        pickup_rules = std::make_unique<auto_pickup::player_settings>();
+    }
+    return *pickup_rules;
+}
+
+auto_notes::auto_note_settings &player_context::auto_notes_state()
+{
+    if( !auto_notes ) {
+        auto_notes = std::make_unique<auto_notes::auto_note_settings>();
+    }
+    return *auto_notes;
+}
+
+safemode &player_context::safemode_state()
+{
+    if( !safemode_rules ) {
+        safemode_rules = std::make_unique<safemode>();
+    }
+    return *safemode_rules;
+}
+
+zone_manager &player_context::zones_state()
+{
+    if( !zones ) {
+        zones = std::make_unique<zone_manager>();
+    }
+    return *zones;
 }
 
 static player_context *active_context = nullptr;

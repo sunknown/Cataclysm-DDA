@@ -36,6 +36,7 @@
 #include "map_iterator.h"
 #include "map_selector.h"
 #include "memory_fast.h"
+#include "mp/mp_context.h"
 #include "output.h"
 #include "path_info.h"
 #include "string_formatter.h"
@@ -100,6 +101,18 @@ zone_manager::zone_manager()
     for( const zone_type &zone : zone_type::get_all() ) {
         types.emplace( zone.id, zone );
     }
+}
+
+zone_manager &zone_manager::get_manager()
+{
+    // See the declaration: per seat, not per process. Built on first use, which
+    // for a seat is its first zone access (after the JSON is loaded, so the
+    // zone types this constructor copies exist).
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->zones_state();
+    }
+    static zone_manager outside_a_game;
+    return outside_a_game;
 }
 
 void zone_manager::clear()

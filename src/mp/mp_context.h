@@ -12,8 +12,19 @@
 #include "ui_manager.h"     // ui_stack_t, ui_adaptor
 #include "memory_fast.h"    // weak_ptr_fast
 
+class memorial_logger;
+class safemode;
 class static_popup;
+class zone_manager;
 struct character_creator_uistate;
+namespace auto_pickup
+{
+class player_settings;
+}
+namespace auto_notes
+{
+class auto_note_settings;
+}
 
 struct viewport_params {
     int term_cols = 0, term_rows = 0;
@@ -60,6 +71,33 @@ struct player_context {
     // on first use by creator_state() below.
     std::unique_ptr<character_creator_uistate> creator_state_ptr; // NOLINT(cata-serialize)
 
+    // This seat's per-character state. All five used to be process-wide
+    // singletons, which is wrong for a session with several characters: every
+    // character load overwrote the one before it (memorial().load() and
+    // auto_notes load(true) clear, zone_manager::deserialize/load_zones replace,
+    // the pickup and safemode rules are reassigned), so a character played with
+    // someone else's zones, pickup rules, notes, safemode list and memorial log
+    // -- and the per-slot save then wrote the last-loaded character's state into
+    // every character's files. They are per seat now, and the accessors
+    // (get_memorial, get_auto_pickup, get_auto_notes_settings, get_safemode,
+    // zone_manager::get_manager) return the active seat's.
+    //
+    // Pointers rather than values so this header keeps its forward declarations,
+    // and created on first use so a seat that never reaches the game pays for
+    // nothing. Declared before the constructors below for the same reason
+    // wait_popup is: the complete definitions live in mp_context.cpp.
+    std::unique_ptr<memorial_logger> memorial;                        // NOLINT(cata-serialize)
+    std::unique_ptr<auto_pickup::player_settings> pickup_rules;       // NOLINT(cata-serialize)
+    std::unique_ptr<auto_notes::auto_note_settings> auto_notes;       // NOLINT(cata-serialize)
+    std::unique_ptr<safemode> safemode_rules;                         // NOLINT(cata-serialize)
+    std::unique_ptr<zone_manager> zones;                              // NOLINT(cata-serialize)
+
+    // This character's playtime before the session started, as its own `.pt`
+    // file recorded it. Per seat because each character has its own total: one
+    // shared baseline wrote the first-loaded character's hours into every
+    // character's file.
+    std::chrono::seconds time_played_at_last_load{};
+
     // Declared (not defaulted inline) because wait_popup needs the complete
     // definition of static_popup to construct/destroy, and this header only
     // forward-declares it -- exactly the reason `game` itself declares
@@ -71,6 +109,16 @@ struct player_context {
 
     // The creator state of this player, created on first use.
     character_creator_uistate &creator_state();
+
+    // This seat's per-character state, each created on first use. The memorial
+    // also subscribes itself to the game's event bus on creation: a log that is
+    // not subscribed never records anything, and one shared subscriber would
+    // put every player's deeds in one file.
+    memorial_logger &memorial_state();
+    auto_pickup::player_settings &pickup_rules_state();
+    auto_notes::auto_note_settings &auto_notes_state();
+    safemode &safemode_state();
+    zone_manager &zones_state();
 };
 
 player_context &mp_active_context();       // asserts a non-null active context

@@ -2,11 +2,13 @@
 #ifndef CATA_SRC_WORLDFACTORY_H
 #define CATA_SRC_WORLDFACTORY_H
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <iosfwd>
 #include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -94,6 +96,13 @@ struct WORLD {
         mutable std::optional<bool> is_compressed;
 
 };
+
+// The playtime `<world>/<base64(save_id)>.pt` records for `save`, absent when
+// the file does not exist (or holds nothing readable). game::save_character_data
+// writes it and the character list shows it, so the reader lives here rather
+// than twice: a format change in one place must not leave the other behind.
+std::optional<std::chrono::seconds> get_playtime_from_save( const WORLD *world,
+        const save_t &save );
 
 class mod_manager;
 class mod_ui;

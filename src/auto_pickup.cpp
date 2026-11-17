@@ -32,6 +32,7 @@
 #include "map.h"
 #include "map_selector.h"
 #include "material.h"
+#include "mp/mp_context.h"
 #include "options.h"
 #include "output.h"
 #include "path_info.h"
@@ -54,8 +55,14 @@ static bool check_special_rule( const std::map<material_id, int> &materials,
 
 auto_pickup::player_settings &get_auto_pickup()
 {
-    static auto_pickup::player_settings single_instance;
-    return single_instance;
+    // The active seat's rules. One process-wide instance meant the last
+    // character loaded had its rules replace everyone else's, and the per-slot
+    // save wrote that one set into every character's .apu.json.
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->pickup_rules_state();
+    }
+    static auto_pickup::player_settings outside_a_game;
+    return outside_a_game;
 }
 
 /**

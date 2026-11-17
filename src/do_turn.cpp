@@ -140,7 +140,8 @@ bool cleanup_at_end()
         std::chrono::seconds time_since_load =
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - g->time_of_last_load );
-        std::chrono::seconds total_time_played = g->time_played_at_last_load + time_since_load;
+        std::chrono::seconds total_time_played =
+            mp_active_context().time_played_at_last_load + time_since_load;
         get_event_bus().send<event_type::game_over>( total_time_played );
         // Struck the save_player_data here to forestall Weirdness
         g->move_save_to_graveyard();

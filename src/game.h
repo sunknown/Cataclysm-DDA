@@ -1363,7 +1363,6 @@ class game
         pimpl<stats_tracker> stats_tracker_ptr;
         pimpl<achievements_tracker> achievements_tracker_ptr;
         pimpl<kill_tracker> kill_tracker_ptr;
-        pimpl<memorial_logger> memorial_logger_ptr; // NOLINT(cata-serialize)
         pimpl<spell_events> spell_events_ptr; // NOLINT(cata-serialize)
         pimpl<eoc_events> eoc_events_ptr; // NOLINT(cata-serialize)
         pimpl<power_network_manager> power_networks_ptr;
@@ -1478,7 +1477,6 @@ class game
         int next_mission_id = 0; // NOLINT(cata-serialize)
         int64_t next_item_uid = 1; // NOLINT(cata-serialize)
 
-        std::chrono::seconds time_played_at_last_load; // NOLINT(cata-serialize)
         // NOLINTNEXTLINE(cata-serialize)
         std::chrono::time_point<std::chrono::steady_clock> time_of_last_load;
         int moves_since_last_save = 0; // NOLINT(cata-serialize)
