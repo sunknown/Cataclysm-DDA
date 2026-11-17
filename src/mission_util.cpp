@@ -519,7 +519,13 @@ bool mission_type::parse_funcs( const JsonObject &jo, std::string_view src,
     talk_effects.load_effect( jo, "effect", src );
     phase_func = [ funcs, talk_effects ]( mission * miss ) {
         npc *beta_npc = g->find_npc( miss->get_npc_id() );
-        ::dialogue d( get_talker_for( get_avatar() ),
+        // End/fail effects run from the world half for missions of any slot, so
+        // the active avatar is not necessarily the one being rewarded. Resolve
+        // the assignee; fall back to the active avatar for an unassigned
+        // mission, which is all a single-player game ever has.
+        Character *owner = g->critter_by_id<Character>( miss->get_assigned_player_id() );
+        avatar *owner_avatar = owner == nullptr ? nullptr : owner->as_avatar();
+        ::dialogue d( get_talker_for( owner_avatar == nullptr ? get_avatar() : *owner_avatar ),
                       beta_npc == nullptr ? nullptr : get_talker_for( beta_npc ) );
         for( const talk_effect_fun_t &effect : talk_effects.effects ) {
             effect( d );

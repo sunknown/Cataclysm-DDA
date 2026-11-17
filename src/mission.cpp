@@ -44,6 +44,30 @@ static const efftype_id effect_run( "run" );
 
 static const mission_type_id mission_NULL( "NULL" );
 
+namespace
+{
+/**
+ * The avatar a mission belongs to. Missions are world state assigned to a
+ * character_id, and the world half processes all of them while slot 0 is the
+ * avatar in `u`; judging a mission against the active slot would complete and
+ * reward one player's mission with another player's position, inventory and
+ * conversation. A mission with no loaded owner (unassigned, or its character
+ * is gone) keeps the old single-player behaviour of resolving to the active
+ * avatar, which is also the only avatar a single-player game has.
+ */
+avatar &mission_holder( const character_id &owner )
+{
+    if( owner.is_valid() ) {
+        for( avatar *slot : g->get_players() ) {
+            if( slot->getID() == owner ) {
+                return *slot;
+            }
+        }
+    }
+    return get_avatar();
+}
+} // namespace
+
 mission mission_type::create( const character_id &npc_id ) const
 {
     mission ret;
@@ -339,7 +363,7 @@ void mission::assign( avatar &u )
 void mission::fail()
 {
     status = mission_status::failure;
-    avatar &player_character = get_avatar();
+    avatar &player_character = mission_holder( player_id );
     if( player_character.getID() == player_id ) {
         player_character.on_mission_finished( *this );
     }
@@ -382,12 +406,13 @@ void mission::step_complete( const int _step )
 
 void mission::wrap_up()
 {
-    avatar &player_character = get_avatar();
+    avatar &player_character = mission_holder( player_id );
     if( player_character.getID() != player_id ) {
-        // This is called from npctalk.cpp, the npc should only offer the option to wrap up mission
-        // that have been assigned to the current player.
-        debugmsg( "mission::wrap_up called, player %d was assigned, but current player is %d",
-                  player_id.get_value(), player_character.getID().get_value() );
+        // Callers only offer a mission to its owner, so landing here means the
+        // assigned character is gone and the fallback avatar cannot receive
+        // the completion.
+        debugmsg( "mission::wrap_up called for player %d, which is not loaded",
+                  player_id.get_value() );
     }
 
     status = mission_status::success;
@@ -485,7 +510,7 @@ bool mission::is_complete( const character_id &_npc_id ) const
         return true;
     }
 
-    avatar &player_character = get_avatar();
+    avatar &player_character = mission_holder( player_id );
     switch( type->goal ) {
         case MGOAL_GO_TO: {
             const tripoint_abs_omt cur_pos = player_character.pos_abs_omt();
