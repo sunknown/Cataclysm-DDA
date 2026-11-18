@@ -31,6 +31,11 @@ void add_msg( std::string msg );
 void add_msg( const game_message_params &params, std::string msg );
 void clear_messages();
 void deactivate();
+// Re-enables message logging without discarding the history deactivate() left
+// in place. A session that keeps playing after a character's death needs this:
+// game::is_game_over() deactivates the log for the single-player death screen,
+// and everybody still at a terminal has to keep seeing messages.
+void activate();
 size_t size();
 bool has_undisplayed_messages();
 void display_messages();

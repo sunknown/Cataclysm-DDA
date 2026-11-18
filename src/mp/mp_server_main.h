@@ -169,6 +169,29 @@ void mp_server_end_if_no_clients();
 // never reconnects the seat is left clean as well.
 void mp_server_mark_disconnected( size_t slot );
 
+// Whether `slot` is a real seat whose connected player has died and so is owed
+// a replacement. A dead seat whose client has left is a free seat (see
+// mp_server_seat_is_free_for_new_client), not a replacement menu: there is
+// nobody at the terminal to choose one. Checked by the orchestrator to hand
+// the dead seat the baton and by its thread to decide what to do with it.
+bool mp_player_needs_replacement( size_t slot );
+
+// Records `slot`'s death: unboards a dying driver, places the corpse exactly
+// once, and clears the single-player quit state and message-log switch a death
+// inside the character's own turn left behind. Idempotent per death: a corpse
+// is placed once however many times the orchestrator notices the dead slot.
+// The seat's thread is released by the world's next baton grant, which
+// mp_player_needs_replacement() makes it owe.
+void mp_server_notify_death( size_t slot );
+
+// Runs the replacement menu for `slot`, in that player's own context and
+// thread, then places the new character next to the group. `mp_run_join_menu`
+// is reused unchanged: an empty character card leaves out its Continue entry.
+// The seat holds the baton on entry. A player who quits -- or whose client
+// drops -- leaves the table like any other disconnect; a refused placement is
+// reported and the menu repeats.
+void mp_run_replacement_menu( size_t slot );
+
 // Whether `slot` can take a new client: it is a real seat, its character is
 // dead, and no connected client still occupies it. A living character's seat
 // is not free -- the player is still at the terminal -- and a dead character

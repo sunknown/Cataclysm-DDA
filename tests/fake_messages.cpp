@@ -51,6 +51,7 @@ void Messages::clear_messages()
     messages.clear();
 }
 void Messages::deactivate() {}
+void Messages::activate() {}
 size_t Messages::size()
 {
     return messages.size();

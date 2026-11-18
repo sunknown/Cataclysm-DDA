@@ -787,7 +787,14 @@ bool game::do_turn()
         // slot and asks nobody.
         for( size_t i = 0; i < player_slot_count(); ++i ) {
             if( player_at( i ).is_dead_state() ) {
+#if defined(MP_SERVER)
+                // A death is a replacement, not the end of everybody's game:
+                // place the corpse once and let the seat's own thread offer a
+                // new character. The loop below hands that thread the baton.
+                mp_server_notify_death( i );
+#else
                 mp_request_session_end( player_at( i ).get_name() + " died" );
+#endif
             }
         }
         if( mp_session_end_requested() ) {
@@ -836,6 +843,15 @@ bool game::do_turn()
                                state == mp_player_state::holding ||
                                mp_player_left_behind( i ) ||
                                mp_player_is_away_at_input_wait( i );
+#if defined(MP_SERVER)
+                // A dead seat with its player still connected owes the session
+                // a replacement. It never runs player_act() -- the single
+                // global quit is latched there -- but its thread has a branch
+                // waiting for exactly this grant.
+                owes_turn[i] = owes_turn[i] ||
+                               ( mp_player_needs_replacement( i ) &&
+                                 sched->waiting_for_baton( i ) );
+#endif
                 if( owes_turn[i] && sched->waiting_for_baton( i ) ) {
                     sched->yield_to( mp_sched::world, i );
                     moved = true;

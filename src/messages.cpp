@@ -482,6 +482,11 @@ void Messages::deactivate()
     player_messages.active = false;
 }
 
+void Messages::activate()
+{
+    player_messages.active = true;
+}
+
 size_t Messages::size()
 {
     return player_messages.messages.size();

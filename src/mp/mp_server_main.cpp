@@ -17,9 +17,11 @@
 #include "debug.h"
 #include "game.h"
 #include "game_constants.h"
+#include "map.h"
 #include "messages.h"
 #include "mod_manager.h"
 #include "path_info.h"
+#include "popup.h"
 #include "string_formatter.h"
 #include "translations.h"
 #include "worldfactory.h"
@@ -162,6 +164,14 @@ int mp_server_main( const int port, const std::string &world_name, const int pla
 static std::vector<std::optional<mp_join_choice>> g_join_choices;
 static std::optional<tripoint_abs_ms> g_join_world_anchor;
 
+// Seats whose death has already been recorded, indexed by seat. A corpse is
+// placed once per death: the orchestrator notices a dead slot on every turn
+// until it is replaced, and the seat's own thread records the same death when
+// it happened inside player_act(). Cleared for a seat when its replacement is
+// placed, and reset with the join phase -- the session boundary both the
+// server and the in-process harness pass through.
+static std::vector<bool> g_death_notified;
+
 // Whether the join phase is running. A dropped wire means two different things
 // either side of this flag: during the phase it costs that one client its seat
 // while the session waits for a replacement, and once the party has started it
@@ -179,6 +189,7 @@ void mp_join_begin( const size_t players, const std::optional<tripoint_abs_ms> w
     g_join_choices.assign( players, std::nullopt );
     g_join_world_anchor = world_anchor;
     g_join_phase = players > 0;
+    g_death_notified.assign( players, false );
     mp_join_reset_claims();
 }
 
@@ -548,6 +559,113 @@ void mp_server_mark_disconnected( const size_t slot )
     mp_server_end_if_no_clients();
 }
 
+bool mp_player_needs_replacement( const size_t slot )
+{
+    if( slot >= g->player_slot_count() ) {
+        return false;
+    }
+    // A dead seat whose client left is a free seat, not a menu: there is nobody
+    // at the terminal to choose a replacement. Only a dead character with its
+    // player still connected is owed one.
+    return g->player_at( slot ).is_dead_state() && !mp_player_is_disconnected( slot );
+}
+
+void mp_server_notify_death( const size_t slot )
+{
+    if( slot >= g->player_slot_count() ) {
+        return;
+    }
+    g_death_notified.resize( g->player_slot_count(), false );
+    if( !g->player_at( slot ).is_dead_state() || g_death_notified[slot] ) {
+        return;
+    }
+    g_death_notified[slot] = true;
+    avatar &ava = g->player_at( slot );
+    if( g->uquit == QUIT_DIED ) {
+        // The death happened inside this character's own turn, so
+        // game::is_game_over() has already unboarded the vehicle, placed the
+        // corpse and latched the single-player death state. Placing a second
+        // corpse here would duplicate every item the first one took, and the
+        // latch is one global: left set, the surviving partner's next
+        // player_act() reads the session as over. is_game_over() also
+        // deactivates the message log for the single-player death screen, and
+        // the session has more to say after that.
+        g->uquit = QUIT_NO;
+        Messages::activate();
+    } else {
+        // The orchestrator noticed the death before the seat's thread did.
+        // Nothing has placed the corpse yet.
+        if( ava.in_vehicle ) {
+            get_map().unboard_vehicle( ava.pos_bub() );
+        }
+        ava.place_corpse( &get_map() );
+    }
+    Messages::add_msg( string_format( _( "Player %d (%s) died" ),
+                                     static_cast<int>( slot ) + 1, ava.get_name() ) );
+    mp_server_log( "\"" + ava.get_name() + "\" died; the seat is choosing a replacement" );
+}
+
+void mp_run_replacement_menu( const size_t slot )
+{
+    mp_sched *const sched = mp_active_sched();
+    cata_assert( sched != nullptr );
+    cata_assert( slot < g->player_slot_count() );
+    // Where the character fell. Taken before the menu builds a new avatar over
+    // the old one, so the fallback anchor still names the group's position.
+    const tripoint_abs_ms dead_pos = g->player_at( slot ).pos_abs();
+    const std::string dead_name = g->player_at( slot ).get_name();
+    while( true ) {
+        const mp_join_choice choice = mp_run_join_menu( "" );
+        if( sched->unwind_if_stopping( slot ) ) {
+            return;
+        }
+        if( choice.decision != mp_join_choice::kind::created ) {
+            // Quit, Escape, or a wire that died while the player was choosing:
+            // the seat leaves the table exactly as a disconnect does. It stays
+            // dead and disconnected -- a free seat -- until a client takes it.
+            mp_server_mark_disconnected( slot );
+            return;
+        }
+        // Anchor on somebody still playing. The corpse is not a place to put
+        // the replacement; an away player is still at their terminal, so they
+        // count, while a disconnected seat has nobody to anchor to.
+        std::optional<tripoint_abs_ms> anchor;
+        for( size_t i = 0; i < g->player_slot_count() && !anchor; ++i ) {
+            if( i == slot || g->player_at( i ).is_dead_state() ||
+                mp_player_is_disconnected( i ) ) {
+                continue;
+            }
+            anchor = g->player_at( i ).pos_abs();
+        }
+        if( !anchor ) {
+            anchor = dead_pos;
+        }
+        // A free tile is found first so that a full bubble is a refusal to
+        // report rather than place_new_character()'s "build the world" path,
+        // which only the first character of an empty world may take.
+        avatar &fresh = g->player_at( slot );
+        const std::optional<tripoint_abs_ms> spot = mp_find_free_tile_near( *anchor );
+        const std::string refusal = spot ? place_new_character( fresh, spot ) :
+            string_format( _( "no free tile near the group for \"%s\"" ), fresh.name );
+        if( !refusal.empty() ) {
+            // The player has to see why, then choose again.
+            popup( refusal );
+            if( sched->unwind_if_stopping( slot ) ) {
+                return;
+            }
+            continue;
+        }
+        // The new character is at the keyboard by construction: the away flag
+        // belonged to the character it replaced.
+        mp_set_away( slot, false );
+        if( slot < g_death_notified.size() ) {
+            g_death_notified[slot] = false;
+        }
+        mp_server_log( "\"" + fresh.name + "\" replaced \"" + dead_name + "\"" );
+        return;
+    }
+}
+
 std::optional<size_t> mp_server_seat_for_card( const std::string &save_id )
 {
     // A client with no card claims no seat. An empty id would otherwise match
@@ -897,6 +1015,29 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             sched.release_to( slot, mp_sched::world );
             continue;
         }
+        if( mp_player_needs_replacement( slot ) ) {
+            // The character died but its player is still at the terminal. Do
+            // not run player_act(): game::is_game_over() latches the one global
+            // quit for the whole session, and every other seat would read the
+            // world as over. This branch is what the orchestrator's grant
+            // reaches -- it owes the turn for exactly this -- and it either
+            // returns with a fresh character or leaves the table.
+            mp_assert_holds( slot );
+            mp_activate_player( slot );
+            // The creator draws its own screen; the main game screen must not
+            // be underneath it, exactly as during the join phase. It also
+            // draws the map around the active avatar, and creation resets that
+            // avatar to the invalid sentinel position before the character is
+            // placed -- a main screen left registered here would try to draw
+            // the map at that position. The next player_act() recreates it.
+            main_ui.reset();
+            mp_run_replacement_menu( slot );
+            if( sched.unwind_if_stopping( slot ) ) {
+                return;
+            }
+            sched.release_to( slot, mp_sched::world );
+            continue;
+        }
         if( sched.quit_requested( slot ) ) {
             // This seat was released while it waited for the party to start
             // (mp_sched::abandon_seat, after the client's wire died): there is
@@ -933,17 +1074,24 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             return;
         }
         if( ended && !mp_player_is_disconnected( slot ) ) {
-            // The game is over or this player quit. A thread body has nowhere
-            // to return that to, so it is left where the orchestrator picks it
-            // up and turns it into do_turn()'s `true` for main().
-            //
-            // A seat whose client is gone has already been marked disconnected
-            // by the input wait that noticed the loss. Its verdict is the menu
-            // stack unwinding, not a free choice by a player at a terminal: the
-            // seat leaves the barrier, and the session goes on for the others.
-            const avatar &ava = g->player_at( slot );
-            mp_request_session_end( ava.get_name() +
-                                    ( ava.is_dead_state() ? " died" : " left the game" ) );
+            // A dead character is a replacement, not the end of everybody's
+            // game. A seat whose client is gone has already been marked
+            // disconnected by the input wait that noticed the loss; its
+            // verdict is the menu stack unwinding, not a free choice.
+            avatar &ending = g->player_at( slot );
+            if( ending.is_dead_state() || g->uquit == QUIT_DIED ) {
+                // Died inside this character's own turn. Record it -- which
+                // resets the single-player quit latch and re-enables the
+                // message log, and places no second corpse -- so the next
+                // grant reaches the replacement branch above.
+                mp_server_notify_death( slot );
+            } else {
+                // A voluntary quit leaves the table exactly like a lost wire.
+                // The quit status is one global for the session: left set, the
+                // surviving partner's next player_act() reads the game as over.
+                mp_server_mark_disconnected( slot );
+                g->uquit = QUIT_NO;
+            }
         }
         sched.release_to( slot, mp_sched::world );
     }

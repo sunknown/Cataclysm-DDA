@@ -422,42 +422,88 @@ TEST_CASE( "every_client_is_told_why_the_session_ended", "[mp]" )
     mp_turn_reset_all();
 }
 
-TEST_CASE( "a_death_in_a_session_ends_it_and_saves_the_world", "[mp]" )
+TEST_CASE( "a_death_opens_a_replacement_instead_of_ending_the_session", "[mp]" )
 {
     restore_active_state restore;
-    // Slot 1 first: its death used to go unnoticed, which fails a check. Slot
-    // 0's used to reach the death screens from the world thread and abort.
+    // Both seats: a death in slot 1 used to go unnoticed, and slot 0's used to
+    // reach the single-player death screens from the world thread.
     const size_t victim = GENERATE( 1, 0 );
     CAPTURE( victim );
     mp_session_harness harness( 2 );
+    const tripoint_bub_ms corpse = g->player_at( victim ).pos_bub();
+
+    g->player_at( victim ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
     harness.run_until( []() {
         return false;
-    }, 1 );
-    // By name, not by reference: activating a player swaps avatars' contents
-    // between the slot objects, so a reference names somebody else afterwards.
-    avatar &dead = g->player_at( victim );
-    const std::string name = dead.get_name();
-    dead.set_part_hp_cur( bodypart_id( "torso" ), 0 );
-    REQUIRE( dead.is_dead_state() );
+    }, 3 );
 
-    // The death screens, the deathcam question and the world-end menu are
-    // all a single player's. A session asks none of them: it saves the world
-    // as it stands -- the dead character with it, their death handled when
-    // the world is next loaded alone -- and ends for everyone, saying why.
-    CHECK( g->do_turn() );
-    CHECK( mp_session_end_reason() == name + " died" );
-    CHECK( g->uquit == QUIT_SAVED );
+    // Death no longer ends anybody's session: the corpse stays, the seat is
+    // owed a replacement, and everybody else keeps playing.
+    CHECK_FALSE( mp_session_end_requested() );
+    // Refetched by slot rather than held as a reference: activation swaps
+    // avatar contents between the slot objects while a thread runs.
+    CHECK( g->player_at( victim ).is_dead_state() );
+    CHECK_FALSE( get_map().i_at( corpse ).empty() );
 
-    // The ending's own teardown (turn_handler::cleanup_at_end) empties the map
-    // buffer and the overmaps, leaving the map pointing at freed submaps, as
-    // main() expects: it goes back to the menu and loads a world. A test
-    // process goes on to the next test instead, so put back the world
-    // tests/test_main.cpp starts every run with.
-    get_map() = map();
-    overmap_special_batch empty_specials( point_abs_om{} );
-    overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
-    get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
-    get_avatar().move_to( tripoint_abs_ms::zero );
+    harness.choose_random_character( victim );
+    REQUIRE( harness.run_until( [victim]() {
+        return !g->player_at( victim ).is_dead_state();
+    }, 60 ) );
+    CHECK( g->player_at( victim ).pos_bub() != corpse );
+}
+
+TEST_CASE( "the_session_does_not_end_when_the_last_character_dies", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    g->player_at( 0 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    // The session lives as long as the client at the terminal, not as long as
+    // the character: an empty table with a client is still a session.
+    CHECK_FALSE( mp_session_end_requested() );
+}
+
+TEST_CASE( "a_dead_disconnected_avatar_reconnects_into_creation", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const std::string save_id = g->player_at( 1 ).get_save_id();
+    harness.drop_client( 1 );
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+
+    // A dead seat whose client left is a free seat, not a menu: the returning
+    // client is offered creation again.
+    CHECK( mp_server_seat_is_free_for_new_client( 1 ) );
+    CHECK( harness.reconnect_client( 1, save_id ) );
+    harness.choose_random_character( 1 );
+    CHECK( harness.run_until( []() {
+        return !g->player_at( 1 ).is_dead_state();
+    }, 60 ) );
+}
+
+TEST_CASE( "a_disconnect_while_creating_a_replacement_frees_the_seat", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    harness.drop_client( 1 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+
+    // Leaving the replacement menu is the same as leaving the join menu: the
+    // session goes on, and the seat waits dead and disconnected for a new
+    // client rather than spinning the world.
+    CHECK_FALSE( mp_session_end_requested() );
+    CHECK( mp_server_seat_is_free_for_new_client( 1 ) );
 }
 
 TEST_CASE( "a_session_where_everyone_is_away_does_not_advance_the_world", "[mp]" )
@@ -663,7 +709,7 @@ TEST_CASE( "the_away_key_does_nothing_without_a_party", "[mp]" )
     CHECK_FALSE( mp_player_is_away( 0 ) );
 }
 
-TEST_CASE( "a_death_while_away_still_ends_the_session", "[mp]" )
+TEST_CASE( "a_death_while_away_still_opens_a_replacement", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
@@ -671,20 +717,21 @@ TEST_CASE( "a_death_while_away_still_ends_the_session", "[mp]" )
         return false;
     }, 1 );
     mp_set_away( 1, true );
-    avatar &dead = g->player_at( 1 );
-    const std::string name = dead.get_name();
-    dead.set_part_hp_cur( bodypart_id( "torso" ), 0 );
-    REQUIRE( dead.is_dead_state() );
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    REQUIRE( g->player_at( 1 ).is_dead_state() );
 
-    CHECK( g->do_turn() );
-    CHECK( mp_session_end_reason() == name + " died" );
+    // Being away is not being gone: the client is still at its terminal, so the
+    // death is a death like any other and the seat is offered a replacement.
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK_FALSE( mp_session_end_requested() );
+    CHECK( g->player_at( 1 ).is_dead_state() );
 
-    // Same teardown as a_death_in_a_session_ends_it_and_saves_the_world.
-    get_map() = map();
-    overmap_special_batch empty_specials( point_abs_om{} );
-    overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
-    get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
-    get_avatar().move_to( tripoint_abs_ms::zero );
+    harness.choose_random_character( 1 );
+    CHECK( harness.run_until( []() {
+        return !g->player_at( 1 ).is_dead_state();
+    }, 60 ) );
 }
 
 TEST_CASE( "the_session_does_not_end_while_a_client_is_connected", "[mp]" )
@@ -718,9 +765,13 @@ TEST_CASE( "a_dead_character_does_not_keep_the_session_alive", "[mp]" )
     CHECK_FALSE( mp_server_any_client_connected() );
     mp_server_end_if_no_clients();
     CHECK( mp_session_end_requested() );
+    // Not the death: with nobody at a terminal there is no session to play,
+    // whatever state the characters are in. The death itself now leaves the
+    // corpse and opens a replacement, which is only possible while the client
+    // is still connected.
+    CHECK( mp_session_end_reason() == "no players connected" );
 
-    // The dead character also ends the session under the death rule the two
-    // death tests above exercise, and that ending's teardown empties the map
+    // The ending's teardown (turn_handler::cleanup_at_end) empties the map
     // buffer and the overmaps. A test process goes on to the next test rather
     // than back to the menu, so put back the world tests/test_main.cpp starts
     // every run with, exactly as those tests do.
