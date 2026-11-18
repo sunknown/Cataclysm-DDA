@@ -165,6 +165,7 @@
 #include "mp/mp_context.h"
 #include "mp/mp_placement.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_turn.h"
 #include "monstergenerator.h"
 #include "move_mode.h"
 #include "mtype.h"
@@ -2914,6 +2915,22 @@ bool game::is_game_over()
 {
     map &here = get_map();
 
+    // A session's quit latch is one process-wide value but it belongs to the
+    // seat that set it. Without an owner, a partner's turn reads another
+    // player's death/save-and-quit as its own: the death screen, the corpse and
+    // the ended verdict all land on the wrong character. Claim the latch for
+    // the active seat the first time its verdict is seen, before any side
+    // effect, and refuse to act on a latch another seat owns.
+    if( mp_active_sched() != nullptr && uquit != QUIT_NO ) {
+        const size_t slot = active_slot();
+        if( !mp_player_owns_quit_latch( slot ) ) {
+            mp_claim_quit_latch( slot );
+            if( !mp_player_owns_quit_latch( slot ) ) {
+                return false;
+            }
+        }
+    }
+
     if( uquit == QUIT_DIED || uquit == QUIT_WATCH ) {
         Creature *player_killer = u.get_killer();
         if( player_killer && player_killer->as_character() ) {
@@ -2933,10 +2950,22 @@ bool game::is_game_over()
         return false;
     }
     if( uquit == QUIT_DIED ) {
-        if( u.in_vehicle ) {
-            here.unboard_vehicle( u.pos_bub() );
+        // The orchestrator's death scan may already have noticed this death
+        // while the seat was parked in a menu, and placed the corpse. The
+        // per-seat fact is the one place both observers agree; without it the
+        // second one duplicates every item the corpse took. Single player has
+        // no second observer and no session boundary to reset the fact, so the
+        // check is session-only.
+        const bool session = mp_active_sched() != nullptr;
+        if( !session || !mp_player_corpse_placed( active_slot() ) ) {
+            if( u.in_vehicle ) {
+                here.unboard_vehicle( u.pos_bub() );
+            }
+            u.place_corpse( &here );
+            if( session ) {
+                mp_note_corpse_placed( active_slot() );
+            }
         }
-        u.place_corpse( &here );
         return true;
     }
     if( uquit == QUIT_SUICIDE ) {

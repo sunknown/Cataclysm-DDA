@@ -28,6 +28,16 @@ std::vector<bool> g_away;
 // stored because no game state separates a lost client from a player at a
 // menu.
 std::vector<bool> g_disconnected;
+// The seat the one process-wide `uquit` currently belongs to, or nullopt when
+// no quit verdict is in flight. `uquit` is a single global, but a session has
+// several players whose turns are interleaved around input waits: without an
+// owner, one player's "save and quit" or death is read as every player's (see
+// mp_claim_quit_latch in the header).
+std::optional<size_t> g_quit_latch_owner;
+// Slots whose corpse has already been placed. The orchestrator's death scan
+// and game::is_game_over() both notice the same death; this is the per-seat
+// fact that keeps the second observer from duplicating the corpse.
+std::vector<bool> g_corpse_placed;
 // Whether a turn is currently open (see mp_turn_is_open in the header), and
 // since when (see mp_turn_paced).
 bool g_turn_open = false;
@@ -44,6 +54,7 @@ void ensure_sized()
     g_dropped_by_countdown.resize( n, false );
     g_away.resize( n, false );
     g_disconnected.resize( n, false );
+    g_corpse_placed.resize( n, false );
 }
 
 // When each countdown started, or nullopt when it is not running. A time point
@@ -225,6 +236,50 @@ bool mp_player_is_disconnected( const size_t slot )
     return slot < g_disconnected.size() && g_disconnected[slot];
 }
 
+void mp_claim_quit_latch( const size_t slot )
+{
+    if( slot >= g->player_slot_count() || g_quit_latch_owner ) {
+        return;
+    }
+    g_quit_latch_owner = slot;
+}
+
+bool mp_player_owns_quit_latch( const size_t slot )
+{
+    return g_quit_latch_owner && *g_quit_latch_owner == slot;
+}
+
+void mp_clear_quit_latch( const size_t slot )
+{
+    // Only the owner can release the latch. A non-owner calling this is a
+    // no-op rather than a way to steal somebody else's quit verdict.
+    if( mp_player_owns_quit_latch( slot ) ) {
+        g_quit_latch_owner.reset();
+    }
+}
+
+bool mp_player_corpse_placed( const size_t slot )
+{
+    ensure_sized();
+    return slot < g_corpse_placed.size() && g_corpse_placed[slot];
+}
+
+void mp_note_corpse_placed( const size_t slot )
+{
+    ensure_sized();
+    if( slot < g_corpse_placed.size() ) {
+        g_corpse_placed[slot] = true;
+    }
+}
+
+void mp_clear_corpse_placed( const size_t slot )
+{
+    ensure_sized();
+    if( slot < g_corpse_placed.size() ) {
+        g_corpse_placed[slot] = false;
+    }
+}
+
 void mp_turn_reset()
 {
     ensure_sized();
@@ -250,6 +305,8 @@ void mp_turn_reset_all()
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
     g_away.assign( g->player_slot_count(), false );
     g_disconnected.assign( g->player_slot_count(), false );
+    g_quit_latch_owner.reset();
+    g_corpse_placed.assign( g->player_slot_count(), false );
     g_turn_open = false;
     g_session_end = false;
     g_session_end_reason.clear();

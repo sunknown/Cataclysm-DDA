@@ -582,39 +582,41 @@ void mp_server_notify_death( const size_t slot )
     }
     g_death_notified.resize( g->player_slot_count(), false );
     avatar &ava = g->player_at( slot );
-    const bool latched_death = g->uquit == QUIT_DIED;
-    const bool abandoned = g->uquit == QUIT_SUICIDE;
-    if( !ava.is_dead_state() && !latched_death && !abandoned ) {
+    // The latch is process-wide but its owner is per seat. A partner's death
+    // or quit must never be evidence for this one; only a dead avatar or this
+    // seat's own latch is.
+    const bool owns_latch = mp_player_owns_quit_latch( slot );
+    if( !ava.is_dead_state() && !owns_latch ) {
         return;
     }
     if( !g_death_notified[slot] ) {
         g_death_notified[slot] = true;
-        if( latched_death || abandoned ) {
-            // The death happened inside this character's own turn, so the
-            // corpse is already on the map: game::is_game_over() placed it for
-            // QUIT_DIED, ACTION_SUICIDE placed it for QUIT_SUICIDE. A second
-            // one would duplicate every item the first one took.
-        } else {
-            // The orchestrator noticed the death before the seat's thread got
-            // to is_game_over(). Nothing has placed the corpse yet.
+        // An owner's corpse is already on the map: game::is_game_over() placed
+        // it for QUIT_DIED (unless the orchestrator got there first, which the
+        // per-seat fact records), and ACTION_SUICIDE placed it for
+        // QUIT_SUICIDE. A notification for a *different* hp-dead seat, while
+        // another seat owns the latch, still places that seat's corpse without
+        // touching the owner.
+        if( !owns_latch && !mp_player_corpse_placed( slot ) ) {
             if( ava.in_vehicle ) {
                 get_map().unboard_vehicle( ava.pos_bub() );
             }
             ava.place_corpse( &get_map() );
+            mp_note_corpse_placed( slot );
         }
         Messages::add_msg( string_format( _( "Player %d (%s) died" ),
                                          static_cast<int>( slot ) + 1, ava.get_name() ) );
         mp_server_log( "\"" + ava.get_name() + "\" died; the seat is choosing a replacement" );
     }
-    // The latch is one global for the session, not a per-death fact, and
-    // is_game_over() can set it after the orchestrator already recorded the
-    // death -- a player parked in a menu while the world ran is the case. Left
-    // set, the next player_act() on ANY seat reads the game as over and places
-    // its own corpse. So every call that sees it clears it; activate() is
-    // idempotent and restores the log is_game_over() deactivated.
-    if( latched_death || abandoned ) {
+    // Only the owner may clear the one global latch, and every call does: the
+    // seat can reach is_game_over() after the death was already recorded, so
+    // left set it would make the next player_act() on ANY seat read the game as
+    // over and place its own corpse. activate() is idempotent and restores the
+    // log is_game_over() deactivated.
+    if( owns_latch ) {
         g->uquit = QUIT_NO;
         Messages::activate();
+        mp_clear_quit_latch( slot );
     }
 }
 
@@ -671,6 +673,9 @@ void mp_run_replacement_menu( const size_t slot )
         // The new character is at the keyboard by construction: the away flag
         // belonged to the character it replaced.
         mp_set_away( slot, false );
+        // The seat's next death is its own: a placed replacement clears both
+        // facts the last one left behind.
+        mp_clear_corpse_placed( slot );
         if( slot < g_death_notified.size() ) {
             g_death_notified[slot] = false;
         }
@@ -1094,13 +1099,12 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         }
         if( ended ) {
             // Death bookkeeping is per seat and must never be skipped because
-            // the wire died first: the single-player quit latch is one global,
-            // and left set the next player_act() on any seat reads the game as
-            // over and places its own corpse. The same goes for a quit status
-            // left by this seat's own menu.
+            // the wire died first. The latch itself is process-wide, so the
+            // question is whether THIS seat owns it: a partner's death or quit
+            // is not this seat's verdict.
             avatar &ending = g->player_at( slot );
-            if( ending.is_dead_state() || g->uquit == QUIT_DIED ||
-                g->uquit == QUIT_SUICIDE ) {
+            const bool owns_latch = mp_player_owns_quit_latch( slot );
+            if( ending.is_dead_state() || owns_latch ) {
                 // Death or "abandon this character". Record it and reset the
                 // latch; the seat keeps its client and the next grant reaches
                 // the replacement branch above. A wire that died under the menu
@@ -1116,8 +1120,13 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
                 }
             } else {
                 // A voluntary quit leaves the table exactly like a lost wire.
+                // Only its owner may release the latch: a foreign latch here
+                // would mean the gate in is_game_over() failed.
+                if( owns_latch ) {
+                    g->uquit = QUIT_NO;
+                    mp_clear_quit_latch( slot );
+                }
                 mp_server_mark_disconnected( slot );
-                g->uquit = QUIT_NO;
             }
         }
         sched.release_to( slot, mp_sched::world );

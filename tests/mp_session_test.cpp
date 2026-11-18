@@ -455,6 +455,9 @@ TEST_CASE( "a_death_opens_a_replacement_instead_of_ending_the_session", "[mp]" )
                !g->player_at( victim ).is_dead_state();
     }, 60 ) );
     CHECK( g->player_at( victim ).pos_bub() != corpse );
+    // A placed replacement is a fresh character: the seat's corpse fact must
+    // not make its next death skip the corpse.
+    CHECK_FALSE( mp_player_corpse_placed( victim ) );
 }
 
 TEST_CASE( "the_session_does_not_end_when_the_last_character_dies", "[mp]" )
@@ -580,15 +583,127 @@ TEST_CASE( "a_recorded_death_still_clears_a_later_quit_latch", "[mp]" )
 
     // The seat's own player_act then reaches is_game_over() after the death was
     // recorded, exactly as when the wire dies under an open menu. The single
-    // global quit it latches is not a per-death fact: every notify call clears
-    // it, and a repeat call must not place a second corpse.
+    // global quit it latches is not a per-death fact: the seat owns it, and
+    // every notify call clears it; a repeat call must not place a second corpse.
     g->uquit = QUIT_DIED;
+    mp_claim_quit_latch( 1 );
     mp_server_notify_death( 1 );
     CHECK( g->uquit == QUIT_NO );
+    CHECK_FALSE( mp_player_owns_quit_latch( 1 ) );
     mp_server_notify_death( 1 );
     CHECK( corpses_at( corpse ) == 1 );
+    CHECK( mp_player_corpse_placed( 1 ) );
     CHECK_FALSE( mp_session_end_requested() );
     CHECK( mp_player_needs_replacement( 1 ) );
+}
+
+TEST_CASE( "a_bare_quit_latch_is_not_evidence_for_a_seat", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // No seat has claimed the latch. A partner's death scan must not read it as
+    // its own: the latch is a process-wide value, not a per-seat fact.
+    g->uquit = QUIT_SUICIDE;
+    mp_server_notify_death( 0 );
+    CHECK_FALSE( mp_player_needs_replacement( 0 ) );
+    CHECK_FALSE( g->player_at( 0 ).is_dead_state() );
+    CHECK( g->uquit == QUIT_SUICIDE );
+}
+
+TEST_CASE( "a_latch_owned_by_another_seat_is_not_consumed", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->uquit = QUIT_SUICIDE;
+    mp_claim_quit_latch( 1 );
+
+    // A notification for the partner is not evidence of the partner's death,
+    // and it leaves the owner's latch alone.
+    mp_server_notify_death( 0 );
+    CHECK_FALSE( mp_player_needs_replacement( 0 ) );
+    CHECK( mp_player_owns_quit_latch( 1 ) );
+    CHECK( g->uquit == QUIT_SUICIDE );
+
+    // Even a genuinely dead partner is recorded on its own evidence: its
+    // corpse is placed while the owner's latch is untouched.
+    g->player_at( 0 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    mp_server_notify_death( 0 );
+    CHECK( mp_player_needs_replacement( 0 ) );
+    CHECK( mp_player_corpse_placed( 0 ) );
+    CHECK( mp_player_owns_quit_latch( 1 ) );
+    CHECK( g->uquit == QUIT_SUICIDE );
+
+    // The owner's own notification consumes the latch and records the death
+    // once.
+    mp_server_notify_death( 1 );
+    CHECK_FALSE( mp_player_owns_quit_latch( 1 ) );
+    CHECK( g->uquit == QUIT_NO );
+    CHECK( mp_player_needs_replacement( 1 ) );
+}
+
+TEST_CASE( "a_partner_does_not_read_a_foreign_quit_latch", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // The state while seat 1's death screen holds the baton window open: the
+    // one global latch is set and owned by seat 1.
+    g->uquit = QUIT_SUICIDE;
+    mp_claim_quit_latch( 1 );
+
+    // Seat 0 takes a real turn. Its is_game_over() must refuse the foreign
+    // latch instead of showing seat 0 a death screen and ending its turn.
+    g->player_at( 0 ).set_moves( 100 );
+    harness.press( 0, '.' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK_FALSE( g->player_at( 0 ).is_dead_state() );
+    CHECK_FALSE( mp_player_needs_replacement( 0 ) );
+    CHECK( mp_player_owns_quit_latch( 1 ) );
+    CHECK( g->uquit == QUIT_SUICIDE );
+
+    // The partner is still a live, connected player: the foreign latch did not
+    // end its turn or hand it to a replacement.
+    CHECK( mp_server_any_client_connected() );
+    CHECK_FALSE( mp_session_end_requested() );
+
+    // Test cleanup: release the latch the harness did not clear itself.
+    mp_clear_quit_latch( 1 );
+    g->uquit = QUIT_NO;
+}
+
+TEST_CASE( "a_death_recorded_in_a_menu_is_placed_once", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 1, 'i' );
+    // The seat is parked inside its own player_act(), in the inventory menu.
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "Item hotkeys assigned" );
+    }, 20 ) );
+    const tripoint_bub_ms corpse = g->player_at( 1 ).pos_bub();
+
+    // The character dies while the seat cannot act. The orchestrator's death
+    // scan records the death and places the corpse while the menu is open.
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    REQUIRE( mp_player_corpse_placed( 1 ) );
+    REQUIRE( corpses_at( corpse ) == 1 );
+
+    // Closing the menu lets player_act reach is_game_over()'s death path. It
+    // must see the per-seat fact and not place a second corpse.
+    harness.press( 1, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "The End" );
+    }, 10 ) );
+    harness.press( 1, '\n' );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "Join the game" );
+    }, 20 ) );
+    CHECK( corpses_at( corpse ) == 1 );
 }
 
 TEST_CASE( "a_replacement_character_gets_its_own_card", "[mp]" )

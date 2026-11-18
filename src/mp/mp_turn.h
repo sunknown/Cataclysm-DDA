@@ -132,6 +132,36 @@ void mp_set_disconnected( size_t slot, bool disconnected );
 // that do not wait on such a slot use mp_player_state_of().
 bool mp_player_is_disconnected( size_t slot );
 
+// Ownership of the one process-wide `uquit` while a session runs.
+//
+// `uquit` is a single global inherited from single player, but a session
+// interleaves several players' turns at input waits. Without an owner, one
+// player's quit or death is read by every other seat's is_game_over(): a
+// partner can be shown a death screen, hand back an ended verdict, or have a
+// corpse placed for it. The owner is recorded once, by game::is_game_over()
+// when it first sees a non-QUIT_NO latch for the active seat.
+//
+// mp_claim_quit_latch records `slot` only when no owner is recorded, so it
+// cannot steal a latch. mp_player_owns_quit_latch is the per-seat question
+// every death/quit decision must ask instead of reading `uquit` directly.
+// mp_clear_quit_latch releases the latch only for its owner; a non-owner call
+// is a safe no-op. mp_turn_reset_all() clears the owner with the rest of the
+// session state.
+void mp_claim_quit_latch( size_t slot );
+bool mp_player_owns_quit_latch( size_t slot );
+void mp_clear_quit_latch( size_t slot );
+
+// Whether `slot`'s corpse has already been placed. Two observers record a
+// session death -- the orchestrator's per-turn scan and game::is_game_over()
+// inside the seat's own turn -- and only one of them may place the corpse.
+// The orchestrator's notifier sets it when it places; is_game_over() skips its
+// own placement when it is set and notes it when it places. Cleared for a seat
+// when a replacement is placed, and with the rest of the session in
+// mp_turn_reset_all().
+bool mp_player_corpse_placed( size_t slot );
+void mp_note_corpse_placed( size_t slot );
+void mp_clear_corpse_placed( size_t slot );
+
 // Clears the per-turn barrier bookkeeping that belongs to a fresh turn: the
 // hurry countdowns (both), and the countdowns' drops -- but only for players who have
 // since left their input wait.
@@ -160,9 +190,9 @@ bool mp_player_is_disconnected( size_t slot );
 void mp_turn_reset();
 
 // Clears everything the module holds, including the input-wait flags, the turn
-// flag and the end-of-session request. For test setup and teardown and for
-// session start: those are the moments when the state of a previous session is
-// not conservative but wrong.
+// flag, the end-of-session request, the quit-latch owner and the corpse-placed
+// facts. For test setup and teardown and for session start: those are the
+// moments when the state of a previous session is not conservative but wrong.
 void mp_turn_reset_all();
 
 // Whether a turn is currently open: world_turn_pre has run and the barrier has
