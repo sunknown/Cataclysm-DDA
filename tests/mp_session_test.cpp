@@ -296,6 +296,40 @@ TEST_CASE( "a_yes_no_prompt_unwinds_when_the_session_ends", "[mp]" )
     // for ever.
 }
 
+TEST_CASE( "a_voluntary_quit_leaves_the_table_without_a_replacement", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 1 ).set_moves( 100 );
+    // The real save-and-quit action, through its confirmation.
+    harness.press( 1, 'S' );
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "Save and quit" );
+    } ) );
+    harness.press( 1, 'Y' );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_disconnected( 1 );
+    }, 20 ) );
+
+    // Leaving voluntarily is not dying: the session goes on, this seat leaves
+    // like a lost wire, and no death mark, corpse or replacement menu is left
+    // behind. The latch it owned is released.
+    CHECK_FALSE( mp_session_end_requested() );
+    CHECK_FALSE( harness.client_connected( 1 ) );
+    CHECK_FALSE( mp_player_needs_replacement( 1 ) );
+    CHECK_FALSE( mp_player_corpse_placed( 1 ) );
+    CHECK_FALSE( mp_player_owns_quit_latch( 1 ) );
+    CHECK( g->uquit == QUIT_NO );
+
+    // The partner still plays.
+    g->player_at( 0 ).set_moves( 100 );
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 0, '.' );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+}
+
 TEST_CASE( "a_question_the_world_asks_is_answered_without_waiting", "[mp]" )
 {
     restore_active_state restore;

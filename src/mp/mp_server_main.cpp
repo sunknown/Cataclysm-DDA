@@ -1104,7 +1104,11 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             // is not this seat's verdict.
             avatar &ending = g->player_at( slot );
             const bool owns_latch = mp_player_owns_quit_latch( slot );
-            if( ending.is_dead_state() || owns_latch ) {
+            // Ownership alone is not a death: QUIT_SAVED/QUIT_NOSAVED are a
+            // living player leaving the table. Only a dead avatar or an owned
+            // death/suicide verdict takes the replacement path.
+            const bool death_verdict = g->uquit == QUIT_DIED || g->uquit == QUIT_SUICIDE;
+            if( ending.is_dead_state() || ( owns_latch && death_verdict ) ) {
                 // Death or "abandon this character". Record it and reset the
                 // latch; the seat keeps its client and the next grant reaches
                 // the replacement branch above. A wire that died under the menu
@@ -1119,14 +1123,15 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
                     mp_server_mark_disconnected( slot );
                 }
             } else {
-                // A voluntary quit leaves the table exactly like a lost wire.
-                // Only its owner may release the latch: a foreign latch here
-                // would mean the gate in is_game_over() failed.
+                // A voluntary quit leaves the table exactly like a lost wire:
+                // no death mark, no corpse, no replacement menu. Only its owner
+                // may release the latch: a foreign latch here would mean the
+                // gate in is_game_over() failed.
+                mp_server_mark_disconnected( slot );
                 if( owns_latch ) {
                     g->uquit = QUIT_NO;
                     mp_clear_quit_latch( slot );
                 }
-                mp_server_mark_disconnected( slot );
             }
         }
         sched.release_to( slot, mp_sched::world );
