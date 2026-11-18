@@ -19,8 +19,15 @@ constexpr int MP_HURRY_COMBAT_MS = 4000;
 enum class mp_player_state {
     // Voluntarily left the keyboard. Stored, and checked before activity and
     // moves, so it outranks every other state: a player who is not there
-    // cannot be holding anything.
+    // cannot be holding anything. Checked before `disconnected` too, because
+    // stepping away is the player's own choice: a slot that is both reads as
+    // away.
     away,
+    // The client on the other end of this slot is gone. This is a server-side
+    // fact, not a choice, so no game state can derive it and the server
+    // lifecycle code has to say so explicitly. Like `away`, it outranks the
+    // states below: a disconnected player is not holding and not acting.
+    disconnected,
     // Has moves and is currently executing.
     acting,
     // Out of moves, or occupied by something that will spend the turn without
@@ -43,8 +50,8 @@ mp_player_state mp_player_state_of( size_t slot );
 bool mp_player_holds_barrier( size_t slot );
 
 // True when the world may tick: every living player has either acted, been
-// dropped from the barrier, or gone away. The single rule the whole turn model
-// rests on.
+// dropped from the barrier, gone away, or lost their client. The single rule
+// the whole turn model rests on.
 bool mp_barrier_satisfied();
 
 // True when every living player has left the keyboard on purpose. A satisfied
@@ -105,6 +112,24 @@ bool mp_player_is_away( size_t slot );
 // have to reach for the flag itself.
 void mp_return_from_away( size_t slot );
 
+// Marks `slot` as having lost its client, or brings it back. This is a
+// server-side fact, not the player's choice -- the disconnect is detected by
+// the server lifecycle code (in later tasks), which is the only caller. A
+// disconnected slot stops the barrier waiting for it exactly like an away one,
+// but nothing can bring it back except a returning client: the server clears
+// the flag when the slot is reattached.
+//
+// Like `away`, and unlike the hurry drop, this outlives mp_turn_reset(): the
+// client is gone until it comes back, not for one turn. Only the returning
+// client (mp_set_disconnected false) or the end of the session
+// (mp_turn_reset_all) clears it.
+void mp_set_disconnected( size_t slot, bool disconnected );
+
+// True while `slot` has lost its client. Read by the barrier rule, the
+// orchestrator and the sidebar widget, which has to show who is not being
+// waited on.
+bool mp_player_is_disconnected( size_t slot );
+
 // Clears the per-turn barrier bookkeeping that belongs to a fresh turn: the
 // hurry countdowns (both), and the countdowns' drops -- but only for players who have
 // since left their input wait.
@@ -126,7 +151,8 @@ void mp_return_from_away( size_t slot );
 // The away flags are not cleared here either, for the same reason the input-wait
 // flags are not: a player who stepped away is still away in the next turn, and
 // clearing a voluntary state once per turn would make the key press expire on
-// its own. Only mp_turn_reset_all() ends it.
+// its own. The disconnected flags are not cleared either: a lost client is
+// still lost on the next turn. Only mp_turn_reset_all() ends either.
 //
 // Called once per opened turn by the orchestrator.
 void mp_turn_reset();
@@ -220,9 +246,9 @@ bool mp_set_hurry_lengths( int manual_ms, int combat_ms );
 void mp_tick_hurry();
 
 // Spends the turn's moves of every player the world stopped waiting for: the
-// ones a countdown dropped, and the ones who went away. Called by the
-// orchestrator once per closed turn, immediately before avatar_turn_post hands
-// moves back.
+// ones a countdown dropped, the ones who went away, and the ones whose client
+// is gone. Called by the orchestrator once per closed turn, immediately before
+// avatar_turn_post hands moves back.
 //
 // Not an optimisation and not cosmetic: moves accumulate (Character::
 // process_turn does `moves += get_speed()`), and a dropped player never spends

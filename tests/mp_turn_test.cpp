@@ -461,6 +461,56 @@ TEST_CASE( "returning_from_away_makes_the_player_hold_again", "[mp]" )
     CHECK( mp_player_state_of( 0 ) == mp_player_state::acting );
 }
 
+TEST_CASE( "a_disconnected_player_does_not_hold_the_barrier", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    mp_turn_reset_all();
+
+    avatar &u = g->player_at( 0 );
+    u.set_moves( 100 );
+    u.activity = player_activity();
+    mp_set_waiting_for_input( 0, true );
+    REQUIRE( mp_player_state_of( 0 ) == mp_player_state::holding );
+
+    mp_set_disconnected( 0, true );
+
+    CHECK( mp_player_state_of( 0 ) == mp_player_state::disconnected );
+    CHECK( mp_barrier_satisfied() );
+    CHECK( mp_player_is_disconnected( 0 ) );
+}
+
+TEST_CASE( "disconnected_survives_the_turn_reset_and_dies_at_the_session_start", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    mp_turn_reset_all();
+
+    mp_set_disconnected( 0, true );
+    mp_turn_reset();
+    CHECK( mp_player_is_disconnected( 0 ) );
+
+    mp_turn_reset_all();
+    CHECK_FALSE( mp_player_is_disconnected( 0 ) );
+}
+
+TEST_CASE( "a_disconnected_player_banks_no_moves", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    mp_turn_reset_all();
+
+    avatar &u = g->player_at( 0 );
+    u.set_moves( 100 );
+    mp_set_disconnected( 0, true );
+
+    mp_forfeit_dropped_moves();
+    CHECK( u.get_moves() == 0 );
+}
+
 TEST_CASE( "the_turn_stays_open_while_every_living_player_is_away", "[mp]" )
 {
     restore_active_state restore;

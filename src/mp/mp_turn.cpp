@@ -24,6 +24,10 @@ std::vector<bool> g_dropped_by_countdown;
 // Stored, unlike the other states, because nothing in game state separates them
 // from a player sitting at a menu.
 std::vector<bool> g_away;
+// Players whose client is gone (see mp_set_disconnected in the header). Also
+// stored because no game state separates a lost client from a player at a
+// menu.
+std::vector<bool> g_disconnected;
 // Whether a turn is currently open (see mp_turn_is_open in the header), and
 // since when (see mp_turn_paced).
 bool g_turn_open = false;
@@ -39,6 +43,7 @@ void ensure_sized()
     g_waiting_for_input.resize( n, false );
     g_dropped_by_countdown.resize( n, false );
     g_away.resize( n, false );
+    g_disconnected.resize( n, false );
 }
 
 // When each countdown started, or nullopt when it is not running. A time point
@@ -119,6 +124,12 @@ mp_player_state mp_player_state_of( const size_t slot )
     if( slot < g_away.size() && g_away[slot] ) {
         return mp_player_state::away;
     }
+    // Checked after away: stepping away is the player's own choice and
+    // outranks a server-side disconnect. A disconnected client holds nothing
+    // either.
+    if( slot < g_disconnected.size() && g_disconnected[slot] ) {
+        return mp_player_state::disconnected;
+    }
     if( slot < g_dropped_by_countdown.size() && g_dropped_by_countdown[slot] ) {
         return mp_player_state::not_waited;
     }
@@ -152,7 +163,7 @@ bool mp_barrier_satisfied()
         }
         const mp_player_state state = mp_player_state_of( i );
         if( state != mp_player_state::acted && state != mp_player_state::not_waited &&
-            state != mp_player_state::away ) {
+            state != mp_player_state::away && state != mp_player_state::disconnected ) {
             return false;
         }
     }
@@ -200,6 +211,20 @@ void mp_return_from_away( const size_t slot )
     mp_set_away( slot, false );
 }
 
+void mp_set_disconnected( const size_t slot, const bool disconnected )
+{
+    ensure_sized();
+    if( slot < g_disconnected.size() ) {
+        g_disconnected[slot] = disconnected;
+    }
+}
+
+bool mp_player_is_disconnected( const size_t slot )
+{
+    ensure_sized();
+    return slot < g_disconnected.size() && g_disconnected[slot];
+}
+
 void mp_turn_reset()
 {
     ensure_sized();
@@ -214,7 +239,8 @@ void mp_turn_reset()
         }
     }
     // g_away is deliberately untouched: leaving the keyboard is the player's
-    // own decision and lasts until they come back (see the header).
+    // own decision and lasts until they come back (see the header). So is
+    // g_disconnected: a lost client is still lost on the next turn.
     clear_hurry_countdowns();
 }
 
@@ -223,6 +249,7 @@ void mp_turn_reset_all()
     g_waiting_for_input.assign( g->player_slot_count(), false );
     g_dropped_by_countdown.assign( g->player_slot_count(), false );
     g_away.assign( g->player_slot_count(), false );
+    g_disconnected.assign( g->player_slot_count(), false );
     g_turn_open = false;
     g_session_end = false;
     g_session_end_reason.clear();
@@ -403,12 +430,14 @@ void mp_forfeit_dropped_moves()
     ensure_sized();
     for( size_t i = 0; i < g->player_slot_count(); ++i ) {
         const mp_player_state state = mp_player_state_of( i );
-        if( state == mp_player_state::not_waited || state == mp_player_state::away ) {
-            // Standing still is what the drop means -- and what being away
-            // means, since nobody is there to spend the moves. Taken at the end
-            // of the turn rather than at the moment of the drop, because a drop
-            // lasts as long as the player sits in the same menu while every
-            // closed turn hands out another turn's worth of moves.
+        if( state == mp_player_state::not_waited || state == mp_player_state::away ||
+            state == mp_player_state::disconnected ) {
+            // Standing still is what the drop means -- and what being away or
+            // disconnected means, since nobody is there to spend the moves.
+            // Taken at the end of the turn rather than at the moment of the
+            // drop, because a drop lasts as long as the player sits in the
+            // same menu while every closed turn hands out another turn's worth
+            // of moves.
             g->player_at( i ).set_moves( 0 );
         }
     }
