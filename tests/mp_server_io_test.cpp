@@ -546,8 +546,10 @@ TEST_CASE( "handshake_gives_up_when_the_client_says_nothing", "[mp]" )
 
     mp_session session;
     std::string reason;
-    CHECK_FALSE( mp_server_handshake( *pair.a, session, reason ) );
-    CHECK_FALSE( reason.empty() );
+    // The short budget the post-start poll uses: a silent peer is refused
+    // instead of freezing the turn path for the join phase's whole budget.
+    CHECK_FALSE( mp_server_handshake( *pair.a, session, reason, 20 ) );
+    CHECK_THAT( reason, Catch::Contains( "timeout" ) );
 }
 
 TEST_CASE( "a_backlogged_client_gets_one_full_redraw_instead_of_a_history", "[mp]" )

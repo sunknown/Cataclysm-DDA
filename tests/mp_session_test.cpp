@@ -837,11 +837,42 @@ TEST_CASE( "a_reconnecting_client_gets_the_same_character_back", "[mp]" )
     harness.run_until( [&]() {
         return mp_player_is_disconnected( 1 );
     } );
+    // A key the old wire had already delivered sits in the seat's queue. The
+    // returning terminal never pressed it; it must not become its first input.
+    g->contexts[1].input_queue.push_back( input_event( 'x', input_event_t::keyboard_char ) );
     CHECK( harness.reconnect_client( 1, save_id ) );
 
     CHECK_FALSE( mp_player_is_disconnected( 1 ) );
+    CHECK( g->contexts[1].input_queue.empty() );
     CHECK( g->player_at( 1 ).get_name() == name );
     CHECK( harness.message_log_contains( "Player 2 (" + name + ") reconnected" ) );
+}
+
+TEST_CASE( "a_character_created_this_session_can_be_reclaimed", "[mp]" )
+{
+    restore_active_state restore;
+    // Join mode: neither client brings a card, so the server hands each new
+    // character its card after the roster is seated. That card is the only
+    // record connecting the character to its seat; a reconnect must find it.
+    mp_session_harness harness( 2, 5, mp_harness_mode::join );
+    harness.choose_random_character( 0 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.seated();
+    }, 100 ) );
+
+    const std::string name = g->player_at( 1 ).get_name();
+    const std::string save_id = g->player_at( 1 ).get_save_id();
+    REQUIRE_FALSE( save_id.empty() );
+
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_player_is_disconnected( 1 );
+    } ) );
+
+    CHECK( harness.reconnect_client( 1, save_id ) );
+    CHECK_FALSE( mp_player_is_disconnected( 1 ) );
+    CHECK( g->player_at( 1 ).get_name() == name );
 }
 
 TEST_CASE( "a_connection_without_a_matching_card_is_refused", "[mp]" )

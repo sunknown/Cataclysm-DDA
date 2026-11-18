@@ -25,6 +25,10 @@ constexpr int MP_MAX_TERMINAL_HEIGHT = 1000;
 // client's first message (a `hello` control), checks its protocol version and
 // the terminal size it wants, and sends a `hello_ack` verdict either way.
 //
+// `timeout_ms` bounds how long a peer may stay silent before it is refused.
+// The join phase can afford the protocol's generous budget; the turn path
+// cannot, because a silent peer there would freeze every player for that long.
+//
 // Fills `session.name` and sizes `session.grid` from the accepted hello instead
 // of writing process-wide state. The transport parameter stays separate from
 // the session because the handshake runs before the session is worth keeping:
@@ -37,7 +41,7 @@ constexpr int MP_MAX_TERMINAL_HEIGHT = 1000;
 // large for the server to allocate) -- with a human-readable reason in
 // `reject_reason` that is also sent to the client in the ack.
 bool mp_server_handshake( mp_transport &transport, mp_session &session,
-                          std::string &reject_reason );
+                          std::string &reject_reason, int timeout_ms = 5000 );
 
 // Blocks until the connected player presses something, a resize arrives, the
 // timeout expires, or the connection drops. Flushes the pending screen first:

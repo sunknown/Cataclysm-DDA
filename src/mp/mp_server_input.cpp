@@ -139,14 +139,14 @@ bool take_queued( player_context *const ctx, input_event &out )
 } // namespace
 
 bool mp_server_handshake( mp_transport &transport, mp_session &session,
-                          std::string &reject_reason )
+                          std::string &reject_reason, const int timeout_ms )
 {
     reject_reason.clear();
 
     // The client's first message is the hello; a peer that says nothing within
     // the budget is refused rather than waited on forever. The verdict is sent
     // in every case, so the client always learns its fate.
-    const std::optional<std::vector<uint8_t>> msg = transport.recv( 5000 );
+    const std::optional<std::vector<uint8_t>> msg = transport.recv( timeout_ms );
     if( !msg ) {
         reject_reason = "no hello received within the handshake timeout";
         send_hello_ack( transport, false, reject_reason );

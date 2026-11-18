@@ -69,14 +69,21 @@ enum class mp_accept_result {
     no_client,
 };
 
+// How long the world waits for a post-start peer to say hello. This runs on
+// the orchestrator's turn path, so it must be short: a peer that completes TCP
+// and then stays silent would otherwise freeze every player for the join
+// phase's whole handshake budget, once per turn.
+constexpr int MP_POST_START_HANDSHAKE_MS = 250;
+
 // Accepts one connection -- waiting up to `timeout_ms`, a negative value
 // meaning as long as it takes -- and shakes hands with it: the half of a
 // connection that does not depend on which seat it takes. On success `out`
 // holds the session (its seat is the caller's to set) and `why` is empty;
 // otherwise `why` says what happened and the client, if one arrived at all,
-// has been told.
+// has been told. `handshake_timeout_ms` is the budget for the peer's hello.
 static mp_accept_result accept_client( const int timeout_ms, std::unique_ptr<mp_session> &out,
-                                       std::string &why )
+                                       std::string &why,
+                                       const int handshake_timeout_ms = 5000 )
 {
     std::shared_ptr<mp_transport> transport = g_listener->accept( timeout_ms );
     if( !transport ) {
@@ -87,7 +94,7 @@ static mp_accept_result accept_client( const int timeout_ms, std::unique_ptr<mp_
 
     auto session = std::make_unique<mp_session>();
     session->transport = transport;
-    if( !mp_server_handshake( *transport, *session, why ) ) {
+    if( !mp_server_handshake( *transport, *session, why, handshake_timeout_ms ) ) {
         why = "handshake rejected: " + why;
         return mp_accept_result::rejected;
     }
@@ -222,12 +229,19 @@ static void send_control( mp_session &session, const mp_control &msg )
 
 static void send_character_card( mp_session &session, const avatar &ava )
 {
+    const std::string &world_name = world_generator->active_world->world_name;
     mp_control msg;
     msg.kind = mp_control_kind::character_card;
-    msg.character_card.world_name = world_generator->active_world->world_name;
+    msg.character_card.world_name = world_name;
     msg.character_card.save_id = ava.get_save_id();
     msg.character_card.character_name = ava.get_name();
     send_control( session, msg );
+    // The card is the seat's claim to this character: a client that started
+    // with no card and created one this session persists this card, and on
+    // reconnect offers this save id back. Record it on the session as well, or
+    // the matcher has nothing to find and that character can never return.
+    session.card_save_id = msg.character_card.save_id;
+    session.card_world = world_name;
 }
 
 // The world's most recently written character save: whose game state a session
@@ -557,6 +571,13 @@ std::optional<size_t> mp_server_seat_for_card( const std::string &save_id )
 void mp_server_reconnected( const size_t slot )
 {
     mp_set_disconnected( slot, false );
+    // Keys the old wire delivered before it died are still in the seat's
+    // queue, and the returning client would otherwise receive them as its
+    // first inputs. The terminal that pressed them is gone; the new one starts
+    // with a clean queue.
+    if( slot < g->contexts.size() ) {
+        g->contexts[slot].input_queue.clear();
+    }
     // The quit mark was latched by the input wait that noticed the loss (see
     // mp_server_mark_disconnected) and is not a session-lifetime fact. Left
     // latched, the returned player's next normal baton grant takes the quit
@@ -630,7 +651,11 @@ void mp_server_poll_new_clients()
     }
     std::unique_ptr<mp_session> session;
     std::string why;
-    switch( accept_client( 0, session, why ) ) {
+    // Short budget: this poll is on the orchestrator's turn path, and a peer
+    // that is accepted but never says hello must not freeze the party. The
+    // refusal is retryable -- the party is untouched and the next turn polls
+    // again -- and logged once by the rejected branch below.
+    switch( accept_client( 0, session, why, MP_POST_START_HANDSHAKE_MS ) ) {
         case mp_accept_result::seated:
             mp_server_take_client( std::move( session ) );
             return;
