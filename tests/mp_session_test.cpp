@@ -826,4 +826,57 @@ TEST_CASE( "the_last_client_leaving_ends_the_session_by_itself", "[mp]" )
     get_avatar().move_to( tripoint_abs_ms::zero );
 }
 
+TEST_CASE( "a_reconnecting_client_gets_the_same_character_back", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const std::string name = g->player_at( 1 ).get_name();
+    const std::string save_id = g->player_at( 1 ).get_save_id();
+
+    harness.drop_client( 1 );
+    harness.run_until( [&]() {
+        return mp_player_is_disconnected( 1 );
+    } );
+    CHECK( harness.reconnect_client( 1, save_id ) );
+
+    CHECK_FALSE( mp_player_is_disconnected( 1 ) );
+    CHECK( g->player_at( 1 ).get_name() == name );
+    CHECK( harness.message_log_contains( "Player 2 (" + name + ") reconnected" ) );
+}
+
+TEST_CASE( "a_connection_without_a_matching_card_is_refused", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const std::string name = g->player_at( 1 ).get_name();
+
+    // A seat is waiting for its character, so "no free seat" here is not just
+    // the every-seat-taken case: the card is what decides, and this one names
+    // nobody in the party.
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_disconnected( 1 );
+    } ) );
+
+    std::string refusal;
+    CHECK_FALSE( harness.reconnect_client( 0, "not-a-card-in-this-party", &refusal ) );
+    CHECK( refusal == "no free seat" );
+
+    // The refusal left the party exactly as it was: the lost seat still waits
+    // for its own character, its name did not change and nobody was dropped.
+    CHECK( mp_player_is_disconnected( 1 ) );
+    CHECK( harness.seat_occupied( 1 ) );
+    CHECK_FALSE( harness.client_connected( 1 ) );
+    CHECK( g->player_at( 1 ).get_name() == name );
+    CHECK_FALSE( mp_session_end_requested() );
+
+    // And play goes on: the partner's turn still advances the calendar.
+    g->player_at( 0 ).set_moves( 100 );
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 0, '.' );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+}
+
 #endif // MP_SERVER

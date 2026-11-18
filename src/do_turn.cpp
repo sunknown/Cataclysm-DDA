@@ -55,6 +55,7 @@
 #include "mp/mp_context.h"
 #include "mp/mp_mode.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_tether.h"
 #include "mp/mp_turn.h"
 #include "mtype.h"
@@ -775,6 +776,12 @@ bool game::do_turn()
         // closing it -- the calendar stays frozen until every living player has
         // acted or been dropped by the hurry countdown.
         mp_activate_world();
+#if defined(MP_SERVER)
+        // A client that dropped may come back: its seat is parked, and the
+        // listener is polled by the world once per turn. Non-blocking, and a
+        // no-op when no listener is bound (the in-process harness).
+        mp_server_poll_new_clients();
+#endif
         // Single-player's own check, is_game_over(), reads only the avatar in
         // u and goes on to ask that player questions; a session looks at every
         // slot and asks nobody.

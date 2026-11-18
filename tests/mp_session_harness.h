@@ -202,6 +202,18 @@ class mp_session_harness
         // count of seats does not change.
         void connect_replacement_client( size_t slot );
 
+        // Offers a reconnecting client carrying the character card `save_id`
+        // to the running server, through the same entry a fresh connection
+        // takes after the party has started (mp_server_take_client), not by
+        // poking the seat's state. A fresh loopback pair with this harness's
+        // latency stands in for the new process; on success its wire replaces
+        // `slot`'s and the seat keeps its character. Returns false when the
+        // server refused the connection -- no disconnected seat carries that
+        // card -- and `refusal` then holds the reason from the `bye` it was
+        // sent. Nothing in the party changes on a refusal.
+        bool reconnect_client( size_t slot, const std::string &save_id,
+                               std::string *refusal = nullptr );
+
         // Whether the join phase is over and everyone has a character placed.
         // Always true in playing mode.
         bool seated() const;

@@ -33,6 +33,30 @@
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
 
+namespace
+{
+// The reason a refused connection was given, or empty when the server closed
+// the wire without saying anything. The `bye` is sent before the close, so it
+// is still queued on the client's side when this drains it.
+std::string read_bye_reason( mp_transport &transport, const int timeout_ms )
+{
+    const std::optional<std::vector<uint8_t>> msg = transport.recv( timeout_ms );
+    if( !msg ) {
+        return std::string();
+    }
+    mp_msg_kind kind = mp_msg_kind::control;
+    std::vector<uint8_t> body;
+    if( !mp_unwrap( *msg, kind, body ) || kind != mp_msg_kind::control ) {
+        return std::string();
+    }
+    mp_control control;
+    if( !mp_control_from_json( std::string( body.begin(), body.end() ), control ) ) {
+        return std::string();
+    }
+    return control.kind == mp_control_kind::bye ? control.bye_reason : std::string();
+}
+} // namespace
+
 mp_server_startup_for_test::mp_server_startup_for_test( const int cols, const int rows )
     : prev_stdscr_( catacurses::stdscr ), prev_test_mode_( test_mode ), prev_termx_( TERMX ),
       prev_termy_( TERMY ), prev_full_screen_width_( FULL_SCREEN_WIDTH ),
@@ -146,6 +170,11 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
         session->transport = wire.a;
         session->context_index = i;
         session->name = "P" + std::to_string( i );
+        // What this client's hello carried. A real server sent it the card
+        // when its character was seated, and a reconnecting process offers the
+        // same id back; without it here a seat could never be reclaimed by a
+        // card, because no session would have one to match.
+        session->card_save_id = g->player_at( i ).get_save_id();
         session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
         mp_sessions().push_back( std::move( session ) );
         client_wires_.push_back( wire.b );
@@ -278,6 +307,36 @@ void mp_session_harness::connect_replacement_client( const size_t slot )
     // The server's own seat path: roster entry, cleared quit mark, new thread
     // running this client's join menu.
     mp_server_seat_client( slot, std::move( session ) );
+}
+
+bool mp_session_harness::reconnect_client( const size_t slot, const std::string &save_id,
+        std::string *refusal )
+{
+    // A returning process: a new wire with the same latency as the first ones,
+    // and a hello whose card names the character it left. The seat it lands in
+    // is the server's to choose, by card -- `slot` only says where the harness
+    // keeps this client's wire when it is accepted.
+    mp_loopback_pair wire = mp_make_loopback_pair( latency_ms_ );
+    auto session = std::make_unique<mp_session>();
+    session->transport = wire.a;
+    session->name = "P" + std::to_string( slot );
+    session->card_save_id = save_id;
+    session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+
+    // The same entry the post-start listener poll uses. A refusal is the
+    // server's answer, observed from the wire rather than assumed: the bye is
+    // queued before the close.
+    if( !mp_server_take_client( std::move( session ) ) ) {
+        if( refusal != nullptr ) {
+            *refusal = read_bye_reason( *wire.b, latency_ms_ + 1000 );
+        }
+        return false;
+    }
+
+    client_wires_[slot] = wire.b;
+    client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    client_states_[slot] = mp_client_state();
+    return true;
 }
 
 bool mp_session_harness::seated() const
