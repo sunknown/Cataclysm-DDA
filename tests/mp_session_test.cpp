@@ -686,4 +686,48 @@ TEST_CASE( "a_death_while_away_still_ends_the_session", "[mp]" )
     get_avatar().move_to( tripoint_abs_ms::zero );
 }
 
+TEST_CASE( "the_session_does_not_end_while_a_client_is_connected", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    CHECK( mp_server_connected_client_count() == 2 );
+    CHECK( mp_server_any_client_connected() );
+    CHECK_FALSE( mp_session_end_requested() );
+}
+
+TEST_CASE( "the_session_ends_when_the_last_client_leaves", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    harness.drop_client( 0 );
+    CHECK_FALSE( mp_server_any_client_connected() );
+    mp_server_end_if_no_clients();
+    CHECK( mp_session_end_requested() );
+}
+
+TEST_CASE( "a_dead_character_does_not_keep_the_session_alive", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    g->player_at( 0 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.drop_client( 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK_FALSE( mp_server_any_client_connected() );
+    mp_server_end_if_no_clients();
+    CHECK( mp_session_end_requested() );
+
+    // The dead character also ends the session under the death rule the two
+    // death tests above exercise, and that ending's teardown empties the map
+    // buffer and the overmaps. A test process goes on to the next test rather
+    // than back to the menu, so put back the world tests/test_main.cpp starts
+    // every run with, exactly as those tests do.
+    get_map() = map();
+    overmap_special_batch empty_specials( point_abs_om{} );
+    overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
+    get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
+    get_avatar().move_to( tripoint_abs_ms::zero );
+}
+
 #endif // MP_SERVER

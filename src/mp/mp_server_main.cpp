@@ -472,6 +472,44 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
     return mp_join_progress::seated;
 }
 
+// "Connected" is a property of the wire, not of the character: a client that
+// is still at its terminal counts even when its avatar is dead or away. The
+// session outlives every one of them; it ends only when the last transport is
+// gone.
+size_t mp_server_connected_client_count()
+{
+    size_t count = 0;
+    for( const std::unique_ptr<mp_session> &session : mp_sessions() ) {
+        if( session && session->transport && session->transport->connected() ) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool mp_server_any_client_connected()
+{
+    return mp_server_connected_client_count() > 0;
+}
+
+void mp_server_end_if_no_clients()
+{
+    if( !mp_server_any_client_connected() ) {
+        mp_request_session_end( "no players connected" );
+    }
+}
+
+bool mp_server_seat_is_free_for_new_client( const size_t slot )
+{
+    if( slot >= g->player_slot_count() || !g->player_at( slot ).is_dead_state() ) {
+        return false;
+    }
+    // Addressed through the seat, not through the sessions vector: a
+    // replacement may sit anywhere in that vector once one has connected.
+    const mp_session *const session = mp_session_of_slot( slot );
+    return session == nullptr || !session->transport || !session->transport->connected();
+}
+
 // The lowest seat with no client in it, or nullopt while every seat is taken.
 // After mp_join_begin the seats are fixed, so this is the whole record of who
 // has left and not yet been replaced.

@@ -131,6 +131,27 @@ void mp_server_join_player_thread( size_t slot );
 void mp_server_seat_client( size_t slot, std::unique_ptr<mp_session> session );
 void mp_stop_player_threads( mp_sched *sched );
 
+// How many clients the session has on the wire. A client counts while its
+// transport is connected, whether its character is alive, away or dead: the
+// session lives as long as the people at the terminals, not as long as the
+// characters they play. A session whose client has left but whose entry has
+// not yet been dropped does not count.
+size_t mp_server_connected_client_count();
+bool mp_server_any_client_connected();
+
+// Ends the session when no client is connected any more; does nothing while at
+// least one remains. The end request carries "no players connected" as its
+// reason. Nothing calls this yet: the places where a client can be lost gain
+// their calls in the tasks that make a loss survivable.
+void mp_server_end_if_no_clients();
+
+// Whether `slot` can take a new client: it is a real seat, its character is
+// dead, and no connected client still occupies it. A living character's seat
+// is not free -- the player is still at the terminal -- and a dead character
+// whose client is still connected is not free either, because the client has
+// not left yet.
+bool mp_server_seat_is_free_for_new_client( size_t slot );
+
 // Ends the server session cleanly. Called by the mp curses backend when a
 // client disconnects, so the game does not spin on timeout events from a
 // dead transport. Defined in main.cpp, which owns the game's exit path; this
