@@ -536,6 +536,32 @@ TEST_CASE( "the_turn_stays_open_while_every_living_player_is_away", "[mp]" )
     mp_turn_reset_all();
 }
 
+TEST_CASE( "the_turn_stays_open_when_every_living_player_is_away_or_disconnected", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+
+    mp_set_away( 0, true );
+    mp_set_disconnected( 1, true );
+    CHECK( mp_turn_all_away() );
+
+    // A living player who is at the table, connected and not away, keeps the
+    // turn open as before.
+    mp_set_disconnected( 1, false );
+    CHECK_FALSE( mp_turn_all_away() );
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
 TEST_CASE( "a_hostile_in_sight_paces_a_turn_nobody_is_playing_by_hand", "[mp]" )
 {
     restore_active_state restore;

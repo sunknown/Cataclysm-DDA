@@ -14,8 +14,8 @@ constexpr int MP_HURRY_COMBAT_MS = 4000;
 // What a player is doing from the turn loop's point of view. Almost all of it
 // is derived from game state on every query rather than stored: two pieces of
 // state that could disagree is exactly the bug the co-op mode fixed once
-// already. The one exception is `away`, which no amount of game state can
-// tell apart from a player staring at an open menu.
+// already. The exceptions are `away` and `disconnected`, which no amount of
+// game state can tell apart from a player staring at an open menu.
 enum class mp_player_state {
     // Voluntarily left the keyboard. Stored, and checked before activity and
     // moves, so it outranks every other state: a player who is not there
@@ -54,9 +54,11 @@ bool mp_player_holds_barrier( size_t slot );
 // the whole turn model rests on.
 bool mp_barrier_satisfied();
 
-// True when every living player has left the keyboard on purpose. A satisfied
-// barrier would let such a turn close, and closing it moves the world around
-// empty chairs, so the orchestrator keeps the turn open on this as well.
+// True when every living player is away or disconnected: nobody is at the
+// table. A satisfied barrier would let such a turn close, and closing it moves
+// the world around empty chairs, so the orchestrator keeps the turn open on
+// this as well. A disconnected player counts as not being at the table for the
+// same reason an away one does: there is nobody to read the world moving.
 // Vacuously true when no living player is left, which is the same "nobody is
 // at the table" case.
 bool mp_turn_all_away();
@@ -125,9 +127,9 @@ void mp_return_from_away( size_t slot );
 // (mp_turn_reset_all) clears it.
 void mp_set_disconnected( size_t slot, bool disconnected );
 
-// True while `slot` has lost its client. Read by the barrier rule, the
-// orchestrator and the sidebar widget, which has to show who is not being
-// waited on.
+// True while `slot` has lost its client. Read by the server lifecycle code
+// (disconnect, reconnect and death handling in later tasks); the turn rules
+// that do not wait on such a slot use mp_player_state_of().
 bool mp_player_is_disconnected( size_t slot );
 
 // Clears the per-turn barrier bookkeeping that belongs to a fresh turn: the

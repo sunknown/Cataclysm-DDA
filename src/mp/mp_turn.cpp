@@ -21,8 +21,8 @@ namespace
 std::vector<bool> g_waiting_for_input;
 std::vector<bool> g_dropped_by_countdown;
 // Players who left the keyboard on purpose (see mp_set_away in the header).
-// Stored, unlike the other states, because nothing in game state separates them
-// from a player sitting at a menu.
+// Stored, unlike the derived states, because nothing in game state separates
+// them from a player sitting at a menu.
 std::vector<bool> g_away;
 // Players whose client is gone (see mp_set_disconnected in the header). Also
 // stored because no game state separates a lost client from a player at a
@@ -177,7 +177,7 @@ bool mp_turn_all_away()
         if( g->player_at( i ).is_dead_state() ) {
             continue;
         }
-        if( !mp_player_is_away( i ) ) {
+        if( !mp_player_is_away( i ) && !mp_player_is_disconnected( i ) ) {
             return false;
         }
     }
