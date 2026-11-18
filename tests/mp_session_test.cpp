@@ -514,6 +514,32 @@ TEST_CASE( "two_busy_players_do_not_hold_the_world", "[mp]" )
     }, 400 ) );
 }
 
+TEST_CASE( "an_away_players_activity_advances_while_a_partner_plays", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // The partner's own long activity keeps the world moving without waiting
+    // on a key from either player. The away player's activity must spend the
+    // moves each new turn hands them, not sit frozen on their input wait.
+    avatar &away = g->player_at( 0 );
+    away.assign_activity( wait_activity_actor( 30_minutes ) );
+    mp_set_away( 0, true );
+    g->player_at( 1 ).assign_activity( wait_activity_actor( 30_minutes ) );
+
+    // Let the opening turns settle. The away player's own action loop spends
+    // the moves they had when they left, so progress before this point does
+    // not prove that the running world kept their activity going.
+    harness.run_until( []() { return false; }, 3 );
+    const int moves_before = away.activity.moves_left;
+    const int turn_before = to_turn<int>( calendar::turn );
+
+    CHECK( harness.run_until( [&]() {
+        return to_turn<int>( calendar::turn ) > turn_before + 5 &&
+               away.activity.moves_left < moves_before - 100;
+    }, 100 ) );
+}
+
 TEST_CASE( "an_away_player_carrying_an_activity_can_still_come_back", "[mp]" )
 {
     restore_active_state restore;

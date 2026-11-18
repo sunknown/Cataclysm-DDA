@@ -53,6 +53,7 @@
 #include "mission.h"
 #include "monster.h"
 #include "mp/mp_context.h"
+#include "mp/mp_mode.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_tether.h"
 #include "mp/mp_turn.h"
@@ -241,13 +242,39 @@ void handle_key_blocking_activity()
         return;
     }
     avatar &u = get_avatar();
+#if defined( MULTIPLAYER )
+    // An away player whose activity drained their moves reaches this poll from
+    // player_act() instead of the normal input wait. They still own their key:
+    // a read that only redraws would leave them away for ever. Remember the
+    // seat so ':' and a costly action can have their usual away-state effect.
+    const std::optional<size_t> away_slot =
+        mp_coop_active() && mp_player_is_away( g->active_slot() )
+        ? std::optional<size_t>( g->active_slot() ) : std::nullopt;
+#endif
     const bool has_unfinished_activity = u.activity && (
             u.activity.id()->based_on() == based_on_type::NEITHER
             || u.activity.moves_left > 0 );
+#if defined( MULTIPLAYER )
+    if( has_unfinished_activity || u.has_destination() || away_slot ) {
+#else
     if( has_unfinished_activity || u.has_destination() ) {
+#endif
         input_context ctxt = get_default_mode_input_context();
         const std::string action = ctxt.handle_input( 0 );
         bool refresh = true;
+#if defined( MULTIPLAYER )
+        if( away_slot ) {
+            const action_id act = look_up_action( action );
+            if( act == ACTION_COOP_AWAY ) {
+                mp_return_from_away( *away_slot );
+                refresh = false;
+            } else if( act != ACTION_NULL && act != ACTION_TIMEOUT &&
+                       !mp_action_is_free( act ) ) {
+                mp_return_from_away( *away_slot );
+                refresh = false;
+            }
+        }
+#endif
         if( action == "pause" ) {
             if( u.activity.is_interruptible_with_kb() ) {
                 g->cancel_activity_query( _( "Confirm:" ) );
@@ -656,15 +683,20 @@ bool game::player_act( avatar &ava )
         } else {
             // An activity drains a player's moves before this branch is
             // reached, so the normal input wait never runs for them. An away
-            // player still has to be able to press ':' to come back: routing
-            // their key through handle_action() parks them on their own wire
-            // with the input-wait flag set, which is what lets the turn loop
-            // hand the baton back and dispatch the key. The activity poll
-            // below would swallow ':' without acting on it and leave the key
-            // unread while the all-away hold kept the turn open for ever.
+            // player still has a key of their own to read. A blocking read
+            // parks the player thread on its wire, and the world can never
+            // hand it the baton to run avatar_turn_pre() -- the only place an
+            // activity advances in a session. So poll instead whenever the
+            // partner is playing, and keep the blocking read only while the
+            // all-away hold keeps the turn open: with no further baton
+            // handoffs, that is the only wait that can still pick up ':'.
 #if defined( MULTIPLAYER )
             if( mp_player_is_away( g->active_slot() ) ) {
-                handle_action();
+                if( mp_turn_all_away() ) {
+                    handle_action();
+                } else {
+                    handle_key_blocking_activity();
+                }
             } else
 #endif
             {
