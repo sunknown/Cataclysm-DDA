@@ -168,54 +168,46 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             // blank grid to a client that has already cleared its terminal.
             ui_manager::screen_resized();
         }
-        // When the only peer is gone there is nobody to wait for, and returning
-        // a timeout forever just makes the game spin in its input loops. End the
-        // session through the entry point instead; the game itself never sees
-        // the transport. This is the one place the backend learns about the
-        // wire, and it is deliberately the mp layer, not game logic.
+        // This seat's own wire is gone. A dropped client no longer ends the
+        // session: its seat is marked disconnected, so it stops holding the
+        // barrier and banks no moves, and play continues for everyone still at
+        // a terminal. Only the last client leaving ends the session, and that
+        // decision lives in mp_server_mark_disconnected(), which asks
+        // mp_server_end_if_no_clients() once the seat is marked.
         //
-        // Except during the join phase: the roster is not fixed until the party
+        // Keyed on the active seat rather than on mp_server_peer_connected()
+        // alone: that one answers for the whole roster, so a healthy partner
+        // whose menu asks for its next keystroke after somebody else dropped
+        // would otherwise be marked disconnected itself.
+        //
+        // The join phase is excluded: the roster is not fixed until the party
         // starts, so a client that drops there costs only its own seat (the
-        // world frees it and waits for a replacement), and ending the session
-        // for the others would contradict that. Its own menu is told to cancel
-        // by the world, through the scheduler's per-seat quit mark.
-        // Once is enough. Every remaining trip round this loop (there can be
-        // many -- a menu several frames up keeps asking for its next keystroke)
-        // would otherwise re-detect the same disconnect, re-log it and
-        // re-request the end, spinning as fast as the CPU allows and writing
-        // without end. Two things say it has already been handled: the end is
-        // requested and the world has not acted on it yet, or teardown is
-        // already under way.
-        if( !mp_server_peer_connected() && !mp_join_in_progress() &&
-            !mp_session_end_requested() && !mp_sched_stopping() ) {
-            // The stop itself is announced by exit_handler(), which also covers
-            // the sessions that end without a disconnect.
-            std::string who = "a client";
-            for( const std::unique_ptr<mp_session> &s : mp_sessions() ) {
-                if( !s || !s->transport || !s->transport->connected() ) {
-                    who = "\"" + ( s ? s->name : std::string( "?" ) ) + "\"";
-                    break;
-                }
-            }
-            const std::string length = mp_server_log_session_length();
-            mp_server_log( who + " disconnected" +
-                           ( length.empty() ? std::string() : " after " + length ) +
-                           "; ending the session" );
+        // world frees it and waits for a replacement). Its own menu is told to
+        // cancel by the world, through the scheduler's per-seat quit mark.
+        //
+        // Idempotence lives in mp_server_mark_disconnected(): a menu several
+        // frames up keeps asking for its next keystroke, and every trip round
+        // this loop re-detects the same dead wire. Without that guard the
+        // message, the console line and the close would repeat once per frame.
+        const size_t own_slot = mp_active_context_ptr() ? mp_active_context().slot_index : 0;
+        const mp_session *const own_session = mp_session_of_slot( own_slot );
+        const bool own_wire_lost = !mp_server_peer_connected() && !mp_join_in_progress() &&
+                                   ( own_session == nullptr || !own_session->transport ||
+                                     !own_session->transport->connected() );
+        if( own_wire_lost && !mp_sched_stopping() ) {
             if( mp_active_sched() ) {
-                // mp_server_request_exit() calls exit_handler(), which resets
-                // g and calls exit() right there on whichever thread reaches
-                // it. That is fine for the original single-client design this
-                // branch was written for -- one peer, one thread, nothing else
-                // running -- but with a scheduler there are other player
-                // threads and (in a test) the harness's own thread alive at
-                // the same time, and g.reset() out from under them is a
-                // use-after-free waiting to happen. Use the same cooperative
-                // signal a player quitting or dying already uses instead: it
-                // only sets a flag, and the orchestrator (running on its own
-                // thread, in do_turn()) turns that into a clean shutdown no
-                // other thread's state can be caught mid-teardown by.
-                mp_request_session_end( who + " disconnected" );
+                // Mark the seat and hand its next input wait the same QUIT
+                // Escape gives, so whatever menu or action loop it sits in
+                // unwinds instead of polling a transport nobody writes to any
+                // more. The seat no longer holds the barrier, so the rest of
+                // the session keeps playing while that unwind runs.
+                mp_server_mark_disconnected( own_slot );
+                mp_active_sched()->request_quit( own_slot );
             } else {
+                // No scheduler: there is nobody else to keep playing for, and
+                // returning a timeout forever would just make the game spin in
+                // its input loops. Tear the process down through the entry
+                // point; the stop itself is announced by exit_handler().
                 mp_server_request_exit();
             }
         }

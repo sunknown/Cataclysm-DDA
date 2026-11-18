@@ -20,6 +20,7 @@
 #include "messages.h"
 #include "mod_manager.h"
 #include "path_info.h"
+#include "string_formatter.h"
 #include "translations.h"
 #include "worldfactory.h"
 #include "mp/mp_context.h"
@@ -499,6 +500,34 @@ void mp_server_end_if_no_clients()
     }
 }
 
+void mp_server_mark_disconnected( const size_t slot )
+{
+    // A menu several frames up keeps asking for its next keystroke, and every
+    // one of those trips round the input loop re-detects the same dead wire.
+    // The seat being marked is the whole record of "already handled": without
+    // this the message and the console line would be written once per frame.
+    if( mp_player_is_disconnected( slot ) ) {
+        return;
+    }
+    mp_session *const session = mp_session_of_slot( slot );
+    const std::string who = session != nullptr ? session->name : name_of_slot( slot );
+    if( session != nullptr && session->transport ) {
+        // The wire is already gone; closing it makes every wait on it return at
+        // once rather than sit until a timeout.
+        session->transport->close();
+    }
+    mp_set_disconnected( slot, true );
+    Messages::add_msg( string_format( _( "Player %d (%s) disconnected" ),
+                                     static_cast<int>( slot ) + 1, who ) );
+    const std::string length = mp_server_log_session_length();
+    mp_server_log( "\"" + who + "\" disconnected" +
+                   ( length.empty() ? std::string() : " after " + length ) +
+                   "; the session continues" );
+    // The last client leaving still ends the session; anything short of that
+    // leaves it running for the players who are still at their terminals.
+    mp_server_end_if_no_clients();
+}
+
 bool mp_server_seat_is_free_for_new_client( const size_t slot )
 {
     if( slot >= g->player_slot_count() || !g->player_at( slot ).is_dead_state() ) {
@@ -705,6 +734,16 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         if( sched.unwind_if_stopping( slot ) ) {
             return;
         }
+        if( mp_player_is_disconnected( slot ) ) {
+            // The client is gone. There is nobody to act for, and this seat no
+            // longer holds the barrier, so hand the baton straight back and
+            // park for the next turn. Checked before quit_requested(): this
+            // seat's own quit mark is set by the input wait that noticed the
+            // loss, and taking the join phase's "the world is waiting to join
+            // me" path would return holding the baton the world must get back.
+            sched.release_to( slot, mp_sched::world );
+            continue;
+        }
         if( sched.quit_requested( slot ) ) {
             // This seat was released while it waited for the party to start
             // (mp_sched::abandon_seat, after the client's wire died): there is
@@ -730,10 +769,15 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         if( sched.unwind_if_stopping( slot ) ) {
             return;
         }
-        if( ended ) {
+        if( ended && !mp_player_is_disconnected( slot ) ) {
             // The game is over or this player quit. A thread body has nowhere
             // to return that to, so it is left where the orchestrator picks it
             // up and turns it into do_turn()'s `true` for main().
+            //
+            // A seat whose client is gone has already been marked disconnected
+            // by the input wait that noticed the loss. Its verdict is the menu
+            // stack unwinding, not a free choice by a player at a terminal: the
+            // seat leaves the barrier, and the session goes on for the others.
             const avatar &ava = g->player_at( slot );
             mp_request_session_end( ava.get_name() +
                                     ( ava.is_dead_state() ? " died" : " left the game" ) );

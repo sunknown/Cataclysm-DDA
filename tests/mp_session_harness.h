@@ -211,6 +211,12 @@ class mp_session_harness
         // hanging.
         bool run_until( const std::function<bool()> &predicate, int max_turns = 100 );
 
+        // True when any of the last 1000 messages in the process-wide log
+        // contains `text`. The log is one per process (src/messages.h has no
+        // per-player split), so this is how a session-level announcement such as
+        // a disconnect is observed: it is written once, for everybody.
+        bool message_log_contains( const std::string &text ) const;
+
         // The last screen the server sent this client, as the client applied it.
         const mp_screen_grid &screen( size_t slot ) const;
 

@@ -730,4 +730,33 @@ TEST_CASE( "a_dead_character_does_not_keep_the_session_alive", "[mp]" )
     get_avatar().move_to( tripoint_abs_ms::zero );
 }
 
+TEST_CASE( "a_partner_disconnect_does_not_end_the_session", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const std::string name = g->player_at( 1 ).get_name();
+
+    harness.drop_client( 1 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+
+    // The dropped seat is marked, and everybody still at a terminal is told so
+    // through the one message log the session shares. The session itself keeps
+    // running: the server no longer asks the game to end it.
+    CHECK_FALSE( mp_session_end_requested() );
+    CHECK( mp_player_is_disconnected( 1 ) );
+    CHECK( harness.message_log_contains( "Player 2 (" + name + ") disconnected" ) );
+
+    // The partner keeps playing: the disconnected seat no longer holds the
+    // barrier, so a turn taken by the player who is still there advances the
+    // calendar.
+    g->player_at( 0 ).set_moves( 100 );
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 0, '.' );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+}
+
 #endif // MP_SERVER

@@ -19,6 +19,7 @@
 #include "map.h"
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
+#include "messages.h"
 #include "output.h"
 #include "player_helpers.h"
 #include "type_id.h"
@@ -308,6 +309,16 @@ bool mp_session_harness::run_until( const std::function<bool()> &predicate, cons
     }
     // Returning false rather than looping forever is the point: a barrier bug
     // shows up as a failed assertion with a message, not as a hung CI job.
+    return false;
+}
+
+bool mp_session_harness::message_log_contains( const std::string &text ) const
+{
+    for( const std::pair<std::string, std::string> &entry : Messages::recent_messages( 1000 ) ) {
+        if( entry.second.find( text ) != std::string::npos ) {
+            return true;
+        }
+    }
     return false;
 }
 

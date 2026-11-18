@@ -55,7 +55,8 @@ bool mp_server_open_world( const std::string &world_name, std::string &err );
 // Whether the join phase is running. A dropped wire means two different
 // things either side of this flag: during the phase it costs that one client
 // its seat while the session waits for a replacement, and once the party has
-// started it ends the session for everybody (Phase 5).
+// started it marks that seat disconnected and play goes on for everyone still
+// at a terminal (the session itself ends only when the last client is gone).
 bool mp_join_in_progress();
 
 // Says that each of these slots' characters was pulled to the group, one line
@@ -141,9 +142,22 @@ bool mp_server_any_client_connected();
 
 // Ends the session when no client is connected any more; does nothing while at
 // least one remains. The end request carries "no players connected" as its
-// reason. Nothing calls this yet: the places where a client can be lost gain
-// their calls in the tasks that make a loss survivable.
+// reason. Called by mp_server_mark_disconnected() once it has dropped the
+// client that was lost.
 void mp_server_end_if_no_clients();
+
+// Takes `slot`'s client out of play because its wire is gone: closes the
+// session's transport, marks the seat disconnected (so it stops holding the
+// barrier and banks no moves) and announces it in the shared message log and on
+// the server console. The session keeps running for whoever else is still
+// connected; when this was the last client, mp_server_end_if_no_clients() ends
+// it.
+//
+// Idempotent: a second call for a seat that is already disconnected does
+// nothing. The input wait that notices a dead wire re-enters on every frame of
+// whatever menu the player had open, so without that this would write the
+// message and the console line once per frame.
+void mp_server_mark_disconnected( size_t slot );
 
 // Whether `slot` can take a new client: it is a real seat, its character is
 // dead, and no connected client still occupies it. A living character's seat
