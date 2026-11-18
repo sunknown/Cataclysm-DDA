@@ -530,6 +530,68 @@ TEST_CASE( "a_dead_disconnected_avatar_reconnects_into_creation", "[mp]" )
     }, 60 ) );
 }
 
+TEST_CASE( "a_new_client_can_take_a_dead_disconnected_seat", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    harness.drop_client( 1 );
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+
+    // A dead character's seat whose client left is free, and its session and
+    // parked thread are still there: a newcomer joins them rather than being
+    // refused or given a seat of its own.
+    CHECK( mp_server_seat_is_free_for_new_client( 1 ) );
+    CHECK( mp_server_free_seat_for_new_client() == std::optional<size_t>( 1 ) );
+    harness.connect_replacement_client( 1 );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_player_needs_replacement( 1 ) &&
+               !g->player_at( 1 ).is_dead_state();
+    }, 60 ) );
+
+    // The newcomer is a client like any other: on the wire, off the
+    // disconnected list, alive, and holding its own character card.
+    CHECK( harness.client_connected( 1 ) );
+    CHECK( harness.seat_occupied( 1 ) );
+    CHECK_FALSE( mp_player_is_disconnected( 1 ) );
+    CHECK( g->player_at( 1 ).get_name() != "" );
+    const mp_session *const session = mp_session_of_slot( 1 );
+    REQUIRE( session != nullptr );
+    CHECK( session->card_save_id == g->player_at( 1 ).get_save_id() );
+    // Admission announced a new client, not a returning character.
+    CHECK( harness.message_log_contains( "joined" ) );
+
+    // And the seat does not hold the party back: with both terminals at the
+    // keyboard, their next turn still closes and moves the calendar.
+    const int turn_before = to_turn<int>( calendar::turn );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 0, '.' );
+    harness.press( 1, '.' );
+    CHECK( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+}
+
+TEST_CASE( "a_new_client_is_refused_when_no_seat_is_free", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const size_t seats = g->player_slot_count();
+    std::string err;
+
+    // Both seats have living clients at their terminals, so nobody new can sit
+    // down. The refusal comes from the admission path, not from a broken wire.
+    CHECK_FALSE( harness.try_admit_new_client( "Cid", err ) );
+    CHECK( err.find( "no free seat" ) != std::string::npos );
+    CHECK( harness.client_connected( 0 ) );
+    CHECK( harness.client_connected( 1 ) );
+    CHECK( g->player_slot_count() == seats );
+}
+
 TEST_CASE( "a_disconnect_while_creating_a_replacement_frees_the_seat", "[mp]" )
 {
     restore_active_state restore;

@@ -202,6 +202,12 @@ void mp_run_replacement_menu( size_t slot );
 // not left yet.
 bool mp_server_seat_is_free_for_new_client( size_t slot );
 
+// The first seat that can take a new client -- see
+// mp_server_seat_is_free_for_new_client() -- or nullopt while every seat is
+// taken. Never grows the roster and never returns a connected living seat; the
+// seats were fixed when the party started.
+std::optional<size_t> mp_server_free_seat_for_new_client();
+
 // The first disconnected seat whose session offered `save_id` as its character
 // card, or nullopt when no seat is waiting for that character. A seat is
 // reclaimed only by the card it was seated with: the character, its name and
@@ -212,31 +218,42 @@ std::optional<size_t> mp_server_seat_for_card( const std::string &save_id );
 // Returns `slot`'s client to the table. `slot` must be a disconnected seat --
 // mp_server_seat_for_card() is how a caller finds one. Call after the
 // reconnecting client's new transport has been installed on the seat's
-// retained session (see mp_server_take_client): clears the seat's disconnected
-// state, clears the scheduler's quit mark that marking it left latched (Task
-// 3's contract: without it the returned player's every input wait answers
-// QUIT), and writes `Player %d (%s) reconnected` to the shared message log.
-// The seat keeps its character, its session and its thread; it is runnable
+// retained session (see mp_server_accept_new_client): clears the seat's
+// disconnected state, clears the scheduler's quit mark that marking it left
+// latched (Task 3's contract: without it the returned player's every input wait
+// answers QUIT), and writes `Player %d (%s) reconnected` to the shared message
+// log. The seat keeps its character, its session and its thread; it is runnable
 // again from the next turn on.
 void mp_server_reconnected( size_t slot );
 
 // Takes one freshly handshaken connection into a session that has already
-// started. A card naming a disconnected seat returns that seat: the new
-// transport and the client's own hello fields are installed on the retained
-// session, whose character, thread and context stay as they were, and
-// mp_server_reconnected() clears the seat's disconnected state. Any other
-// connection is refused with a `bye` of "no free seat" and closed -- nobody
-// joins a party that has started until free seats are handed out (Phase 6).
+// started. Admission is decided in this order:
 //
-// Returns true when the connection was seated. Must be called by the world,
-// holding the baton; the seat it returns to is parked, not running.
-bool mp_server_take_client( std::unique_ptr<mp_session> session );
+// 1. A card naming a disconnected seat returns that seat: the new transport and
+//    the client's own hello fields are installed on the retained session, whose
+//    character, thread and context stay as they were, and
+//    mp_server_reconnected() clears the seat's disconnected state.
+// 2. Otherwise the first seat whose dead character's client has left -- see
+//    mp_server_free_seat_for_new_client() -- takes the newcomer. Its retained
+//    session and parked thread are kept: the newcomer's wire and hello fields
+//    are installed on them, the seat stops being disconnected and the next
+//    baton grant opens the replacement menu because the seat still owes a
+//    character. The shared message log says `Player %d (%s) joined`.
+// 3. Otherwise the connection is refused: it is sent a `bye` of `err` ("no free
+//    seat") and closed, and the roster stays exactly as it was. A client naming
+//    a living connected character matches neither a card nor a free seat and is
+//    refused this way.
+//
+// Returns true when the connection was seated, false otherwise, with `err`
+// holding the reason in that case. Must be called by the world, holding the
+// baton; the seat it returns to is parked, not running.
+bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::string &err );
 
 // One non-blocking poll for a connection after the party has started: accepts
-// at most one client and hands it to mp_server_take_client(). Called once per
-// orchestrator turn by do_turn(). Does nothing when no listener was bound --
-// the in-process test harness supplies its wires through mp_server_take_client
-// directly.
+// at most one client and hands it to mp_server_accept_new_client(). Called once
+// per orchestrator turn by do_turn(). Does nothing when no listener was bound --
+// the in-process test harness supplies its wires through
+// mp_server_accept_new_client directly.
 void mp_server_poll_new_clients();
 
 // Ends the server session cleanly. Called by the mp curses backend when a

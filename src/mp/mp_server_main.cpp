@@ -735,13 +735,13 @@ void mp_server_reconnected( const size_t slot )
     mp_server_log( "\"" + who + "\" reconnected" );
 }
 
-// Moves a returning client's fresh wire and hello fields onto the seat the
-// server kept for it. The seat is not replaced: its context index -- and so
-// its character and its thread -- is untouched, and its own game state is not
-// re-created. The grid is the new terminal's, because the handshake sized it
-// to what this client actually runs, and any pending resize belonged to the
-// terminal that left.
-static void install_reconnected_client( mp_session &seat, std::unique_ptr<mp_session> fresh )
+// Moves a connecting client's fresh wire and hello fields onto a session the
+// server already holds for a seat. The seat is not replaced: its context index
+// -- and so its character and its thread -- is untouched, and its own game
+// state is not re-created. The grid is the new terminal's, because the
+// handshake sized it to what this client actually runs, and any pending resize
+// belonged to the terminal that left.
+static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session> fresh )
 {
     cata_assert( fresh != nullptr );
     seat.transport = std::move( fresh->transport );
@@ -756,38 +756,73 @@ static void install_reconnected_client( mp_session &seat, std::unique_ptr<mp_ses
     seat.card_world = std::move( fresh->card_world );
 }
 
-bool mp_server_take_client( std::unique_ptr<mp_session> session )
+bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::string &err )
 {
     cata_assert( session != nullptr );
-    const std::optional<size_t> seat = mp_server_seat_for_card( session->card_save_id );
-    if( seat ) {
-        mp_session *const retained = mp_session_of_slot( *seat );
+    err.clear();
+    // 1. A card names the character it left. Only a disconnected seat keeps a
+    // card, so a living connected character is never mistaken for a reconnect.
+    const std::optional<size_t> card_seat = mp_server_seat_for_card( session->card_save_id );
+    if( card_seat ) {
+        mp_session *const retained = mp_session_of_slot( *card_seat );
         cata_assert( retained != nullptr );
-        install_reconnected_client( *retained, std::move( session ) );
-        mp_server_reconnected( *seat );
+        install_client_on_seat( *retained, std::move( session ) );
+        mp_server_reconnected( *card_seat );
         return true;
     }
-    // Nobody is waiting for this card. Say why before closing, so the client
-    // shows a refusal rather than a wire that died, and keep the seat roster
-    // exactly as it was -- a bad card disturbs no one. Until Phase 6 hands out
-    // free seats, a party that has started takes nobody new.
+    // 2. Otherwise a seat whose dead character's client has left. Its session
+    // and parked thread survive the disconnect, so the newcomer joins them
+    // instead of getting a seat of its own. The seat still owes a replacement,
+    // and the next baton grant opens the creation menu for it.
+    const std::optional<size_t> free_seat = mp_server_free_seat_for_new_client();
+    if( free_seat ) {
+        mp_session *const retained = mp_session_of_slot( *free_seat );
+        if( retained == nullptr ) {
+            // Freed during the join phase, before any session was seated: the
+            // ordinary seating path raises the seat's thread.
+            mp_server_seat_client( *free_seat, std::move( session ) );
+            return true;
+        }
+        install_client_on_seat( *retained, std::move( session ) );
+        mp_set_disconnected( *free_seat, false );
+        // Keys the dead client queued before its wire died and the quit mark
+        // its input wait latched are not the newcomer's: both are dropped along
+        // with the seat's disconnected state, exactly as a reconnect does.
+        if( *free_seat < g->contexts.size() ) {
+            g->contexts[*free_seat].input_queue.clear();
+        }
+        if( mp_sched *const sched = mp_active_sched() ) {
+            sched->clear_quit( *free_seat );
+        }
+        // A different person sits here now, so this is not a reconnect: name
+        // the newcomer, not the dead character it replaced. The replacement
+        // menu sends the new character card once the newcomer has chosen.
+        const std::string who = retained->name;
+        Messages::add_msg( string_format( _( "Player %d (%s) joined" ),
+                                         static_cast<int>( *free_seat ) + 1, who ) );
+        mp_server_log( "\"" + who + "\" joined" );
+        return true;
+    }
+    // 3. No seat: say why before closing, so the client shows a refusal rather
+    // than a wire that died, and keep the seat roster exactly as it was.
+    err = "no free seat";
     mp_control bye;
     bye.kind = mp_control_kind::bye;
-    bye.bye_reason = "no free seat";
+    bye.bye_reason = err;
     const std::string peer = session->transport ? session->transport->peer_description() :
                              "a client";
     send_control( *session, bye );
     if( session->transport ) {
         session->transport->close();
     }
-    mp_server_log( "refused " + peer + ": no free seat" );
+    mp_server_log( "refused " + peer + ": " + err );
     return false;
 }
 
 void mp_server_poll_new_clients()
 {
     // The listener belongs to the server process; the in-process harness has
-    // none and supplies its wires through mp_server_take_client directly.
+    // none and supplies its wires through mp_server_accept_new_client directly.
     if( !g_listener ) {
         return;
     }
@@ -799,7 +834,9 @@ void mp_server_poll_new_clients()
     // again -- and logged once by the rejected branch below.
     switch( accept_client( 0, session, why, MP_POST_START_HANDSHAKE_MS ) ) {
         case mp_accept_result::seated:
-            mp_server_take_client( std::move( session ) );
+            // A refusal ("no free seat") is the client's answer, sent from the
+            // admission path itself; the party is untouched.
+            mp_server_accept_new_client( std::move( session ), why );
             return;
         case mp_accept_result::rejected:
             // A stranger whose hello was refused. Say why and leave the party
@@ -822,6 +859,16 @@ bool mp_server_seat_is_free_for_new_client( const size_t slot )
     // replacement may sit anywhere in that vector once one has connected.
     const mp_session *const session = mp_session_of_slot( slot );
     return session == nullptr || !session->transport || !session->transport->connected();
+}
+
+std::optional<size_t> mp_server_free_seat_for_new_client()
+{
+    for( size_t slot = 0; slot < g->player_slot_count(); ++slot ) {
+        if( mp_server_seat_is_free_for_new_client( slot ) ) {
+            return slot;
+        }
+    }
+    return std::nullopt;
 }
 
 // The lowest seat with no client in it, or nullopt while every seat is taken.

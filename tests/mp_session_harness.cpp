@@ -290,23 +290,35 @@ bool mp_session_harness::seat_occupied( const size_t slot ) const
 
 void mp_session_harness::connect_replacement_client( const size_t slot )
 {
-    // The seat is free and its thread is already joined: the world did both
-    // before it stopped polling. What is left is what a new connection does.
-    cata_assert( !seat_occupied( slot ) );
     cata_assert( !client_connected( slot ) );
+    // A newcomer carries no character card: it is a new person, not a
+    // returning character.
     mp_loopback_pair wire = mp_make_loopback_pair( latency_ms_ );
     auto session = std::make_unique<mp_session>();
     session->transport = wire.a;
-    // Name and grid as the constructor sets them, so this client is
-    // indistinguishable from a first connection wherever the session reads it.
     session->name = "P" + std::to_string( slot );
     session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    mp_transport *const admitted = wire.a.get();
+
+    if( seat_occupied( slot ) ) {
+        // The seat died and its client left, but the server kept the session
+        // and its parked thread. The newcomer's wire is installed on them by
+        // the same admission path a real connection takes; the next grant opens
+        // the replacement menu because the seat still owes a character.
+        std::string err;
+        cata_assert( mp_server_accept_new_client( std::move( session ), err ) );
+        // Admission takes the first free seat; this helper was asked for a
+        // particular one, so a different seat is a test bug, not a re-seat.
+        cata_assert( mp_session_of_slot( slot ) != nullptr &&
+                     mp_session_of_slot( slot )->transport.get() == admitted );
+    } else {
+        // Freed during the join phase: no session and no thread survived, so
+        // this is the ordinary seating path.
+        mp_server_seat_client( slot, std::move( session ) );
+    }
     client_wires_[slot] = wire.b;
     client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
     client_states_[slot] = mp_client_state();
-    // The server's own seat path: roster entry, cleared quit mark, new thread
-    // running this client's join menu.
-    mp_server_seat_client( slot, std::move( session ) );
 }
 
 bool mp_session_harness::reconnect_client( const size_t slot, const std::string &save_id,
@@ -326,7 +338,8 @@ bool mp_session_harness::reconnect_client( const size_t slot, const std::string 
     // The same entry the post-start listener poll uses. A refusal is the
     // server's answer, observed from the wire rather than assumed: the bye is
     // queued before the close.
-    if( !mp_server_take_client( std::move( session ) ) ) {
+    std::string err;
+    if( !mp_server_accept_new_client( std::move( session ), err ) ) {
         if( refusal != nullptr ) {
             *refusal = read_bye_reason( *wire.b, latency_ms_ + 1000 );
         }
@@ -337,6 +350,37 @@ bool mp_session_harness::reconnect_client( const size_t slot, const std::string 
     client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
     client_states_[slot] = mp_client_state();
     return true;
+}
+
+bool mp_session_harness::try_admit_new_client( const std::string &username, std::string &err )
+{
+    // A person who was not here when the party started: a hello with a name
+    // and no character card. The server decides which seat, if any, takes it.
+    mp_loopback_pair wire = mp_make_loopback_pair( latency_ms_ );
+    auto session = std::make_unique<mp_session>();
+    session->transport = wire.a;
+    session->name = username;
+    session->grid.resize( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    mp_transport *const admitted = wire.a.get();
+
+    if( !mp_server_accept_new_client( std::move( session ), err ) ) {
+        // The server sent its reason before closing: read why from this end.
+        err = read_bye_reason( *wire.b, latency_ms_ + 1000 );
+        return false;
+    }
+    // The server chose the seat. Find the one holding this wire so press() and
+    // screen() address the newcomer's client end.
+    for( size_t slot = 0; slot < client_wires_.size(); ++slot ) {
+        const mp_session *const seated = mp_session_of_slot( slot );
+        if( seated != nullptr && seated->transport.get() == admitted ) {
+            client_wires_[slot] = wire.b;
+            client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+            client_states_[slot] = mp_client_state();
+            return true;
+        }
+    }
+    cata_assert( false );
+    return false;
 }
 
 bool mp_session_harness::seated() const

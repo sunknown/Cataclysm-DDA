@@ -195,17 +195,20 @@ class mp_session_harness
         // socket.
         bool seat_occupied( size_t slot ) const;
 
-        // Seats a replacement client in `slot`, the way a new connection would:
-        // a loopback pair, a session recording the seat, and a fresh player
-        // thread running that client's join menu. The seat must be free -- the
-        // server joins the previous client's thread when it drops it -- and the
-        // count of seats does not change.
+        // Seats a replacement client in `slot`, the way a new connection would.
+        // When the server still holds a session for the seat (a dead seat whose
+        // client left), the newcomer is offered through the same admission path
+        // a real connection takes (mp_server_accept_new_client) and its wire is
+        // installed on the retained session; the next grant opens the
+        // replacement menu. When the seat has no session at all (freed during
+        // the join phase), a loopback pair and a fresh player thread are raised
+        // for it. The count of seats does not change either way.
         void connect_replacement_client( size_t slot );
 
         // Offers a reconnecting client carrying the character card `save_id`
         // to the running server, through the same entry a fresh connection
-        // takes after the party has started (mp_server_take_client), not by
-        // poking the seat's state. A fresh loopback pair with this harness's
+        // takes after the party has started (mp_server_accept_new_client), not
+        // by poking the seat's state. A fresh loopback pair with this harness's
         // latency stands in for the new process; on success its wire replaces
         // `slot`'s and the seat keeps its character. Returns false when the
         // server refused the connection -- no disconnected seat carries that
@@ -213,6 +216,15 @@ class mp_session_harness
         // sent. Nothing in the party changes on a refusal.
         bool reconnect_client( size_t slot, const std::string &save_id,
                                std::string *refusal = nullptr );
+
+        // Offers a client that names no character card, the way a new person
+        // connects to a party already in progress: a loopback pair and a hello
+        // named `username`, handed to mp_server_accept_new_client. The server
+        // chooses the seat; on success this harness adopts that seat's client
+        // end, so press()/screen() reach it. Returns false when no seat was
+        // free, and `err` then holds the reason read from the `bye` the server
+        // sent, leaving the harness and the party untouched.
+        bool try_admit_new_client( const std::string &username, std::string &err );
 
         // Whether the join phase is over and everyone has a character placed.
         // Always true in playing mode.
