@@ -510,7 +510,10 @@ void mp_server_mark_disconnected( const size_t slot )
         return;
     }
     mp_session *const session = mp_session_of_slot( slot );
-    const std::string who = session != nullptr ? session->name : name_of_slot( slot );
+    // The player the others know is the character, not the terminal's name:
+    // the message is about who left the table, and it is the character's name
+    // the roster and the join screens use.
+    const std::string who = g->player_at( slot ).get_name();
     if( session != nullptr && session->transport ) {
         // The wire is already gone; closing it makes every wait on it return at
         // once rather than sit until a timeout.
@@ -520,9 +523,12 @@ void mp_server_mark_disconnected( const size_t slot )
     Messages::add_msg( string_format( _( "Player %d (%s) disconnected" ),
                                      static_cast<int>( slot ) + 1, who ) );
     const std::string length = mp_server_log_session_length();
+    // Built after the close, from who is actually left: the last client must
+    // not be told the session continues while the line below ends it.
     mp_server_log( "\"" + who + "\" disconnected" +
                    ( length.empty() ? std::string() : " after " + length ) +
-                   "; the session continues" );
+                   ( mp_server_any_client_connected() ? "; the session continues" :
+                     "; no players left; ending the session" ) );
     // The last client leaving still ends the session; anything short of that
     // leaves it running for the players who are still at their terminals.
     mp_server_end_if_no_clients();
@@ -741,6 +747,16 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             // seat's own quit mark is set by the input wait that noticed the
             // loss, and taking the join phase's "the world is waiting to join
             // me" path would return holding the baton the world must get back.
+            //
+            // The quit mark has done its job by now -- this branch is only
+            // reached once player_act() has returned, so the menu it was
+            // unwinding is gone -- and it must not outlive the episode: it is
+            // latched for the rest of the session otherwise, answering every
+            // later input wait with QUIT and taking the quit path on the next
+            // normal grant once a reconnecting client clears `disconnected`.
+            // A seat taken again clears it as well; see
+            // mp_server_mark_disconnected().
+            sched.clear_quit( slot );
             sched.release_to( slot, mp_sched::world );
             continue;
         }
@@ -751,6 +767,16 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             // join this thread before it offers the seat again. Return without
             // the baton -- none was handed over -- exactly as the quit path
             // above does after releasing it.
+            //
+            // Defence in depth: a mark that outlived the join phase (a
+            // disconnect during play latches one, and a client returning to
+            // that seat may clear `disconnected` without clearing it) reaches
+            // this branch with a NORMAL grant. Returning then would leave the
+            // baton on a dead thread and the world would block on the next
+            // yield, so hand it back before leaving.
+            if( sched.holds( slot ) ) {
+                sched.release_to( slot, mp_sched::world );
+            }
             return;
         }
         mp_assert_holds( slot );

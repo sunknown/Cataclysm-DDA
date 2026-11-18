@@ -25,6 +25,7 @@
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_sched.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
 #include "mp/mp_turn.h"
@@ -757,6 +758,72 @@ TEST_CASE( "a_partner_disconnect_does_not_end_the_session", "[mp]" )
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
+
+}
+
+TEST_CASE( "a_parked_seat_clears_its_quit_mark_when_marked_disconnected", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // Both seats start with no moves, so player_act() returns at once and each
+    // thread parks on the baton. Wait for slot 1 to be parked there: that is
+    // the case the clear in mp_run_player_thread() covers, and the one a client
+    // taking the seat again (Task 4) leaves behind if the mark is still latched.
+    REQUIRE( mp_active_sched() != nullptr );
+    REQUIRE( harness.run_until( []() {
+        return mp_active_sched() != nullptr && mp_active_sched()->waiting_for_baton( 1 );
+    }, 5 ) );
+
+    // What the input wait does when it finds the wire gone: mark the seat and
+    // latch the scheduler's per-seat quit mark, which is what answers the
+    // seat's menus with QUIT. It is not a session-lifetime fact.
+    harness.drop_client( 1 );
+    mp_server_mark_disconnected( 1 );
+    REQUIRE( mp_player_is_disconnected( 1 ) );
+    mp_active_sched()->request_quit( 1 );
+
+    // The seat takes the mark on its next grant and must give it back before
+    // parking again. Left latched, a client that returns to this seat and only
+    // clears `disconnected` would find every menu answered with QUIT, and its
+    // first normal baton grant would take the quit path with the baton still
+    // held -- stranding the world on its next yield. This fails cleanly, out of
+    // turns, if the clear is missing.
+    g->player_at( 0 ).set_moves( 100 );
+    harness.press( 0, '.' );
+    REQUIRE( harness.run_until( []() {
+        return mp_active_sched() != nullptr &&
+               !mp_active_sched()->quit_requested( 1 ) &&
+               mp_active_sched()->holder() == mp_sched::world;
+    }, 10 ) );
+}
+
+TEST_CASE( "the_last_client_leaving_ends_the_session_by_itself", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+
+    // The whole chain, with nobody calling mp_server_end_if_no_clients() by
+    // hand: the input wait notices the dead wire, marks the seat, and the seat
+    // count takes the session down. The character is alive on purpose -- a dead
+    // one would end the session through do_turn()'s death rule, and the
+    // assertion would say nothing about the disconnect path.
+    harness.drop_client( 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+
+    CHECK( mp_session_end_requested() );
+    CHECK( mp_session_end_reason() == "no players connected" );
+
+    // Ending a session saves it and tears the world down (end_session in
+    // src/do_turn.cpp); put back the world tests/test_main.cpp starts every run
+    // with, exactly as the death tests above do.
+    get_map() = map();
+    overmap_special_batch empty_specials( point_abs_om{} );
+    overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
+    get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
+    get_avatar().move_to( tripoint_abs_ms::zero );
 }
 
 #endif // MP_SERVER

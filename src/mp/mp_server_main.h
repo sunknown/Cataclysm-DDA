@@ -157,6 +157,16 @@ void mp_server_end_if_no_clients();
 // nothing. The input wait that notices a dead wire re-enters on every frame of
 // whatever menu the player had open, so without that this would write the
 // message and the console line once per frame.
+//
+// A seat marked here leaves the scheduler's per-seat quit mark set: the call
+// site latches it (mp_sched::request_quit) so the open menu unwinds as if
+// Escape had been pressed. That mark is not a session-lifetime fact. Any path
+// that seats a client in this slot again must call mp_sched::clear_quit( slot )
+// together with mp_set_disconnected( slot, false ); otherwise every input wait
+// of the returned player answers QUIT and the next normal baton grant takes
+// mp_run_player_thread()'s quit path. That thread also clears the mark itself
+// once the disconnected seat's player_act() has returned, so a session that
+// never reconnects the seat is left clean as well.
 void mp_server_mark_disconnected( size_t slot );
 
 // Whether `slot` can take a new client: it is a real seat, its character is
