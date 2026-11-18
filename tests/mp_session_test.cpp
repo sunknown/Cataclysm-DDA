@@ -17,6 +17,7 @@
 #include "game.h"
 #include "game_test_helper.h"
 #include "input.h"
+#include "item.h"
 #include "mp_session_harness.h"
 #include "map.h"
 #include "map_helpers.h"
@@ -444,10 +445,14 @@ TEST_CASE( "a_death_opens_a_replacement_instead_of_ending_the_session", "[mp]" )
     // avatar contents between the slot objects while a thread runs.
     CHECK( g->player_at( victim ).is_dead_state() );
     CHECK_FALSE( get_map().i_at( corpse ).empty() );
+    REQUIRE( mp_player_needs_replacement( victim ) );
 
     harness.choose_random_character( victim );
     REQUIRE( harness.run_until( [victim]() {
-        return !g->player_at( victim ).is_dead_state();
+        // The creator makes the avatar alive before it is placed; the death
+        // mark is cleared only once placement has actually happened.
+        return !mp_player_needs_replacement( victim ) &&
+               !g->player_at( victim ).is_dead_state();
     }, 60 ) );
     CHECK( g->player_at( victim ).pos_bub() != corpse );
 }
@@ -480,9 +485,11 @@ TEST_CASE( "a_dead_disconnected_avatar_reconnects_into_creation", "[mp]" )
     // client is offered creation again.
     CHECK( mp_server_seat_is_free_for_new_client( 1 ) );
     CHECK( harness.reconnect_client( 1, save_id ) );
+    REQUIRE( mp_player_needs_replacement( 1 ) );
     harness.choose_random_character( 1 );
     CHECK( harness.run_until( []() {
-        return !g->player_at( 1 ).is_dead_state();
+        return !mp_player_needs_replacement( 1 ) &&
+               !g->player_at( 1 ).is_dead_state();
     }, 60 ) );
 }
 
@@ -504,6 +511,114 @@ TEST_CASE( "a_disconnect_while_creating_a_replacement_frees_the_seat", "[mp]" )
     // client rather than spinning the world.
     CHECK_FALSE( mp_session_end_requested() );
     CHECK( mp_server_seat_is_free_for_new_client( 1 ) );
+}
+
+namespace
+{
+// How many corpses lie on one tile. "Abandon this character" places one, and
+// the death bookkeeping must never add a second.
+int corpses_at( const tripoint_bub_ms &p )
+{
+    int corpses = 0;
+    for( const item &it : get_map().i_at( p ) ) {
+        corpses += it.is_corpse() ? 1 : 0;
+    }
+    return corpses;
+}
+} // namespace
+
+TEST_CASE( "abandoning_a_character_opens_a_replacement", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    avatar &quitter = g->player_at( 1 );
+    const tripoint_bub_ms corpse = quitter.pos_bub();
+    // ACTION_SUICIDE does exactly this and leaves hp alone. The seat has to act
+    // once for handle_action() to return into is_game_over(); the wait action
+    // is the cheapest way to do that from a test.
+    quitter.set_moves( 100 );
+    quitter.place_corpse( &get_map() );
+    g->uquit = QUIT_SUICIDE;
+    harness.press( 1, '.' );
+
+    // The in-turn death still shows the single-player death screen. Confirm it
+    // so is_game_over() returns and the ended branch can route the abandon.
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "The End" );
+    }, 10 ) );
+    harness.press( 1, '\n' );
+
+    // Abandoning is a death, not a disconnect: the one global quit is cleared,
+    // the session goes on, and the replacement menu opens for this client.
+    REQUIRE( harness.run_until( [&harness]() {
+        return mp_grid_contains( harness.screen( 1 ), "Join the game" );
+    }, 20 ) );
+    CHECK_FALSE( mp_session_end_requested() );
+    CHECK( g->uquit == QUIT_NO );
+    CHECK( corpses_at( corpse ) == 1 );
+    CHECK_FALSE( g->player_at( 1 ).is_dead_state() );
+
+    harness.choose_random_character( 1 );
+    CHECK( harness.run_until( [corpse]() {
+        return !mp_player_needs_replacement( 1 ) &&
+               g->player_at( 1 ).pos_bub() != corpse;
+    }, 60 ) );
+    CHECK_FALSE( g->player_at( 1 ).is_dead_state() );
+}
+
+TEST_CASE( "a_recorded_death_still_clears_a_later_quit_latch", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const tripoint_bub_ms corpse = g->player_at( 1 ).pos_bub();
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    // The orchestrator records this death and places the corpse while the seat
+    // sits in its replacement menu.
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+
+    // The seat's own player_act then reaches is_game_over() after the death was
+    // recorded, exactly as when the wire dies under an open menu. The single
+    // global quit it latches is not a per-death fact: every notify call clears
+    // it, and a repeat call must not place a second corpse.
+    g->uquit = QUIT_DIED;
+    mp_server_notify_death( 1 );
+    CHECK( g->uquit == QUIT_NO );
+    mp_server_notify_death( 1 );
+    CHECK( corpses_at( corpse ) == 1 );
+    CHECK_FALSE( mp_session_end_requested() );
+    CHECK( mp_player_needs_replacement( 1 ) );
+}
+
+TEST_CASE( "a_replacement_character_gets_its_own_card", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    REQUIRE( mp_player_needs_replacement( 1 ) );
+    harness.choose_random_character( 1 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_player_needs_replacement( 1 ) &&
+               !g->player_at( 1 ).is_dead_state();
+    }, 60 ) );
+
+    const std::string name = g->player_at( 1 ).get_name();
+    const std::string save_id = g->player_at( 1 ).get_save_id();
+    REQUIRE( mp_session_of_slot( 1 ) != nullptr );
+    // The seat's claim is the character now on it, not the one that died.
+    CHECK( mp_session_of_slot( 1 )->card_save_id == save_id );
+
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_disconnected( 1 );
+    }, 10 ) );
+    CHECK( harness.reconnect_client( 1, save_id ) );
+    CHECK( g->player_at( 1 ).get_name() == name );
+    CHECK( g->player_at( 1 ).get_save_id() == save_id );
 }
 
 TEST_CASE( "a_session_where_everyone_is_away_does_not_advance_the_world", "[mp]" )
@@ -727,10 +842,12 @@ TEST_CASE( "a_death_while_away_still_opens_a_replacement", "[mp]" )
     }, 3 );
     CHECK_FALSE( mp_session_end_requested() );
     CHECK( g->player_at( 1 ).is_dead_state() );
+    REQUIRE( mp_player_needs_replacement( 1 ) );
 
     harness.choose_random_character( 1 );
     CHECK( harness.run_until( []() {
-        return !g->player_at( 1 ).is_dead_state();
+        return !mp_player_needs_replacement( 1 ) &&
+               !g->player_at( 1 ).is_dead_state();
     }, 60 ) );
 }
 

@@ -14,6 +14,7 @@
 #include "generic_factory.h"
 #include "imgui/imgui_stdlib.h"
 #include "input_context.h"
+#include "mp/mp_sched.h"
 #include "npc.h" // for parse_tags()! Why!
 #include "talker.h"
 #include "ui_manager.h"
@@ -68,7 +69,11 @@ void end_screen_data::draw_end_screen_ui( bool actually_dead )
     while( true ) {
         ui_manager::redraw_invalidated();
         std::string action = ctxt.handle_input();
-        if( action == "TEXT.CONFIRM" || !p_impl.get_is_open() ) {
+        // The session can end or this player's seat can be released while the
+        // screen is up, and then no CONFIRM will ever arrive: handle_input
+        // answers such a wait with QUIT every time, and without this check the
+        // loop asks forever. Same unwind rule as every other menu loop.
+        if( action == "TEXT.CONFIRM" || !p_impl.get_is_open() || mp_menu_must_unwind() ) {
             break;
         }
     }

@@ -561,13 +561,18 @@ void mp_server_mark_disconnected( const size_t slot )
 
 bool mp_player_needs_replacement( const size_t slot )
 {
-    if( slot >= g->player_slot_count() ) {
+    if( slot >= g->player_slot_count() || mp_player_is_disconnected( slot ) ) {
         return false;
     }
-    // A dead seat whose client left is a free seat, not a menu: there is nobody
-    // at the terminal to choose a replacement. Only a dead character with its
-    // player still connected is owed one.
-    return g->player_at( slot ).is_dead_state() && !mp_player_is_disconnected( slot );
+    // "Abandon this character" places the corpse and sets QUIT_SUICIDE without
+    // touching hit points, so a seat owed a replacement is not always literally
+    // dead: the recorded death is the per-seat fact. A seat whose client has
+    // left is a free seat, not a menu -- there is nobody at the terminal to
+    // choose a replacement.
+    if( slot < g_death_notified.size() && g_death_notified[slot] ) {
+        return true;
+    }
+    return g->player_at( slot ).is_dead_state();
 }
 
 void mp_server_notify_death( const size_t slot )
@@ -576,33 +581,41 @@ void mp_server_notify_death( const size_t slot )
         return;
     }
     g_death_notified.resize( g->player_slot_count(), false );
-    if( !g->player_at( slot ).is_dead_state() || g_death_notified[slot] ) {
+    avatar &ava = g->player_at( slot );
+    const bool latched_death = g->uquit == QUIT_DIED;
+    const bool abandoned = g->uquit == QUIT_SUICIDE;
+    if( !ava.is_dead_state() && !latched_death && !abandoned ) {
         return;
     }
-    g_death_notified[slot] = true;
-    avatar &ava = g->player_at( slot );
-    if( g->uquit == QUIT_DIED ) {
-        // The death happened inside this character's own turn, so
-        // game::is_game_over() has already unboarded the vehicle, placed the
-        // corpse and latched the single-player death state. Placing a second
-        // corpse here would duplicate every item the first one took, and the
-        // latch is one global: left set, the surviving partner's next
-        // player_act() reads the session as over. is_game_over() also
-        // deactivates the message log for the single-player death screen, and
-        // the session has more to say after that.
+    if( !g_death_notified[slot] ) {
+        g_death_notified[slot] = true;
+        if( latched_death || abandoned ) {
+            // The death happened inside this character's own turn, so the
+            // corpse is already on the map: game::is_game_over() placed it for
+            // QUIT_DIED, ACTION_SUICIDE placed it for QUIT_SUICIDE. A second
+            // one would duplicate every item the first one took.
+        } else {
+            // The orchestrator noticed the death before the seat's thread got
+            // to is_game_over(). Nothing has placed the corpse yet.
+            if( ava.in_vehicle ) {
+                get_map().unboard_vehicle( ava.pos_bub() );
+            }
+            ava.place_corpse( &get_map() );
+        }
+        Messages::add_msg( string_format( _( "Player %d (%s) died" ),
+                                         static_cast<int>( slot ) + 1, ava.get_name() ) );
+        mp_server_log( "\"" + ava.get_name() + "\" died; the seat is choosing a replacement" );
+    }
+    // The latch is one global for the session, not a per-death fact, and
+    // is_game_over() can set it after the orchestrator already recorded the
+    // death -- a player parked in a menu while the world ran is the case. Left
+    // set, the next player_act() on ANY seat reads the game as over and places
+    // its own corpse. So every call that sees it clears it; activate() is
+    // idempotent and restores the log is_game_over() deactivated.
+    if( latched_death || abandoned ) {
         g->uquit = QUIT_NO;
         Messages::activate();
-    } else {
-        // The orchestrator noticed the death before the seat's thread did.
-        // Nothing has placed the corpse yet.
-        if( ava.in_vehicle ) {
-            get_map().unboard_vehicle( ava.pos_bub() );
-        }
-        ava.place_corpse( &get_map() );
     }
-    Messages::add_msg( string_format( _( "Player %d (%s) died" ),
-                                     static_cast<int>( slot ) + 1, ava.get_name() ) );
-    mp_server_log( "\"" + ava.get_name() + "\" died; the seat is choosing a replacement" );
 }
 
 void mp_run_replacement_menu( const size_t slot )
@@ -660,6 +673,12 @@ void mp_run_replacement_menu( const size_t slot )
         mp_set_away( slot, false );
         if( slot < g_death_notified.size() ) {
             g_death_notified[slot] = false;
+        }
+        // The card is the seat's claim to its character, and a replacement is a
+        // different character: without this the session keeps the dead one's id
+        // and the client can never reclaim the character it is playing.
+        if( mp_session *const session = mp_session_of_slot( slot ) ) {
+            send_character_card( *session, fresh );
         }
         mp_server_log( "\"" + fresh.name + "\" replaced \"" + dead_name + "\"" );
         return;
@@ -1073,22 +1092,30 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
         if( sched.unwind_if_stopping( slot ) ) {
             return;
         }
-        if( ended && !mp_player_is_disconnected( slot ) ) {
-            // A dead character is a replacement, not the end of everybody's
-            // game. A seat whose client is gone has already been marked
-            // disconnected by the input wait that noticed the loss; its
-            // verdict is the menu stack unwinding, not a free choice.
+        if( ended ) {
+            // Death bookkeeping is per seat and must never be skipped because
+            // the wire died first: the single-player quit latch is one global,
+            // and left set the next player_act() on any seat reads the game as
+            // over and places its own corpse. The same goes for a quit status
+            // left by this seat's own menu.
             avatar &ending = g->player_at( slot );
-            if( ending.is_dead_state() || g->uquit == QUIT_DIED ) {
-                // Died inside this character's own turn. Record it -- which
-                // resets the single-player quit latch and re-enables the
-                // message log, and places no second corpse -- so the next
-                // grant reaches the replacement branch above.
+            if( ending.is_dead_state() || g->uquit == QUIT_DIED ||
+                g->uquit == QUIT_SUICIDE ) {
+                // Death or "abandon this character". Record it and reset the
+                // latch; the seat keeps its client and the next grant reaches
+                // the replacement branch above. A wire that died under the menu
+                // has already marked the seat, which notify/mark treat as a
+                // no-op; the seat then stays a free seat.
                 mp_server_notify_death( slot );
+                if( mp_player_is_disconnected( slot ) ) {
+                    // mark_disconnected() is idempotent for a seat the input
+                    // wait already marked, and makes an unmarked dead wire
+                    // explicit. A connected player is deliberately left
+                    // connected so the replacement menu can still reach them.
+                    mp_server_mark_disconnected( slot );
+                }
             } else {
                 // A voluntary quit leaves the table exactly like a lost wire.
-                // The quit status is one global for the session: left set, the
-                // surviving partner's next player_act() reads the game as over.
                 mp_server_mark_disconnected( slot );
                 g->uquit = QUIT_NO;
             }
