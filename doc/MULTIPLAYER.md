@@ -71,17 +71,22 @@ place -- quit any running copy first, or the link fails with "Text file busy".
 ```
 
 - `--server <port>` -- run this instance as a multiplayer server that streams a
-  screen to each connected client (main.cpp, `--server` handler).
-- `--world <name>` -- the world to open, and it is required: a server started
-  without one accepts its clients first and only then says `no world given:
-  start the server with --world <name>` on its console and stops. A name that
-  is not in the save folder yet is created with the default mods, so
-  `--world coop` on a machine with no such world gives you a fresh empty one.
-- `--players <count>` -- how many clients the server waits for before the game
-  can start (default 1). It waits at the listener, then opens the world and
-  waits for every one of those clients to choose a survivor (see
-  [Joining a session](#joining-a-session)). The roster is fixed once the party
-  starts: nobody joins or leaves after that.
+  screen to each connected client (main.cpp, `--server` handler). The port may
+  be left out (`--server` alone); it then has to come from the server config
+  file.
+- `--world <name>` -- the world to open. It may be left out if the server
+  config file names `world`; if neither does, the server refuses to start and
+  says `refusing to start: no world: give --world <name> or set "world" in the
+  server config`. A name that is not in the save folder yet is created with the
+  default mods, so `--world coop` on a machine with no such world gives you a
+  fresh empty one.
+- `--players <count>` -- how many seats the server creates (default 1). It
+  waits at the listener for that many clients, opens the world and waits for
+  every one of them to choose a survivor (see
+  [Joining a session](#joining-a-session)). The number of seats is fixed: a
+  seat can be vacated and taken again later (see [When a client leaves or
+  dies](#when-a-client-leaves-or-dies)), but the roster never grows beyond
+  this count.
 - `--userdir <path>` -- keep the server's config, saves, and log under this
   directory instead of your normal single-player profile. Recommended, so the
   server does not share options or savegames with your client.
@@ -94,11 +99,51 @@ place -- quit any running copy first, or the link fails with "Text file busy".
   playing by hand while a hostile can see a player (default 4000). Same range
   `[1000, 600000]` and the same refusal rule.
 
+#### The server config file
+
+Every one of those options except `--server` and `--userdir` can also be put in
+a JSON file at `<userdir>/config/mp/server.json` (the profile's
+`config/mp/server.json` when no `--userdir` is given):
+
+```json
+{
+  "port": 4321,
+  "world": "coop",
+  "players": 2,
+  "hurry-ms": 15000,
+  "hurry-combat-ms": 4000
+}
+```
+
+- The five keys are `port` and `players` (integers), `world` (a string), and
+  `hurry-ms` and `hurry-combat-ms` (integers, the same two countdowns as the
+  flags).
+- The command line wins over the file for each key it names; a key neither
+  names falls back to the shipped default. A missing file is not an error.
+- `port` and `world` have no built-in default: one of the two sources must
+  name each, or the server refuses to start and says which one is missing.
+- A malformed file, an unknown key or a value of the wrong type is refused, not
+  ignored: the server prints `refusing to start: cannot read server config
+  "<path>": <reason>` and exits with status 1. A typo in an option name is
+  therefore visible to the operator instead of silently doing nothing.
+- An out-of-range `hurry-*` value does not stop the server: both countdowns run
+  on the defaults for the session, with `hurry lengths refused: manual <n> ms,
+  combat <m> ms; running on the defaults` on the console -- the same
+  all-or-nothing rule the flags follow.
+
+With the file in place, the server can be started with nothing but the mode
+flag:
+
+```sh
+./mpserver-cataclysm-server --server --userdir mp-coop
+```
+
 The server binds a TCP listener on `<port>`, waits for `<count>` clients, and
 performs a connection handshake with each (protocol version, terminal size,
 256-colour support, the client's name). Only after every client is accepted does
 the world open and the join phase begin; you can take as long as you like to
-connect.
+connect. The listener is not closed once play starts: that is how a lost client
+reconnects and how a newcomer can take a freed seat.
 
 The server has no screen of its own -- its curses backend draws into a buffer
 that goes out over the wire -- so the console it was launched from carries a
@@ -118,17 +163,26 @@ session log on stderr instead:
 [21:45:12] mp: "Bo" plays "Norman Blair"
 [21:45:19] mp: "Ada" plays "Ada King" (new)
 [21:45:19] mp: game started in world "Hanston"
-[21:52:03] mp: saving "Norman Blair"
-[21:52:03] mp: saving "Ada King"
-[21:52:05] mp: saved
-[21:52:10] mp: "Bo" disconnected after 7m39s; ending the session
-[21:52:10] mp: game ended
-[21:52:10] mp: server stopped
+[21:52:10] mp: "Norman Blair" disconnected after 7m39s; the session continues
+[21:53:02] mp: "Norman Blair" reconnected
+[22:04:11] mp: "Ada King" died; the seat is choosing a replacement
+[22:05:40] mp: "Ada King II" replaced "Ada King"
+[22:21:07] mp: "Norman Blair" disconnected after 35m55s; no players left; ending the session
+[22:21:07] mp: saving "Norman Blair"
+[22:21:07] mp: saving "Ada King II"
+[22:21:09] mp: saved
+[22:21:09] mp: game ended
+[22:21:09] mp: server stopped
 ```
 
+The disconnect, reconnect and death lines name the character, not the
+`--username` label; the handshake and newcomer lines name the label the client
+announced. The in-game message log adds the seat number, as in
+`Player 1 (Norman Blair) disconnected` and `Player 1 (Norman Blair) reconnected`.
+
 Every failure that stops the server says so on the same stream: a port already
-in use, a failed accept, a rejected handshake with the reason the client was
-turned away, and a named world whose creation failed.
+in use, a failed accept, a refused server config, a rejected handshake with the
+reason the client was turned away, and a named world whose creation failed.
 
 ### 2. Connect the client
 
@@ -153,13 +207,58 @@ The client also opens whichever join menu the server puts in front of it, and
 remembers the survivor the server tells it it is playing (see [The character
 card](#the-character-card)). Nothing else about the session lives on the client.
 
-When any player leaves after the party has started -- disconnects, quits or dies
--- the session ends for everyone: the server tells every client why ("Bo
-disconnected"), stops the player threads, and exits. It does not keep the world
-open for a replacement, and it does not start a second session: run the server
-again to play again. The join phase is the exception -- a client that quits or
-drops there costs only its own seat, and the server keeps listening for a
-replacement (see [Joining a session](#joining-a-session)).
+### When a client leaves or dies
+
+A client that drops after the party has started no longer ends the session. The
+server marks its seat `disconnected`: the shared message log shows `Player 1
+(Norman Blair) disconnected` and its console shows `"Norman Blair" disconnected
+after 7m39s; the session continues`. The character stays in the world as an
+ordinary living body without a player -- monsters can still kill it and the
+tether still counts it -- but the barrier stops waiting for that seat and its
+moves are forfeited each turn. Everyone still at a terminal keeps playing.
+Quitting the game mid-session (Save and quit, or Quit without saving) is
+treated exactly like a lost wire: no death mark, no corpse, no replacement
+menu. Abandoning the character is a death and takes the replacement path below.
+
+A returning client that presents the same character card (same `--userdir`,
+same `host:port`; see [The character card](#the-character-card)) gets the same
+seat and the same living character back. The server clears the disconnected
+mark, discards keys the old terminal had queued, and prints `Player 1 (Norman
+Blair) reconnected` in the message log and `"Norman Blair" reconnected` on its
+console. If the character died while its client was away, the seat is still
+returned, but it is dead and goes straight to the replacement menu below. A
+client without a matching card cannot take a living character's seat: with no
+free seat it is refused with `no free seat`, and a live disconnected seat stays
+reserved for its own card.
+
+When a character dies, the session goes on too. The corpse stays where the
+character fell, the message log says `Player 2 (Ada King) died`, and that
+player's own screen opens the character-creation menu (the same menu as at
+connect, without Continue). The replacement is placed on a free tile next to a
+player who is still at a terminal -- or near where the character fell if nobody
+else is available -- and takes over the same seat. The console records both
+halves: `"Ada King" died; the seat is choosing a replacement`, then `"Ada King
+II" replaced "Ada King"`. Leaving that menu without creating a character marks
+the seat `disconnected` too; it is then dead and free for a newcomer.
+
+The listener stays open after the party starts. A new client can fill only a
+seat that is both dead and disconnected -- the previous occupant died and its
+client left without choosing a replacement. That client creates a character in
+the usual join menu, announced in the message log as `Player 2 (Cid) joined`
+with the label the client gave at the handshake, and the replacement is placed
+next to the party. Every other case is refused with `no free seat` (console:
+`refused <peer>: no free seat`): all seats are occupied, or the vacated seat
+still holds a living character waiting for its own card. No seats are ever
+added beyond `--players`.
+
+The session ends only when no client is connected at all. The last disconnect
+prints `"Norman Blair" disconnected after 35m55s; no players left; ending the
+session`, the server saves the world and exits; the session-end reason is `no
+players connected`. While at least one client is connected the session stays
+up even if every character is dead, because replacements can still be made.
+The join phase keeps its old rule: a client that quits or drops there costs
+only its own seat, and the server listens for a replacement (see [Joining a
+session](#joining-a-session)).
 
 ## Two or more players
 
@@ -200,9 +299,11 @@ any other screen. It offers:
   another name otherwise.
 - **Settings** -- the server's options. Anyone in the party may change them;
   co-op is a trusted circle.
-- **Help**, **Quit** -- the usual. Quit leaves before the party has started:
-  your client exits, your seat is offered to the next connection, and everyone
-  else stays where they were.
+- **Help**, **Quit** -- the usual. Quit before the party has started: your
+  client exits, your seat is offered to the next connection, and everyone else
+  stays where they were. Quit after it has started: the character stays in the
+  world and the seat waits for its card, exactly as a disconnect does (see
+  [When a client leaves or dies](#when-a-client-leaves-or-dies)).
 
 A new character is placed on a free tile next to the rest of the party: the
 bubble is shared, and the tether has to hold from the first turn. All co-op
@@ -235,9 +336,11 @@ Continue entry is absent, and a client that has never been here sees the same
 menu minus that entry.
 
 There is one card per server address, in that client's user directory: connect
-with the same `host:port` to be offered the same survivor. Two clients sharing
-one user directory and one address would share the card, so give each its own
-`--userdir` if you run more than one client on one machine.
+with the same `host:port` to be offered the same survivor. A replacement
+character gets a fresh card when it is created, so the seat's claim follows the
+character now being played. Two clients sharing one user directory and one
+address would share the card, so give each its own `--userdir` if you run more
+than one client on one machine.
 
 ### Starting the next session
 
@@ -310,18 +413,21 @@ brings them back on its own; that is the player's decision alone.
 
 ## Limitations of this first version
 
-- **A fixed roster, and no rejoin.** The server waits for exactly `--players`
-  clients before it opens the world. A client that leaves the join menu frees
-  its seat for a new connection, but once the party has started a disconnect,
-  a quit or a death ends the session for everyone and the server process exits.
-  There is no reconnect and no spectator mode.
+- **A fixed roster, and no spectators.** The server waits for exactly
+  `--players` clients before it opens the world, and that many seats exist for
+  the session. A client that leaves the join menu frees its seat for a new
+  connection; after the party has started, a dropped or quitting client can
+  reclaim its seat with its character card, and a seat whose dead character's
+  client is gone can be taken by a newcomer. The roster never grows, nobody can
+  join as a spectator, and a client without the right card cannot take a
+  living character's seat.
 - **Some world state is still shared.** The game itself warns that many features
   "will not work correctly with multiple characters in the same world", and
   co-op now lives on exactly that path. Missions are per character for
   completion, failure and rewards, but kill-count and recruit-class goals and
   nemesis missions still count on the world map; vehicle seats are per
   character. Base camps and zones, NPC followers, faction reputation, and
-  achievements are not, and are deferred to Phase 5 with estimates in
+  achievements are not, and are deferred, with estimates in
   `docs/superpowers/reports/2026-08-08-multi-character-world-audit.md`.
 - **Hurry is pressed by the wrong player.** A player who has already acted is
   parked until the next turn and reads no keys, so they cannot press hurry; only
@@ -335,9 +441,10 @@ brings them back on its own; that is the player's decision alone.
   world's half of the turn, which has no player to answer, so they get the
   answer of Escape -- the conversation does not open, the question is answered
   "no" -- and the server's console says one was skipped.
-- **A death ends the session.** There are no death screens and no deathcam in a
-  session: the world is saved with the dead character in it, and the death is
-  dealt with the next time the world is loaded for single-player play.
+- **A death means a new character.** There are no death screens and no
+  deathcam in a session: the dead character's corpse stays in the world, and
+  its player creates a replacement next to the party. The old character is not
+  resumed; the world keeps its corpse.
 - **One terminal size for everyone.** All players draw into one shared root
   window, which is sound only while every client runs the same terminal size.
   Use the same size on every machine.
