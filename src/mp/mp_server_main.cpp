@@ -714,24 +714,31 @@ std::optional<size_t> mp_server_seat_for_card( const std::string &save_id )
     return std::nullopt;
 }
 
+// Everything the wire that just left can leave behind in its seat: the keys it
+// queued, the quit mark its input wait latched, and the mouse-view hint its
+// terminal kept on screen. None of it belongs to the client that takes the seat
+// next, and the hint's adaptor must die under this seat's stack.
+static void reset_seat_for_new_client( const size_t slot )
+{
+    if( slot < g->contexts.size() ) {
+        g->contexts[slot].input_queue.clear();
+        g->contexts[slot].drop_live_view();
+    }
+    if( mp_sched *const sched = mp_active_sched() ) {
+        sched->clear_quit( slot );
+    }
+}
+
 void mp_server_reconnected( const size_t slot )
 {
     mp_set_disconnected( slot, false );
     // Keys the old wire delivered before it died are still in the seat's
-    // queue, and the returning client would otherwise receive them as its
-    // first inputs. The terminal that pressed them is gone; the new one starts
-    // with a clean queue.
-    if( slot < g->contexts.size() ) {
-        g->contexts[slot].input_queue.clear();
-    }
-    // The quit mark was latched by the input wait that noticed the loss (see
-    // mp_server_mark_disconnected) and is not a session-lifetime fact. Left
-    // latched, the returned player's next normal baton grant takes the quit
-    // path and strands the world on its next yield; cleared here together with
-    // `disconnected`, it is exactly the pair Task 3's contract requires.
-    if( mp_sched *const sched = mp_active_sched() ) {
-        sched->clear_quit( slot );
-    }
+    // queue, the quit mark was latched by the input wait that noticed the loss
+    // (see mp_server_mark_disconnected), and the old terminal's mouse hint is
+    // still registered in this seat's stack. Left alone, the keys would be the
+    // returning client's first inputs, the quit mark would send its next baton
+    // grant down the quit path, and the hint would be its first screen.
+    reset_seat_for_new_client( slot );
     // The table knows the character, not the terminal's name.
     const std::string who = g->player_at( slot ).get_name();
     Messages::add_msg( string_format( _( "Player %d (%s) reconnected" ),
@@ -789,15 +796,10 @@ bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::stri
         }
         install_client_on_seat( *retained, std::move( session ) );
         mp_set_disconnected( *free_seat, false );
-        // Keys the dead client queued before its wire died and the quit mark
-        // its input wait latched are not the newcomer's: both are dropped along
-        // with the seat's disconnected state, exactly as a reconnect does.
-        if( *free_seat < g->contexts.size() ) {
-            g->contexts[*free_seat].input_queue.clear();
-        }
-        if( mp_sched *const sched = mp_active_sched() ) {
-            sched->clear_quit( *free_seat );
-        }
+        // The dead client's queued keys, quit mark and mouse hint are not the
+        // newcomer's: all three are dropped with the seat's disconnected state,
+        // exactly as a reconnect does.
+        reset_seat_for_new_client( *free_seat );
         // A different person sits here now, so this is not a reconnect: name
         // the newcomer, not the dead character it replaced. The replacement
         // menu sends the new character card once the newcomer has chosen.

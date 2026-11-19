@@ -44,6 +44,25 @@ player_context::~player_context()
     }
 }
 
+void player_context::drop_live_view()
+{
+    if( !liveview ) {
+        return;
+    }
+    // ~ui_adaptor asserts it dies under the stack it registered in, which for
+    // this hint is this context's own -- not whatever stack the handover code
+    // happens to run under. Same fallback as the destructor: a caller
+    // already on this context's stack is about to lose it.
+    ui_stack_t *const previous = ui_manager::get_active_stack();
+    ui_manager::set_active_stack( &ui_stack );
+    liveview.reset();
+    if( previous == &ui_stack ) {
+        ui_manager::activate_world_stack();
+    } else {
+        ui_manager::set_active_stack( previous );
+    }
+}
+
 character_creator_uistate &player_context::creator_state()
 {
     if( !creator_state_ptr ) {

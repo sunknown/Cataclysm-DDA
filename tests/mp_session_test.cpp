@@ -323,6 +323,44 @@ TEST_CASE( "another_players_key_does_not_close_a_mouse_view", "[mp]" )
     CHECK( harness.client_connected( 0 ) );
 }
 
+TEST_CASE( "a_reconnected_seat_does_not_keep_the_old_terminals_mouse_hint", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
+    }, 10 ) );
+    const catacurses::window terrain = mp_active_context().w_terrain;
+    REQUIRE( terrain );
+    const point on_map( getbegx( terrain ) + getmaxx( terrain ) / 2,
+                        getbegy( terrain ) + getmaxy( terrain ) / 2 );
+    const std::string save_id = g->player_at( 1 ).get_save_id();
+
+    // Player 1 leaves the hint up on the input wait, then their terminal dies.
+    harness.mouse_move( 1, on_map );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), "Mouse view" );
+    } ) );
+    harness.drop_client( 1 );
+    // The seat's own thread notices the closed wire, not the test thread: wait
+    // for the server to mark it before offering the card, as every other
+    // reconnect test does.
+    REQUIRE( harness.run_until( [&]() {
+        return mp_player_is_disconnected( 1 );
+    }, 10 ) );
+
+    // The same character comes back on a new terminal. Its grid was reset by
+    // the reconnect, so the first frame it receives is the first chance to see
+    // whether the old terminal's hint survived the handover.
+    REQUIRE( harness.reconnect_client( 1, save_id ) );
+    CHECK( g->contexts[1].liveview == nullptr );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
+    }, 40 ) );
+    CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), "Mouse view" ) );
+}
+
 TEST_CASE( "a_yes_no_prompt_unwinds_when_the_session_ends", "[mp]" )
 {
     restore_active_state restore;
