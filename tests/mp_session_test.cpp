@@ -273,11 +273,24 @@ TEST_CASE( "two_players_can_hold_the_overmap_open_at_once", "[mp]" )
     }, 3 );
     CHECK( mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker ) );
 
-    // And the other order: seat 0 closes while seat 1 still has the map up.
+    // And the other order: reopen seat 1's map, then seat 0 closes while seat 1
+    // still has it up.
+    harness.press( 1, mp_menu_map.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker ) &&
+               mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker );
+    }, 20 ) );
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker );
     }, 20 ) );
+    // Same check in the mirror direction: seat 1's retained map must survive
+    // seat 0's force_quit().
+    harness.press( 1, KEY_RIGHT );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker ) );
 }
 
 // The teardown half of the same ownership question: a session can end while a
