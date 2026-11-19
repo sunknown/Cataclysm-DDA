@@ -22,6 +22,19 @@ std::atomic<mp_sched *> g_active_sched{ nullptr };
 // How many trace records trace_ keeps; the oldest is dropped first. Enough to
 // cover several watchdog polls, small enough that the ring's cost is noise.
 constexpr size_t trace_capacity = 256;
+
+// DebugLog has no internal locking, and a handoff can be logged by either
+// participant's thread; unsynchronised, two trace lines interleave character
+// by character and the manual run's log is unreadable exactly when it matters.
+// The scheduler's own mutex is deliberately not used: file I/O must never gate
+// a baton wait.
+std::mutex g_trace_log_mutex;
+
+void log_trace_entry( const std::string &entry )
+{
+    std::lock_guard<std::mutex> lock( g_trace_log_mutex );
+    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
+}
 } // namespace
 
 mp_sched::mp_sched( const size_t players ) : players_( players ),
@@ -72,7 +85,7 @@ void mp_sched::yield_to( const size_t from, const size_t to )
     --parked_;
     cv_.notify_all();
     lock.unlock();
-    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
+    log_trace_entry( entry );
 }
 
 void mp_sched::wait_for_turn( const size_t who )
@@ -111,7 +124,7 @@ void mp_sched::release_to( const size_t from, const size_t to )
     }
     // Outside the lock: DebugLog does file I/O, and no caller may wait on the
     // scheduler's mutex for it.
-    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
+    log_trace_entry( entry );
 }
 
 bool mp_sched::waiting_for_baton( const size_t who ) const
@@ -230,7 +243,7 @@ void mp_sched::trace_phase( const char *phase )
         std::lock_guard<std::mutex> lock( mutex_ );
         entry = record_trace_locked( phase );
     }
-    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
+    log_trace_entry( entry );
 }
 
 void mp_sched_trace_phase( const char *phase )
