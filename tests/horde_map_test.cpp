@@ -135,3 +135,33 @@ TEST_CASE( "horde_map_corner_cases", "[hordes]" )
     }
 
 }
+
+TEST_CASE( "signalling_an_idle_horde_drops_the_emptied_submap", "[hordes]" )
+{
+    horde_map test_horde;
+    test_horde.set_location( point_abs_om( 42, 42 ) );
+
+    // An alert zombie with no goal is an idle entity, not an active one.
+    const tripoint_abs_ms entity_pos = random_abs_location( test_horde );
+    REQUIRE( test_horde.spawn_entity( entity_pos, mon_zombie ).has_value() );
+    CHECK( count_entities( test_horde, horde_map_flavors::idle ) == 1 );
+    CHECK( count_entities( test_horde, horde_map_flavors::active ) == 0 );
+
+    // The signal moves it to the active map and used to leave the emptied
+    // idle submap behind.  A full-view iteration would not notice, because
+    // the re-inserted active entity keeps operator++ skipping past the empty
+    // inner map; the idle-only view starts on it.  Reading the key is what
+    // dereferences the end of that empty map.
+    test_horde.signal_entities( entity_pos, 10 );
+    CHECK( count_entities( test_horde, horde_map_flavors::active ) == 1 );
+
+    tripoint_abs_ms idle_key = tripoint_abs_ms::zero;
+    int idle_entities = 0;
+    for( std::pair<const tripoint_abs_ms, horde_entity> &entity :
+         test_horde.get_view( horde_map_flavors::idle ) ) {
+        idle_entities++;
+        idle_key = entity.first;
+    }
+    CHECK( idle_entities == 0 );
+    CHECK( idle_key == tripoint_abs_ms::zero );
+}

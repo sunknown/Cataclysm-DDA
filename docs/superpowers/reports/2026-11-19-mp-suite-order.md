@@ -17,7 +17,8 @@ dereferences its end iterator. The result is a SIGSEGV in `tripoint::serialize` 
 
 The corrupting state is left by production code, not by test-only state that cleanup could hide:
 any real game that saves after a sound wakes an idle horde has the same container state. The fix
-is therefore in `src/horde_map.cpp`; no test was changed or reordered.
+is therefore in `src/horde_map.cpp`; no existing test was changed or reordered, and a regression
+test was added to `tests/horde_map_test.cpp`.
 
 ## Reproducer
 
@@ -46,8 +47,9 @@ assertions: 2744763 | 2744762 passed | 1 failed
 exit=139
 ```
 
-(`56` cases because the run dies part-way through the 107 filtered cases; the remaining cases run
-after the crashing test in declaration order.)
+(`56` cases because the run aborts at the save-split test; the remaining filtered cases never
+execute. Catch2 runs test cases in declaration order, which is why the culprit is not adjacent to
+the save test in the filter list.)
 
 Minimal reproduction — the culprit plus the save-split test:
 
@@ -159,7 +161,53 @@ otherwise. The active loop needs no change because `signal_sm(..., active=true, 
 extracts entities.
 
 No invariant check was added to `insure_valid()`: the culling fixes the only producer of empty
-submaps, and a second copy of the invariant would be dead code today. Nothing else changed.
+submaps, and a second copy of the invariant would be dead code today. `insure_valid()`, the
+iterator, and the rest of the container are untouched.
+
+## Regression test
+
+`tests/horde_map_test.cpp:139` adds
+`signalling_an_idle_horde_drops_the_emptied_submap` under `[hordes]`, next to
+`horde_map_corner_cases`. It sets a location, spawns one `mon_zombie` with
+`spawn_entity( entity_pos, mon_zombie )`, checks it landed in the idle map, calls
+`signal_entities( entity_pos, 10 )`, and then walks the idle-only view while reading the key:
+
+```cpp
+tripoint_abs_ms idle_key = tripoint_abs_ms::zero;
+int idle_entities = 0;
+for( std::pair<const tripoint_abs_ms, horde_entity> &entity :
+     test_horde.get_view( horde_map_flavors::idle ) ) {
+    idle_entities++;
+    idle_key = entity.first;
+}
+CHECK( idle_entities == 0 );
+CHECK( idle_key == tripoint_abs_ms::zero );
+```
+
+A full-view iteration would not fault without the fix: the re-inserted active entity keeps
+`active_monster_map` non-empty, and `operator++` skips past the empty idle submap. The idle-only
+view starts on it, and reading the key is what dereferences the end of the empty inner map. The
+test calls `signal_entities()` directly, so it needs no sounds and no world.
+
+RED, with the cull temporarily removed and the test binary rebuilt:
+
+```
+../tests/horde_map_test.cpp:156: FAILED:
+  {Unknown expression after the reported line}
+due to a fatal error condition:
+  SIGSEGV - Segmentation violation signal
+test cases: 1 | 1 failed
+assertions: 5 | 4 passed | 1 failed
+exit=139
+```
+
+gdb on the same run stops at `horde_map_test.cpp:163` (`idle_key = entity.first;`) with
+`$_siginfo._sifields._sigfault.si_addr = 0x8` and `Cannot access memory at address 0x8` — the
+same null hash node shape as the shard-04 crash (`overmap::serialize` at `src/savegame.cpp:1493`).
+
+GREEN, with the cull restored and the binary rebuilt: the test passes with 6 assertions, and
+`tests/plain-cata_test "[hordes]" --rng-seed 1` passes 13 test cases / 4467 assertions (12/4461
+before the new test).
 
 ## Outcomes
 
@@ -176,10 +224,12 @@ After the fix (same build command, incremental rebuild of `src/horde_map.cpp`):
 | minimal pair A (`--user-dir=.data/fu-t6-Afix/`) | exit 0 — `All tests passed (49 assertions in 2 test cases)` |
 | `tests/plain-cata_test "monster_can_navigate_from_overmap_to_reality_bubble_following_sound" --rng-seed 1` | exit 0 — 1 case passed |
 | all 23 test cases of `tests/monster_test.cpp` (`.data/t6-spec-monsterfile.txt`) | exit 0 — `All tests passed (1517280 assertions in 23 test cases)` |
-| `tests/plain-cata_test "[hordes]" --rng-seed 1` | exit 0 — `All tests passed (4461 assertions in 12 test cases)` |
+| `signalling_an_idle_horde_drops_the_emptied_submap` (new) | exit 0 — `All tests passed (6 assertions in 1 test case)` |
+| `tests/plain-cata_test "[hordes]" --rng-seed 1` | exit 0 — `All tests passed (4467 assertions in 13 test cases)` |
 
 The shard-04 run takes 91 s, under the two-minute bisection budget; the pre-fix run took 73 s.
-The shard plan, the filter file, and `tests/mp_save_split_test.cpp` were not modified.
+The shard plan, the filter file, and `tests/mp_save_split_test.cpp` were not modified; the only
+test change is the new case in `tests/horde_map_test.cpp`.
 
 ## How to rerun
 
