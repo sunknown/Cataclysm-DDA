@@ -418,13 +418,21 @@ void mp_sched_start_watchdog( mp_sched &sched, const int threshold_ms )
     sched.watchdog_stop_ = false;
     sched.watchdog_ = std::thread( [&sched, threshold_ms]() {
         size_t last = sched.holder();
+        size_t last_gen = sched.holder_generation();
         auto since = std::chrono::steady_clock::now();
         bool reported = false;
         while( !sched.watchdog_stop_ ) {
             std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
             const size_t now_holder = sched.holder();
-            if( now_holder != last ) {
+            const size_t now_gen = sched.holder_generation();
+            // The holder alone is not enough: a world that yields to a player
+            // and gets the baton back between two polls looks unchanged at
+            // both, though the baton moved (and the game made progress) in
+            // between. The generation counts every handoff, so this resets on
+            // exactly the events a stall cannot produce.
+            if( now_holder != last || now_gen != last_gen ) {
                 last = now_holder;
+                last_gen = now_gen;
                 since = std::chrono::steady_clock::now();
                 reported = false;
                 continue;

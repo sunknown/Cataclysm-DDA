@@ -325,6 +325,56 @@ TEST_CASE( "a_baton_handoff_is_traced_with_its_generation", "[mp]" )
     mp_set_active_sched( nullptr );
 }
 
+TEST_CASE( "rapid_handoffs_do_not_report_a_stall", "[mp]" )
+{
+    mp_sched sched( 2 );
+    mp_set_active_sched( &sched );
+
+    // Ping-pong faster than the watchdog's 100 ms poll: the world hands the
+    // baton to the player and waits for it back. The old watchdog sampled
+    // holder() once per poll and so saw `world` on nearly every poll while the
+    // generation was moving constantly; it accumulated a stall that never
+    // existed.
+    std::thread player( [&]() {
+        while( true ) {
+            sched.wait_for_turn( 1 );
+            if( mp_sched_stopping() ) {
+                return;
+            }
+            sched.release_to( 1, mp_sched::world );
+        }
+    } );
+    // Start the watchdog only once the player is parked: the setup gap before
+    // the first handoff is not part of the property under test.
+    while( !sched.waiting_for_baton( 1 ) ) {
+        std::this_thread::yield();
+    }
+    mp_sched_start_watchdog( sched, /*threshold_ms=*/10 );
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 300 );
+    while( std::chrono::steady_clock::now() < deadline ) {
+        sched.yield_to( mp_sched::world, 1 );
+    }
+    // Park the world on purpose for the teardown, so a report during shutdown
+    // (not part of this property) cannot make the assertion below flap.
+    sched.set_world_waiting( true );
+    sched.shut_down();
+    player.join();
+    mp_set_active_sched( nullptr );
+
+    CHECK( sched.watchdog_report_count() == 0 );
+}
+
+TEST_CASE( "the_watchdog_leaves_quietly_when_the_session_stops", "[mp]" )
+{
+    mp_sched sched( 1 );
+    mp_sched_start_watchdog( sched, /*threshold_ms=*/1000 );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+    // shut_down() joins the watchdog; a hang here fails the test by timeout.
+    sched.shut_down();
+    CHECK( sched.watchdog_report_count() == 0 );
+}
+
 TEST_CASE( "the_watchdog_reports_a_stall_once_not_repeatedly", "[mp]" )
 {
     // Finding 4: nothing exercised the watchdog before this. threshold_ms is

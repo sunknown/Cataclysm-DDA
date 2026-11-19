@@ -876,9 +876,15 @@ bool game::do_turn()
                 // partner read a menu. The declared wait tells the watchdog that
                 // the world is holding the baton on purpose, so a partner
                 // reading a menu does not log as a stalled participant.
-                sched->wait_for_request( MP_POLL_MS, owes_turn );
-                sched->set_world_waiting( true );
+                // The declared wait spans the wait itself, not just its
+                // return: a poll that lands inside wait_for_request() must
+                // already see "the world is waiting on purpose". Clearing it
+                // afterwards keeps the flag honest for the polling that
+                // follows -- a world that keeps running is accountable.
                 mp_sched_trace_phase( "park" );
+                sched->set_world_waiting( true );
+                sched->wait_for_request( MP_POLL_MS, owes_turn );
+                sched->set_world_waiting( false );
                 return false;
             }
             if( mp_session_end_requested() ) {
