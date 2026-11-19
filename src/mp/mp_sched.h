@@ -75,8 +75,9 @@ class mp_sched
         // "<generation> <holder> <reason>" with holder "world" or a slot
         // number. Written under mutex_ at every handoff and by
         // mp_sched_trace_phase(). Test-visible so a test can prove what the
-        // watchdog sampled without scraping DebugLog; every record is also
-        // mirrored there as "mp sched trace: ..." for a manual run.
+        // watchdog sampled without scraping DebugLog; a manual run mirrors
+        // each record there as "mp sched trace: ..." when MP_SCHED_TRACE is
+        // set in the environment.
         std::vector<std::string> trace_snapshot() const;
 
         // Whether the calling thread is the current holder. The debug assert

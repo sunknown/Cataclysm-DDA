@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <string>
 #include <thread>
 
@@ -30,8 +31,23 @@ constexpr size_t trace_capacity = 256;
 // a baton wait.
 std::mutex g_trace_log_mutex;
 
+// The file mirror is a diagnostic, not production telemetry. DebugLog treats
+// D_MAIN as always-on, so without this switch every handoff and phase marker
+// would be written in every build -- measured at 80-200 lines/s, hundreds of
+// megabytes per day of a session, with DebugFile rotating only at process
+// start. The in-memory ring stays always-on because the tests read it; the
+// file mirror is enabled for a manual run by setting MP_SCHED_TRACE.
+bool trace_mirror_enabled()
+{
+    static const bool enabled = std::getenv( "MP_SCHED_TRACE" ) != nullptr;
+    return enabled;
+}
+
 void log_trace_entry( const std::string &entry )
 {
+    if( !trace_mirror_enabled() ) {
+        return;
+    }
     std::lock_guard<std::mutex> lock( g_trace_log_mutex );
     DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
 }
