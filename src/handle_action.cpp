@@ -408,7 +408,7 @@ input_context game::get_player_input( std::string &action )
             }
 
             if( pixel_minimap_option && g->w_pixel_minimap ) {
-                if( liveview.is_enabled() ) {
+                if( mp_active_live_view().is_enabled() ) {
                     // Mouse View overlaps the minimap; a direct wnoutrefresh
                     // ignores ui_adaptor z-order and paints over it.
                     invalidate_main_ui_adaptor();

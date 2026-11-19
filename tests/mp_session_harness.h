@@ -18,6 +18,7 @@
 #include "mp/mp_sched.h"
 #include "mp/mp_transport.h"
 #include "panels.h"              // panel_manager
+#include "point.h"               // point
 
 class avatar;
 
@@ -168,6 +169,12 @@ class mp_session_harness
 
         // Sends one keystroke to the server as if player `slot` had pressed it.
         void press( size_t slot, int key );
+
+        // Sends one mouse movement to the server as if player `slot` had moved
+        // the pointer to `pos`. A real client reports the pointer's cell in the
+        // same control message a keystroke travels in, so this walks the same
+        // wire path the game's mouse view does.
+        void mouse_move( size_t slot, const point &pos );
 
         // Answers player `slot`'s join menu with "New character: random" and
         // confirms the creation screen -- keystrokes, not a call into the menu's

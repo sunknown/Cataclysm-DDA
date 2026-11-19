@@ -10,6 +10,7 @@
 #include "game.h"
 #include "game_constants.h"
 #include "game_ui.h"
+#include "live_view.h"
 #include "memorial_logger.h"
 #include "mp/mp_sched.h"
 #include "output.h"
@@ -19,9 +20,29 @@
 
 // Out-of-line so the compiler-generated bodies (including the exception-
 // unwind logic the constructor may need) are emitted only here, where
-// static_popup is complete -- see the comment on the declarations.
+// static_popup and live_view are complete -- see the comment on the
+// declarations.
 player_context::player_context() = default;
-player_context::~player_context() = default;
+
+player_context::~player_context()
+{
+    // Both owned popups raised a ui_adaptor, and ~ui_adaptor asserts it dies
+    // under the stack it registered in. Destruction can run under any stack --
+    // g.reset() at shutdown, a local context in a test, or mp_sync_context_count()
+    // (which already points the stack here) -- so point it at this context's own
+    // stack for the drops and put the caller's back afterwards. If the caller's
+    // stack IS this context's own, it is about to disappear with the context:
+    // fall back to the world stack.
+    ui_stack_t *const previous = ui_manager::get_active_stack();
+    ui_manager::set_active_stack( &ui_stack );
+    liveview.reset();
+    wait_popup.reset();
+    if( previous == &ui_stack ) {
+        ui_manager::activate_world_stack();
+    } else {
+        ui_manager::set_active_stack( previous );
+    }
+}
 
 character_creator_uistate &player_context::creator_state()
 {
@@ -135,6 +156,15 @@ player_context &mp_active_context()
 player_context *mp_active_context_ptr()
 {
     return active_context;
+}
+
+live_view &mp_active_live_view()
+{
+    player_context &ctx = mp_active_context();
+    if( !ctx.liveview ) {
+        ctx.liveview = std::make_unique<live_view>();
+    }
+    return *ctx.liveview;
 }
 
 void mp_set_active_context( player_context *ctx )
@@ -316,11 +346,12 @@ void mp_sync_context_count()
         // manifest later as a dangling-pointer read inside ~ui_adaptor().
         //
         // One adaptor is the context's own, though: the activity progress
-        // popup it holds. A session can end while an activity is still running
-        // -- a player waiting out ten minutes, a server shut down mid-craft --
-        // and the context owns that popup, so it can drop it safely here. Any
-        // other adaptor (a menu open on a thread that did not unwind) still
-        // trips the assertion below.
+        // popup it holds, and the mouse-view hint. A session can end while an
+        // activity is still running -- a player waiting out ten minutes, a
+        // server shut down mid-craft -- and a hint can be up when a seat goes,
+        // since a TIMEOUT does not hide it. The context owns both, so it can
+        // drop them safely here. Any other adaptor (a menu open on a thread
+        // that did not unwind) still trips the assertion below.
         //
         // ~ui_adaptor requires its owner stack to be the active one, so point
         // the stack at this context for the drop. The pointer is re-pointed to
@@ -329,6 +360,7 @@ void mp_sync_context_count()
         player_context &dying = g->contexts.back();
         ui_manager::set_active_stack( &dying.ui_stack );
         dying.wait_popup.reset();
+        dying.liveview.reset();
         cata_assert( dying.ui_stack.empty() );
         g->contexts.pop_back();
     }

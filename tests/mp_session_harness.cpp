@@ -16,6 +16,7 @@
 #include "game_constants.h"
 #include "game_test_helper.h"
 #include "game_ui.h"
+#include "input_enums.h"
 #include "map.h"
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
@@ -240,6 +241,20 @@ void mp_session_harness::press( const size_t slot, const int key )
     mp_control msg;
     msg.kind = mp_control_kind::input;
     msg.event = input_event( key, input_event_t::keyboard_char );
+    const std::string json = mp_control_to_json( msg );
+    client_wires_[slot]->send( mp_wrap( mp_msg_kind::control,
+                                        std::vector<uint8_t>( json.begin(), json.end() ) ) );
+}
+
+void mp_session_harness::mouse_move( const size_t slot, const point &pos )
+{
+    mp_control msg;
+    msg.kind = mp_control_kind::input;
+    // The same event the curses client's backend turns a bare pointer move
+    // into (src/ncurses_def.cpp: KEY_MOUSE without a button), carried in the
+    // same control message as a keystroke.
+    msg.event = input_event( MouseInput::Move, input_event_t::mouse );
+    msg.event.mouse_pos = pos;
     const std::string json = mp_control_to_json( msg );
     client_wires_[slot]->send( mp_wrap( mp_msg_kind::control,
                                         std::vector<uint8_t>( json.begin(), json.end() ) ) );

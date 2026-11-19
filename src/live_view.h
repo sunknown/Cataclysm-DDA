@@ -15,7 +15,6 @@ class live_view
         live_view();
         ~live_view();
 
-        void init();
         void show( const tripoint &p );
         bool is_enabled();
         void hide();

@@ -6,6 +6,7 @@
 #include "cata_scope_helpers.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "live_view.h"
 #include "mp/mp_context.h"
 #include "output.h"
 #include "panels.h"
@@ -369,4 +370,54 @@ TEST_CASE( "for_each_context_visits_every_player_and_restores", "[mp]" )
     mp_activate_player( 0 );
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
+}
+
+TEST_CASE( "each_players_mouse_view_lives_in_that_players_ui_stack", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot().set_body();
+    mp_sync_context_count();
+
+    mp_activate_player( 0 );
+    mp_active_live_view().show( tripoint::zero );
+    REQUIRE( mp_active_live_view().is_enabled() );
+
+    // The hint is per player: showing slot 0's must not enable slot 1's.
+    mp_activate_player( 1 );
+    CHECK_FALSE( mp_active_live_view().is_enabled() );
+    mp_active_live_view().show( tripoint::zero );
+    REQUIRE( mp_active_live_view().is_enabled() );
+
+    // Hiding slot 1's view must not touch slot 0's.
+    mp_active_live_view().hide();
+    mp_activate_player( 0 );
+    CHECK( mp_active_live_view().is_enabled() );
+    mp_active_live_view().hide();
+
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+TEST_CASE( "a_destroyed_context_drops_its_mouse_view_where_it_registered", "[mp]" )
+{
+    restore_active_state restore;
+    ui_stack_t other;
+    ui_manager::set_active_stack( &other );
+    {
+        player_context ctx;
+        ui_manager::set_active_stack( &ctx.ui_stack );
+        ctx.liveview = std::make_unique<live_view>();
+        ctx.liveview->show( tripoint::zero );
+        REQUIRE( ctx.ui_stack.size() == 1 );
+        // Destroy the context under somebody else's stack, the way g.reset()
+        // destroys contexts during shutdown. ~ui_adaptor asserts its owner is
+        // the active stack, so the context destructor has to point the stack
+        // at itself for the drop. Reaching the end of this block is the
+        // assertion: a context whose destructor did not do that aborts.
+        ui_manager::set_active_stack( &other );
+    }
+    CHECK( other.empty() );
 }

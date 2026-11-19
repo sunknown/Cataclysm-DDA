@@ -27,11 +27,6 @@ constexpr int MIN_BOX_HEIGHT = 3;
 live_view::live_view() = default;
 live_view::~live_view() = default;
 
-void live_view::init()
-{
-    hide();
-}
-
 void live_view::hide()
 {
     ui = nullptr;

@@ -80,7 +80,6 @@ class field_entry;
 class inventory_selector_preset;
 class item;
 class kill_tracker;
-class live_view;
 class map;
 class memorial_logger;
 class monster;
@@ -1354,8 +1353,6 @@ class game
         std::vector<avatar *> player_slots;                        // NOLINT(cata-serialize)
         std::vector<std::unique_ptr<avatar>> owned_extra_players;  // NOLINT(cata-serialize)
         size_t active_slot_index = 0;                              // NOLINT(cata-serialize)
-        pimpl<live_view> liveview_ptr; // NOLINT(cata-serialize)
-        live_view &liveview; // NOLINT(cata-serialize)
         pimpl<scent_map> scent_ptr; // NOLINT(cata-serialize)
         pimpl<timed_event_manager> timed_event_manager_ptr; // NOLINT(cata-serialize)
         pimpl<item_wakeup_manager> item_wakeup_manager_ptr;

@@ -12,6 +12,7 @@
 #include "ui_manager.h"     // ui_stack_t, ui_adaptor
 #include "memory_fast.h"    // weak_ptr_fast
 
+class live_view;
 class memorial_logger;
 class safemode;
 class static_popup;
@@ -60,6 +61,11 @@ struct player_context {
     // "first redraw" flag would let one player's redraw suppress another's.
     std::unique_ptr<static_popup> wait_popup; // NOLINT(cata-serialize)
     bool first_redraw_since_waiting_started = true; // NOLINT(cata-serialize)
+    // This player's mouse-view hint. The ui_adaptor it raises has to be created
+    // and destroyed under this player's own ui stack (~ui_adaptor asserts
+    // owner == active_stack), which one `game`-wide live_view could not honour:
+    // one player's key destroyed the hint another player had opened.
+    std::unique_ptr<live_view> liveview; // NOLINT(cata-serialize)
 
     // This player's character-creator menu state (newcharacter.cpp's
     // cc_uistate). It is per player for the same reason everything else here
@@ -127,6 +133,11 @@ struct player_context {
 
 player_context &mp_active_context();       // asserts a non-null active context
 player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for reset/tests)
+// The active player's mouse-view hint, created on first use (like wait_popup).
+// Being per player is the point: its ui_adaptor registers in the active
+// context's ui stack and is destroyed there, so no other player's key can
+// close it.
+live_view &mp_active_live_view();
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
 void mp_apply_viewport_params( const player_context &ctx );

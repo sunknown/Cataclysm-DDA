@@ -460,7 +460,6 @@ static void achievement_failed( const achievement *a, bool achievements_enabled 
 
 // This is the main game set-up process.
 game::game() :
-    liveview( *liveview_ptr ),
     scent_ptr( *this ),
     achievements_tracker_ptr( *stats_tracker_ptr, achievement_attained, achievement_failed, true ),
     m( *map_ptr ),
@@ -2513,10 +2512,10 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
                     true );
             if( mouse_pos && ( !liveview_pos || *mouse_pos != *liveview_pos ) ) {
                 liveview_pos = mouse_pos;
-                liveview.show( liveview_pos->raw() );
+                mp_active_live_view().show( liveview_pos->raw() );
             } else if( !mouse_pos ) {
                 liveview_pos.reset();
-                liveview.hide();
+                mp_active_live_view().hide();
             }
             ui_manager::redraw();
         }
@@ -2524,7 +2523,7 @@ bool game::handle_mouseview( input_context &ctxt, std::string &action )
 
     if( action != "TIMEOUT" ) {
         // Keyboard event, break out of animation loop
-        liveview.hide();
+        mp_active_live_view().hide();
         return false;
     }
 
@@ -6099,7 +6098,7 @@ void game::draw_look_around_cursor( const tripoint_bub_ms &lp, const visibility_
 {
     const map &here = get_map();
 
-    if( !liveview.is_enabled() ) {
+    if( !mp_active_live_view().is_enabled() ) {
 #if defined( TILES )
         if( is_draw_tiles_mode() ) {
             draw_cursor( lp );

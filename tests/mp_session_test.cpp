@@ -281,6 +281,48 @@ TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
     CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
 }
 
+TEST_CASE( "another_players_key_does_not_close_a_mouse_view", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // Both players' main screens are up, so the terrain window has its size.
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_nonblank_cells( harness.screen( 0 ) ) > 200 &&
+               mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
+    }, 10 ) );
+    // A cell inside the map, not in the sidebar: the mouse view only shows for
+    // a position inside the terrain window (get_coordinates() returns nullopt
+    // otherwise and the hint is hidden).
+    const catacurses::window terrain = mp_active_context().w_terrain;
+    REQUIRE( terrain );
+    const point on_map( getbegx( terrain ) + getmaxx( terrain ) / 2,
+                        getbegy( terrain ) + getmaxy( terrain ) / 2 );
+
+    // Player 1 moves the mouse over the map. A TIMEOUT does not hide the hint,
+    // so it stays up while they sit at the input wait.
+    harness.mouse_move( 1, on_map );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), "Mouse view" );
+    } ) );
+    // Their own screen only: the hint is not a process-wide overlay.
+    CHECK_FALSE( mp_grid_contains( harness.screen( 0 ), "Mouse view" ) );
+
+    // Player 1's terminal goes away with the hint still up...
+    harness.drop_client( 1 );
+
+    // ...and player 0 presses a key. Player 0 has no hint of their own, and
+    // player 1's adaptor registered in player 1's stack: one shared live_view
+    // would destroy it here, under player 0's stack, and abort on
+    // ~ui_adaptor's owner assert. Play has to continue instead.
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 0, '.' );
+    REQUIRE( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    }, 20 ) );
+    CHECK( harness.client_connected( 0 ) );
+}
+
 TEST_CASE( "a_yes_no_prompt_unwinds_when_the_session_ends", "[mp]" )
 {
     restore_active_state restore;
