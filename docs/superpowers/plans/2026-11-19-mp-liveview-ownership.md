@@ -287,7 +287,8 @@ git commit -m "fix(mp): keep a player's mouse view in their own ui stack"
 
 Run: `make -j$(nproc) CCACHE=1 TILES=0 TESTS=1`  (полная сборка: `obj/` пуст после `make clean`)
 Run: `tests/cata_test "[mp],[coop]" --rng-seed 1 --user-dir=.data/liveview-plain/`
-Expected: 0 failed; cases = baseline этой комбинации (фаза 5: 164) + 2 новых unit-теста.
+Expected: 0 failed. Это сборка без `MULTIPLAYER`, поэтому это sanity-прогон незагейченных
+`[mp]`-тестов (фаза 5 меряла 164-case набор на `MULTIPLAYER=1`).
 
 - [ ] **Step 2: Клиентская сборка.**
 
@@ -307,7 +308,8 @@ Expected: успешная сборка (server-only код не тронут, �
 - [ ] **Step 4: Финальный self-check леджера.**
 
 Run: `git log --oneline fix/mp-liveview -3 && git status --short`
-Expected: ровно один коммит поверх `mp`; незакоммичены только `AGENTS.md` и
+Expected: два коммита поверх `mp` — план (`docs(mp): plan …`) и фикс (`fix(mp): …`), плюс
+финальный коммит правок плана по факту прогонов; незакоммичены только `AGENTS.md` и
 `docs/superpowers/plans/2026-11-19-mp-baton-hold-diagnosis.md` (как и до работы).
 
 - [ ] **Step 5: Передать пользователю.**
