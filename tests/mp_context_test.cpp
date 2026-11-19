@@ -421,3 +421,25 @@ TEST_CASE( "a_destroyed_context_drops_its_mouse_view_where_it_registered", "[mp]
     }
     CHECK( other.empty() );
 }
+
+TEST_CASE( "a_context_destroyed_under_its_own_stack_restores_the_world_stack", "[mp]" )
+{
+    restore_active_state restore;
+    ui_stack_t *dead = nullptr;
+    {
+        player_context ctx;
+        dead = &ctx.ui_stack;
+        ui_manager::set_active_stack( &ctx.ui_stack );
+        ctx.liveview = std::make_unique<live_view>();
+        ctx.liveview->show( tripoint::zero );
+        REQUIRE( ctx.ui_stack.size() == 1 );
+        // Destroy the context with its own stack active -- single player
+        // shutting down with the hint up, or mp_sync_context_count() shrinking
+        // the contexts. The previous stack cannot be restored: it is about to
+        // die with the context. The destructor has to fall back to the world
+        // stack; otherwise the active stack dangles and the next ui_adaptor
+        // asserts against a destroyed owner.
+    }
+    CHECK( ui_manager::get_active_stack() != nullptr );
+    CHECK( ui_manager::get_active_stack() != dead );
+}

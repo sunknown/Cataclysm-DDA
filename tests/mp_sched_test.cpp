@@ -349,9 +349,13 @@ TEST_CASE( "rapid_handoffs_do_not_report_a_stall", "[mp]" )
     while( !sched.waiting_for_baton( 1 ) ) {
         std::this_thread::yield();
     }
-    mp_sched_start_watchdog( sched, /*threshold_ms=*/10 );
+    mp_sched_start_watchdog( sched, /*threshold_ms=*/300 );
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 300 );
+    // 1000 ms, not the 300 ms the old test used: a scheduling stall under
+    // `-j $(nproc)` (or a loaded CI box) must not turn a fast ping-pong into a
+    // legitimate report. Ten watchdog polls fit in this window, while a
+    // watchdog that still counted sampled stalls would cross 300 ms in three.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 1000 );
     while( std::chrono::steady_clock::now() < deadline ) {
         sched.yield_to( mp_sched::world, 1 );
     }
@@ -368,6 +372,10 @@ TEST_CASE( "rapid_handoffs_do_not_report_a_stall", "[mp]" )
 TEST_CASE( "the_watchdog_leaves_quietly_when_the_session_stops", "[mp]" )
 {
     mp_sched sched( 1 );
+    // Above the whole test's lifetime and far above the watchdog's 100 ms poll
+    // period, so an accumulated stall cannot be what the assertion below
+    // catches; a report here would mean the watchdog reported during shutdown,
+    // after shut_down() set stopping_.
     mp_sched_start_watchdog( sched, /*threshold_ms=*/1000 );
     std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
     // shut_down() joins the watchdog; a hang here fails the test by timeout.
