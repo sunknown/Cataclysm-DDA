@@ -117,9 +117,8 @@ struct player_context {
     character_creator_uistate &creator_state();
 
     // Drops this seat's mouse-view hint under the stack it registered in, then
-    // puts the caller's stack back (falling back to the world stack when the
-    // caller's stack is this context's own). The seat handover paths call this:
-    // the hint belonged to the terminal that left.
+    // puts the caller's stack back. The seat handover paths call this: the hint
+    // belonged to the terminal that left.
     void drop_live_view();
 
     // This seat's per-character state, each created on first use. The memorial

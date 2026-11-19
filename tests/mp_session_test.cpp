@@ -328,8 +328,12 @@ TEST_CASE( "a_reconnected_seat_does_not_keep_the_old_terminals_mouse_hint", "[mp
     restore_active_state restore;
     mp_session_harness harness( 2 );
 
+    // Both terminals must have drawn before either seat's viewport geometry is
+    // used for the coordinate: the active context here is seat 0's, and only
+    // identical harness terminals make its window a valid target for seat 1.
     REQUIRE( harness.run_until( [&]() {
-        return mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
+        return mp_grid_nonblank_cells( harness.screen( 0 ) ) > 200 &&
+               mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
     }, 10 ) );
     const catacurses::window terrain = mp_active_context().w_terrain;
     REQUIRE( terrain );
