@@ -97,3 +97,20 @@ Out of scope, recorded for the human: with a dropped seat the world spins yieldi
 handoffs/s even when the remaining player is idle at the map. That spin is the trigger for the
 false report and a CPU cost of its own; the watchdog fix makes the report honest, it does not
 stop the spin.
+
+## Manual rerun with the fix
+
+Same script, same world, same disconnect, ~2 minutes of Ada acting with the fixed server
+(`a4b0a04d0a`):
+
+| Measure | Before fix | After fix |
+|---|---|---|
+| watchdog reports | 1 (`30119 ms`) | **0** |
+| trace records after the disconnect | — | 19111 |
+| baton handoffs after the disconnect | 615 in 31 s | 3564 in ~120 s |
+| holder mix (records) | ~99% world | 15746 world / 1782 player |
+| generation | 765 → 1380 | 806 → 4370 |
+
+The condition is unchanged — the baton still moves thousands of times while the world is the
+sampled holder — and the report is gone, because the watchdog now resets on the generation
+instead of on the sampled holder.
