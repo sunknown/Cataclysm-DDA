@@ -51,6 +51,7 @@
 #endif
 #if defined(MP_SERVER)
 #include "avatar.h"
+#include "mp/mp_server_config.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_turn.h"
@@ -269,10 +270,16 @@ struct cli_opts {
     bool noverify = false;
     bool check_mods = false;
     std::vector<std::string> opts;
-    std::string world; /** if set try to load first save in this world on startup */
+    // Empty means the option was not named. --world stays optional so the
+    // single-player default (open the menu) is still an empty world, while the
+    // server can take the name from its config file.
+    std::optional<std::string> world;
     bool disable_ascii_art = false;
-    int server_port = 0; /** port to listen on as a multiplayer server; 0 disables */
-    int players = 1; /** how many clients the multiplayer server waits for before starting */
+    // The flag alone asks for a server and leaves the port to the config file;
+    // an engaged port is the one the operator named.
+    bool server_requested = false;
+    std::optional<int> server_port;
+    std::optional<int> players;
     std::string connect_to; /** host:port of a multiplayer server to join */
     // Countdown lengths for this server session, in milliseconds. Empty means
     // "leave the shipped default in force".
@@ -339,10 +346,16 @@ cli_opts parse_commandline( int argc, const char **argv )
                 "--world", "<name>",
                 "Load world",
                 section_default,
-                1,
-                [&result]( int, const char **params ) -> int {
-                    result.world = params[0];
-                    return 1;
+                0,
+                [&result]( int argc, const char **params ) -> int {
+                    // The name may be left out so the multiplayer server can
+                    // take it from its config file; a token that begins with
+                    // '-' is the next option, not a world name.
+                    if( argc >= 1 && params[0][0] != '-' ) {
+                        result.world = params[0];
+                        return 1;
+                    }
+                    return 0;
                 }
             },
             {
@@ -435,15 +448,20 @@ cli_opts parse_commandline( int argc, const char **argv )
             },
             {
                 "--server", "<port>",
-                "Runs this instance as a multiplayer server that streams its screen to one client.",
+                "Runs this instance as a multiplayer server that streams its screen to one client. "
+                "The port may be omitted and taken from the server config file.",
                 section_default,
-                1,
-                [&result]( int, const char **params ) -> int {
-                    // A malformed number leaves the port at zero so the server
-                    // branch does not fire; the game then starts normally and
-                    // the mistake surfaces to the user there.
-                    result.server_port = std::atoi( params[0] );
-                    return 1;
+                0,
+                [&result]( int argc, const char **params ) -> int {
+                    result.server_requested = true;
+                    if( argc >= 1 && params[0][0] != '-' ) {
+                        // A malformed number lands on zero, which the config
+                        // merge refuses instead of hiding in a default.
+                        result.server_port = std::atoi( params[0] );
+                        return 1;
+                    }
+                    // Bare --server: the port comes from the config file.
+                    return 0;
                 }
             },
             {
@@ -451,12 +469,15 @@ cli_opts parse_commandline( int argc, const char **argv )
                 "How many clients the multiplayer server waits for before starting. "
                 "The roster is fixed: nobody joins or leaves once play begins.",
                 section_default,
-                1,
-                [&result]( int, const char **params ) -> int {
-                    // A malformed or absent count leaves it at one, which is the
-                    // single-client behaviour the earlier phases shipped.
-                    result.players = std::max( 1, std::atoi( params[0] ) );
-                    return 1;
+                0,
+                [&result]( int argc, const char **params ) -> int {
+                    // A malformed or absent count leaves the file (then the
+                    // single-client default) in charge.
+                    if( argc >= 1 && params[0][0] != '-' ) {
+                        result.players = std::max( 1, std::atoi( params[0] ) );
+                        return 1;
+                    }
+                    return 0;
                 }
             },
             {
@@ -789,14 +810,15 @@ static int run_game( cli_opts &cli )
     replay_buffered_debugmsg_prompts();
 
 #if defined(MP_SERVER)
-    if( cli.server_port > 0 ) {
-        run_server_session( cli.world, cli.hurry_ms, cli.hurry_combat_ms );
+    if( cli.server_requested ) {
+        run_server_session( cli.world.value_or( std::string() ), cli.hurry_ms,
+                            cli.hurry_combat_ms );
         exit_handler( -999 );
         return 0;
     }
 #endif
 
-    main_menu::queued_world_to_load = std::move( cli.world );
+    main_menu::queued_world_to_load = cli.world.value_or( std::string() );
 
     while( true ) {
         main_menu menu;
@@ -1057,7 +1079,7 @@ int main( int argc, const char *argv[] )
     // looks exactly like a multiplayer session that refuses to connect, and the
     // mistake is impossible to spot from the outside.
 #if !defined(MP_SERVER)
-    if( cli.server_port > 0 ) {
+    if( cli.server_requested ) {
         std::cerr << "This build has no multiplayer server: rebuild with MP_SERVER=1 "
                   "to use --server." << std::endl;
         return 1;
@@ -1072,7 +1094,46 @@ int main( int argc, const char *argv[] )
 #endif
 
 #if defined(MP_SERVER)
-    if( cli.server_port > 0 && mp_server_main( cli.server_port, cli.world, cli.players ) != 0 ) {
+    // The server's options are one resolved set by the time anything listens:
+    // the command line over the config file, the file over the built-in
+    // defaults. A bad file, or a port or world nobody named, is the operator's
+    // mistake, and the server refuses to start rather than guess -- falling
+    // through to a single-player game would look like a server that silently
+    // ignored the flags.
+    if( cli.server_requested ) {
+        mp_server_log_enable();
+        const std::string config_path = PATH_INFO::config_dir() + "mp/server.json";
+        mp_server_config from_file;
+        std::string err;
+        if( !mp_load_server_config( config_path, from_file, err ) ) {
+            mp_server_log( "refusing to start: " + err );
+            return 1;
+        }
+        cli_server_overrides overrides;
+        overrides.port = cli.server_port;
+        overrides.world = cli.world;
+        overrides.players = cli.players;
+        overrides.hurry_ms = cli.hurry_ms;
+        overrides.hurry_combat_ms = cli.hurry_combat_ms;
+        int port = 0;
+        std::string world;
+        int players = 1;
+        if( !mp_apply_cli_server_config( from_file, overrides, port, world, players, err ) ) {
+            mp_server_log( "refusing to start: " + err );
+            return 1;
+        }
+        cli.server_port = port;
+        cli.world = world;
+        cli.players = players;
+        // The countdown lengths are not part of the resolved trio above: the
+        // setter owns their range check, so the parser only has to pick which
+        // source named them.
+        cli.hurry_ms = overrides.hurry_ms ? overrides.hurry_ms : from_file.hurry_ms;
+        cli.hurry_combat_ms = overrides.hurry_combat_ms ? overrides.hurry_combat_ms :
+                              from_file.hurry_combat_ms;
+    }
+    if( cli.server_requested &&
+        mp_server_main( *cli.server_port, *cli.world, *cli.players ) != 0 ) {
         return 1;
     }
 #endif
@@ -1085,7 +1146,7 @@ int main( int argc, const char *argv[] )
 
     // in test mode don't initialize curses to avoid escape sequences being inserted into output stream,
     // except for a multiplayer server, whose curses backend is a buffer that needs setup either way
-    if( !test_mode || cli.server_port > 0 ) {
+    if( !test_mode || cli.server_requested ) {
         try {
             // set minimum FULL_SCREEN sizes
             FULL_SCREEN_WIDTH = EVEN_MINIMUM_TERM_WIDTH;

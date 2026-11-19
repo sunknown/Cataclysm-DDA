@@ -1,0 +1,7 @@
+{
+    "port": 4321,
+    "world": "coop",
+    "players": 2,
+    "hurry-ms": 5000,
+    "hurry-combat-ms": 2000
+}
