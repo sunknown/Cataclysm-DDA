@@ -223,9 +223,18 @@ void horde_map::signal_entities( const tripoint_abs_ms &origin, int volume )
     }
     for( std::unordered_map
          <tripoint_om_sm, std::unordered_map<tripoint_abs_ms, horde_entity>>::iterator idle_sm_iter =
-             idle_monster_map.begin(); idle_sm_iter != idle_monster_map.end(); ++idle_sm_iter ) {
+             idle_monster_map.begin(); idle_sm_iter != idle_monster_map.end(); ) {
         tripoint_abs_sm abs_sm = project_combine( location, idle_sm_iter->first );
         signal_sm( origin, sm_dest, abs_sm, volume, idle_sm_iter, false, migrating_hordes );
+        // signal_sm() extracts every alert entity into migrating_hordes, so a
+        // submap can be left empty.  horde_map::iterator depends on empty
+        // submaps not staying behind (see iterator::insure_valid()); keeping
+        // one makes serializing the overmap dereference the empty inner map.
+        if( idle_sm_iter->second.empty() ) {
+            idle_sm_iter = idle_monster_map.erase( idle_sm_iter );
+        } else {
+            ++idle_sm_iter;
+        }
     }
 
     while( !migrating_hordes.empty() ) {
