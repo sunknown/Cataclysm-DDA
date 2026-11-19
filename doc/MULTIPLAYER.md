@@ -20,9 +20,10 @@ Because the server is a full game build, everything you can do in single-player
 menus at the same time -- but only the server's own keybindings are in effect.
 
 The server also owns the world and the party. It waits for its players, opens
-the world named on its command line, and gives each of them their own join
-menu, in which the player creates a survivor or continues the one they played
-last time. Nothing has to be prepared in the world beforehand.
+the world named on its command line or in its server config file, and gives
+each of them their own join menu, in which the player creates a survivor or
+continues the one they played last time. Nothing has to be prepared in the
+world beforehand.
 
 ## Building
 
@@ -67,7 +68,7 @@ place -- quit any running copy first, or the link fails with "Text file busy".
 ### 1. Start the server
 
 ```sh
-./mpserver-cataclysm-server --server <port> --world <name> --players <count> --userdir <path>
+./mpserver-cataclysm-server --server [<port>] --world <name> --players <count> --userdir <path>
 ```
 
 - `--server <port>` -- run this instance as a multiplayer server that streams a
@@ -150,13 +151,13 @@ that goes out over the wire -- so the console it was launched from carries a
 session log on stderr instead:
 
 ```
-[21:44:03] mp: listening on port 4321 (world: "Hanston", protocol 1)
+[21:44:03] mp: listening on port 4321 (world: "Hanston", protocol 2)
 [21:44:03] mp: waiting for 2 clients
 [21:44:31] mp: connection from 127.0.0.1:55226; shaking hands
-[21:44:31] mp: client "Bo" connected from 127.0.0.1:55226 (terminal 180x50, 256 colours, protocol 1)
+[21:44:31] mp: client "Bo" connected from 127.0.0.1:55226 (terminal 180x50, 256 colours, protocol 2)
 [21:44:31] mp: 1 of 2 connected
 [21:44:47] mp: connection from 127.0.0.1:55230; shaking hands
-[21:44:47] mp: client "Ada" connected from 127.0.0.1:55230 (terminal 80x24, 256 colours, protocol 1)
+[21:44:47] mp: client "Ada" connected from 127.0.0.1:55230 (terminal 80x24, 256 colours, protocol 2)
 [21:44:47] mp: 2 of 2 connected
 [21:44:47] mp: world "Hanston" is open; waiting for 2 players to choose a survivor
 [21:45:12] mp: loading "Norman Blair"
@@ -199,8 +200,9 @@ reason the client was turned away, and a named world whose creation failed.
   or `client` if the environment does not provide one. Which survivor you play
   is decided inside the join menu, not on the command line.
 
-The client needs a terminal of at least 80x24. On connect it announces its
-terminal size; the server streams at that size. Resizing the client's terminal
+The client needs a terminal between 80x24 and 1000x1000. On connect it
+announces its terminal size; the server streams at that size and refuses a
+client outside that range at the handshake. Resizing the client's terminal
 renegotiates the grid.
 
 The client also opens whichever join menu the server puts in front of it, and
@@ -407,9 +409,9 @@ cursor, the message log and the rest of the free actions leave you away; if
 they did, a partner reading a menu would freeze the world, which is the whole
 reason this mode exists.
 
-When every living player is away, the turn stays open and the world stands
-still: the clock does not move around empty chairs. The key is the exit --
-somebody returns, and the world moves on again.
+When every living player is away or disconnected, the turn stays open and the
+world stands still: the clock does not move around empty chairs or a dropped
+player. The key is the exit -- somebody returns, and the world moves on again.
 
 Away is not a fight fast-forward. While a hostile creature can see a player and
 nobody is playing by hand, the turn never closes faster than the combat
