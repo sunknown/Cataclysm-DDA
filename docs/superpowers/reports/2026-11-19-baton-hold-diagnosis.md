@@ -101,16 +101,30 @@ stop the spin.
 ## Manual rerun with the fix
 
 Same script, same world, same disconnect, ~2 minutes of Ada acting with the fixed server
-(`a4b0a04d0a`):
+(`a4b0a04d0a`). The figures below are after the disconnect line (16:12:00.762); the file mirror
+was enabled for that run (`MP_SCHED_TRACE`; it is opt-in, see the note at the end):
 
 | Measure | Before fix | After fix |
 |---|---|---|
 | watchdog reports | 1 (`30119 ms`) | **0** |
-| trace records after the disconnect | — | 19111 |
-| baton handoffs after the disconnect | 615 in 31 s | 3564 in ~120 s |
-| holder mix (records) | ~99% world | 15746 world / 1782 player |
-| generation | 765 → 1380 | 806 → 4370 |
+| trace records after the disconnect | — | 17374 |
+| baton handoffs after the disconnect | 615 in 31 s | 3538 in ~2 min |
+| holder mix after the disconnect | ~99% world | 15605 world / 1369 slot 1 / 400 slot 0 |
+| generation | 765 → 1380 | 834 → 4372 |
 
 The condition is unchanged — the baton still moves thousands of times while the world is the
 sampled holder — and the report is gone, because the watchdog now resets on the generation
 instead of on the sampled holder.
+
+## Log mirror is opt-in
+
+Reviewing the first version showed the `mp sched trace:` mirror was written unconditionally
+(`DebugLog` treats `D_MAIN` as always-on), at 80–200 lines/s — hundreds of MB per day of a
+session, and the diagnosis log became mostly trace noise. The in-memory ring is always on and
+is what the tests use; the file mirror appears only when the server runs with
+`MP_SCHED_TRACE=1` in the environment. A manual trace run therefore starts as:
+
+```bash
+MP_SCHED_TRACE=1 ./mpserver-cataclysm-server --server 4321 --world coop-manual --players 2 \
+  --userdir .data/mp-srv 2>&1 | tee .data/mp-srv.log
+```
