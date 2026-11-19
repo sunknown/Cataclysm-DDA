@@ -239,7 +239,12 @@ player who is still at a terminal -- or near where the character fell if nobody
 else is available -- and takes over the same seat. The console records both
 halves: `"Ada King" died; the seat is choosing a replacement`, then `"Ada King
 II" replaced "Ada King"`. Leaving that menu without creating a character marks
-the seat `disconnected` too; it is then dead and free for a newcomer.
+the seat `disconnected`. Whether the seat is free for a newcomer then depends
+on the character it still holds: an hp-dead character leaves a `dead &&
+disconnected` seat that a newcomer may take, while a character abandoned with
+"Abandon this character" is still a living body (no hit points were lost), so
+the seat stays reserved for its card and a newcomer is refused with `no free
+seat`.
 
 The listener stays open after the party starts. A new client can fill only a
 seat that is both dead and disconnected -- the previous occupant died and its
@@ -299,11 +304,14 @@ any other screen. It offers:
   another name otherwise.
 - **Settings** -- the server's options. Anyone in the party may change them;
   co-op is a trusted circle.
-- **Help**, **Quit** -- the usual. Quit before the party has started: your
-  client exits, your seat is offered to the next connection, and everyone else
-  stays where they were. Quit after it has started: the character stays in the
-  world and the seat waits for its card, exactly as a disconnect does (see
-  [When a client leaves or dies](#when-a-client-leaves-or-dies)).
+- **Help**, **Quit** -- the usual. Quit during the join phase: your client
+  exits, your seat is offered to the next connection, and everyone else stays
+  where they were. After the party has started, a seat owed a replacement shows
+  the same menu; quitting that leaves the seat `disconnected`, with the
+  character still in the world. If the character was hp-dead, the seat is
+  `dead && disconnected` and a newcomer may take it; if it was abandoned
+  ("Abandon this character" leaves a living body), the seat stays reserved for
+  the old character's card, and a newcomer is refused with `no free seat`.
 
 A new character is placed on a free tile next to the rest of the party: the
 bubble is shared, and the tether has to hold from the first turn. All co-op
