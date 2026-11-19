@@ -2,10 +2,19 @@
 
 #include "cata_catch.h"
 
+#include <algorithm>
+#include <chrono>
+#include <fstream>
+#include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 
 #include "calendar.h"
 #include "cata_scope_helpers.h"
@@ -1552,6 +1561,157 @@ TEST_CASE( "a_connection_without_a_matching_card_is_refused", "[mp]" )
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
+}
+
+// Measurement scaffolding for F1. Kept in the test binary so the numbers in the
+// report can be reproduced with one filtered run instead of scraped from a
+// terminal. CPU is /proc/self/stat's utime+stime, i.e. the whole test process,
+// which here is the harness thread plus every seat thread. Linux-only: the
+// report is the only consumer, so elsewhere this returns "unknown".
+#if defined(__linux__)
+static long long process_cpu_us()
+{
+    std::ifstream stat( "/proc/self/stat" );
+    std::string line;
+    std::getline( stat, line );
+    const std::size_t close = line.rfind( ')' );
+    if( close == std::string::npos ) {
+        return -1;
+    }
+    std::istringstream rest( line.substr( close + 1 ) );
+    // The remainder starts at field 3, which is the state letter, so it is read
+    // as text; utime and stime are fields 14 and 15.
+    std::string state;
+    if( !( rest >> state ) ) {
+        return -1;
+    }
+    long long value = 0;
+    long long utime = 0;
+    long long stime = 0;
+    for( int field = 4; field <= 15; ++field ) {
+        if( !( rest >> value ) ) {
+            return -1;
+        }
+        if( field == 14 ) {
+            utime = value;
+        } else if( field == 15 ) {
+            stime = value;
+        }
+    }
+    const long ticks = sysconf( _SC_CLK_TCK );
+    return ticks > 0 ? ( utime + stime ) * 1000000LL / ticks : -1;
+}
+#else
+static long long process_cpu_us()
+{
+    return -1;
+}
+#endif
+
+// F1 guard: with one seat dropped and the other simply sitting at the map, the
+// baton must not be handed around faster than the remaining player's own input
+// polling produces. Measurement on 2026-11-19 (rng-seed 1): 1400 driven turns
+// took 58.0 s and produced 934 handoffs -- at most 2 per turn, mean 0.67, every
+// one of them to the connected seat -- while the process spent 140 ms of CPU,
+// i.e. 0.24% of one core. Two handoffs (one release_to + one yield_to) is one
+// input poll cycle, and the idle player's map loop polls every 125 ms
+// (handle_action.cpp:334,468): 934 / 2 / 58.0 s = one cycle per 124 ms. That is
+// the designed waiting path, not a spin, so the bound below is per turn rather
+// than a rate and does not depend on how fast the machine is.
+TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    harness.drop_client( 1 );
+    harness.run_until( []() {
+        return false;
+    }, 5 );
+    mp_sched *const sched = mp_active_sched();
+    REQUIRE( sched != nullptr );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_disconnected( 1 );
+    }, 10 ) );
+
+    // One release_to + one yield_to per input poll is the normal cycle; four
+    // handoffs per turn is two cycles, which leaves room for a turn that
+    // catches the player's second re-park while still failing at the first
+    // order of magnitude of a spin. A busy loop produces thousands per turn.
+    constexpr size_t handoffs_per_turn_bound = 4;
+    constexpr int idle_turns = 200;
+    const size_t g0 = sched->holder_generation();
+    const std::vector<std::string> trace0 = sched->trace_snapshot();
+    const int turn0 = to_turn<int>( calendar::turn );
+    size_t last = g0;
+    size_t max_per_turn = 0;
+    std::map<size_t, int> per_turn;
+    const auto wall0 = std::chrono::steady_clock::now();
+    const long long cpu0 = process_cpu_us();
+    harness.run_until( [&]() {
+        const size_t now = sched->holder_generation();
+        ++per_turn[now - last];
+        max_per_turn = std::max( max_per_turn, now - last );
+        last = now;
+        return false;
+    }, idle_turns );
+    const auto wall1 = std::chrono::steady_clock::now();
+    const long long cpu1 = process_cpu_us();
+    const size_t delta = sched->holder_generation() - g0;
+    const int turns = idle_turns;
+    const int calendar_turns = to_turn<int>( calendar::turn ) - turn0;
+    const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     wall1 - wall0 ).count();
+    std::string histogram;
+    for( const auto &entry : per_turn ) {
+        histogram += std::to_string( entry.first ) + "/turn=" +
+                     std::to_string( entry.second ) + " ";
+    }
+
+    // Reasons and destinations of the handoffs still in the ring, which is the
+    // test-visible copy of what MP_SCHED_TRACE mirrors. The ring is 256 entries
+    // and the measured window outlives it, so this is a sample of the last
+    // cycles, not the whole run -- enough to name the seat being woken: a grant
+    // to slot 1 would record holder "1" and appear here many times per second.
+    std::map<std::string, int> by_reason;
+    std::map<std::string, int> by_holder;
+    int grants_to_disconnected = 0;
+    for( const std::string &entry : sched->trace_snapshot() ) {
+        std::istringstream in( entry );
+        size_t generation = 0;
+        std::string holder;
+        std::string reason;
+        in >> generation >> holder >> reason;
+        if( generation <= g0 ) {
+            continue;
+        }
+        ++by_reason[reason];
+        ++by_holder[holder];
+        if( holder == "1" && ( reason == "release_to" || reason == "yield_to" ) ) {
+            ++grants_to_disconnected;
+        }
+    }
+    std::string reasons;
+    for( const auto &entry : by_reason ) {
+        reasons += entry.first + "=" + std::to_string( entry.second ) + " ";
+    }
+    std::string holders;
+    for( const auto &entry : by_holder ) {
+        holders += entry.first + "=" + std::to_string( entry.second ) + " ";
+    }
+    WARN( "idle handoffs: turns=" << turns << " calendar_turns=" << calendar_turns
+          << " delta=" << delta << " max_per_turn=" << max_per_turn
+          << " elapsed_ms=" << elapsed_ms << " cpu_ms=" << ( cpu1 - cpu0 ) / 1000
+          << " trace_entries_before=" << trace0.size() );
+    WARN( "idle handoffs per-turn histogram: " << histogram );
+    WARN( "idle handoffs by reason: " << reasons );
+    WARN( "idle handoffs by destination: " << holders );
+
+    INFO( "handoffs=" << delta << " over " << turns << " turns, max_per_turn="
+          << max_per_turn );
+    CHECK( max_per_turn <= handoffs_per_turn_bound );
+    CHECK( delta <= handoffs_per_turn_bound * static_cast<size_t>( turns ) );
+    // The dropped seat is not the one being woken: every grant in the sampled
+    // ring names the connected seat.
+    CHECK( grants_to_disconnected == 0 );
 }
 
 #endif // MP_SERVER
