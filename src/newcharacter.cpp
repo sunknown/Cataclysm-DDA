@@ -2397,7 +2397,14 @@ bool avatar::load_template( const std::string &template_name, pool_type &pool )
             legacy_template = template_array.get_object( 1 );
         }
 
+        // A template's saved location is where its creator happened to stand
+        // when it was written -- the invalid sentinel for a join-phase
+        // character. Placement sets the real position later; an unplaced
+        // replacement must stay on its last legal tile, or the bubble anchor
+        // and the next placement anchor are poisoned.
+        const tripoint_abs_ms template_pos = pos_abs();
         deserialize( legacy_template );
+        set_pos_abs_only( template_pos );
 
         // If stored_calories the template is under a million (kcals < 1000), assume it predates the
         // kilocalorie-to-literal-calorie conversion and is off by a factor of 1000.

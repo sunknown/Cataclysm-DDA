@@ -34,6 +34,8 @@
 #include "mp/mp_turn.h"
 #include "overmapbuffer.h"
 #include "overmap.h"
+#include "player_difficulty.h"
+#include "player_helpers.h"
 #include "point.h"
 #include "string_formatter.h"
 #include "type_id.h"
@@ -569,6 +571,30 @@ TEST_CASE( "a_second_replacement_anchors_on_a_seat_mid_creation", "[mp]" )
                !g->player_at( 2 ).is_dead_state();
     }, 60 ) );
     CHECK( rl_dist( g->player_at( 2 ).pos_abs(), first_dead ) <= MP_TETHER_SOFT_LIMIT );
+}
+
+TEST_CASE( "loading_a_preset_keeps_the_seat_on_its_own_tile", "[mp]" )
+{
+    restore_active_state restore;
+    clear_avatar();
+    mp_ensure_player_context();
+    mp_turn_reset_all();
+
+    avatar &ava = g->player_at( 0 );
+    // A template written by a join-phase creator stores the invalid sentinel as
+    // its location. Loading it into a seat that is choosing a replacement must
+    // not move that seat off its last legal tile. The real flow hands the load
+    // a freshly built avatar, so the test does too.
+    ava = avatar();
+    ava.set_pos_abs_only( tripoint_abs_ms( 20, 10, -500 ) );
+    pool_type pool = pool_type::FREEFORM;
+    ava.save_template( "mp-sentinel-location", pool );
+
+    const tripoint_abs_ms legal_pos( 62, 61, 0 );
+    ava = avatar();
+    ava.set_pos_abs_only( legal_pos );
+    REQUIRE( ava.load_template( "mp-sentinel-location", pool ) );
+    CHECK( ava.pos_abs() == legal_pos );
 }
 
 TEST_CASE( "the_session_does_not_end_when_the_last_character_dies", "[mp]" )
