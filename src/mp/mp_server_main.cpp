@@ -478,13 +478,15 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
         if( moved || released ) {
             // Something changed hands or a seat is waiting to be picked up by a
             // client whose QUIT is on its way: do not sleep on it.
-            sched.set_world_waiting( false );
-        } else {
-            // Somebody is reading a menu. Sleep until one of them comes back
-            // from their input wait, as a waiting turn does.
-            sched.wait_for_request( MP_POLL_MS, choosing );
-            sched.set_world_waiting( true );
+            return mp_join_progress::choosing;
         }
+        // Somebody is reading a menu. Sleep until one of them comes back from
+        // their input wait, as a waiting turn does. The declared wait spans the
+        // wait itself, exactly as in do_turn: a poll that lands inside
+        // wait_for_request() must already see the world waiting on purpose.
+        sched.set_world_waiting( true );
+        sched.wait_for_request( MP_POLL_MS, choosing );
+        sched.set_world_waiting( false );
         return mp_join_progress::choosing;
     }
     sched.set_world_waiting( false );

@@ -859,11 +859,6 @@ bool game::do_turn()
                     moved = true;
                 }
             }
-            if( moved ) {
-                // The world ran somebody, so it is accountable again: any stall
-                // from here on is a real one and the watchdog should say so.
-                sched->set_world_waiting( false );
-            }
             mp_sched_trace_phase( "poll-end" );
             if( !moved ) {
                 // Waiting turn: the loop above -- the sole authority on who owes
