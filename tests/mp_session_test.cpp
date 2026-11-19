@@ -235,6 +235,71 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
     }
 }
 
+// The overmap is the one heavy screen that outlives its input loop: with fast
+// travel it keeps a ui_adaptor alive while the turn runs, and two seats can
+// hold one open at once. That adaptor used to be a single game-wide shared_ptr,
+// so the first seat to close ran force_quit() and nulled the pointer under its
+// own ui stack. The other seat's next redraw then tripped draw()'s
+// `cata_assert( data.ui )` (on the retained fast-travel path, with no local
+// copy, ~ui_adaptor's owner == active_stack instead). The adaptor now belongs
+// to the player context, so closing one seat's map leaves the other's alone.
+TEST_CASE( "two_players_can_hold_the_overmap_open_at_once", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Both actionable: opening and reading the map costs no moves, so both
+    // stay live and each keeps their own overmap parked at its input wait.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 0, mp_menu_map.key );
+    harness.press( 1, mp_menu_map.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker ) &&
+               mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker );
+    } ) );
+
+    // Seat 1 closes its map. Seat 0 keeps reading, and further turns make its
+    // retained adaptor redraw under seat 0's own stack.
+    harness.press( 1, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker );
+    }, 20 ) );
+    // A key wakes seat 0's parked overmap loop, which redraws before reading
+    // it. The pre-fix build nulled the shared adaptor above, so this redraw is
+    // where the other seat notices.
+    harness.press( 0, KEY_RIGHT );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker ) );
+
+    // And the other order: seat 0 closes while seat 1 still has the map up.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker );
+    }, 20 ) );
+}
+
+// The teardown half of the same ownership question: a session can end while a
+// seat is still in the overmap, and its ui_adaptor must die under that seat's
+// stack rather than whichever stack the shutdown happens to run under.
+TEST_CASE( "a_session_can_end_with_the_overmap_open", "[mp]" )
+{
+    restore_active_state restore;
+    {
+        mp_session_harness harness( 2 );
+        g->player_at( 0 ).set_moves( 100 );
+        g->player_at( 1 ).set_moves( 100 );
+        harness.press( 0, mp_menu_map.key );
+        REQUIRE( harness.run_until( [&]() {
+            return mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker );
+        } ) );
+        // The harness destructor unwinds the session with seat 0 still inside
+        // display(). Reaching the end of this scope is the assertion.
+    }
+    SUCCEED( "teardown with an overmap open did not abort" );
+}
+
 TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
 {
     restore_active_state restore;

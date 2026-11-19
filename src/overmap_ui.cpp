@@ -1321,7 +1321,7 @@ tiles_redraw_info redraw_info;
 
 static void draw( overmap_draw_data_t &data )
 {
-    cata_assert( static_cast<bool>( data.ui ) );
+    cata_assert( static_cast<bool>( mp_active_overmap_ui() ) );
 #if defined( TILES )
     if( use_tiles && use_tiles_overmap ) {
         redraw_info = tiles_redraw_info { data.cursor_pos, uistate.overmap_show_overlays };
@@ -2085,8 +2085,8 @@ static tripoint_abs_omt display()
 
     background_pane bg_pane;
 
-    data.ui = std::make_shared<ui_adaptor>();
-    std::shared_ptr<ui_adaptor> ui = data.ui;
+    mp_active_overmap_ui() = std::make_shared<ui_adaptor>();
+    std::shared_ptr<ui_adaptor> ui = mp_active_overmap_ui();
 
     overmap_sidebar om_sidebar( data, ictxt );
 
@@ -2930,6 +2930,6 @@ void ui::omap::path_mark(
 void ui::omap::force_quit()
 {
     overmap_ui::generated_omts.clear();
-    g->overmap_data.ui = nullptr;
+    mp_active_overmap_ui() = nullptr;
     g->overmap_data.fast_traveling = false;
 }

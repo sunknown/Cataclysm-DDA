@@ -66,6 +66,13 @@ struct player_context {
     // owner == active_stack), which one `game`-wide live_view could not honour:
     // one player's key destroyed the hint another player had opened.
     std::unique_ptr<live_view> liveview; // NOLINT(cata-serialize)
+    // This player's retained overmap ui_adaptor: fast travel keeps the map up
+    // across turns. Per player for the same reason as liveview above --
+    // ~ui_adaptor asserts it dies under the stack it registered in -- and
+    // because one game-wide shared_ptr let the first seat to close its map
+    // null the pointer the other seat's retained redraw asserts on. Access
+    // through mp_active_overmap_ui() below.
+    std::shared_ptr<ui_adaptor> overmap_ui; // NOLINT(cata-serialize)
 
     // This player's character-creator menu state (newcharacter.cpp's
     // cc_uistate). It is per player for the same reason everything else here
@@ -143,6 +150,10 @@ player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for r
 // context's ui stack and is destroyed there, so no other player's key can
 // close it.
 live_view &mp_active_live_view();
+// The active player's retained overmap ui_adaptor. Falls back to the game's
+// overmap_data.ui when no context is installed, which keeps single-player and
+// non-session callers (and tests that never build a context) working.
+std::shared_ptr<ui_adaptor> &mp_active_overmap_ui();
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
 void mp_apply_viewport_params( const player_context &ctx );
