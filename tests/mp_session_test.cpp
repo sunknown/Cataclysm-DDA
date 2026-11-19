@@ -1611,13 +1611,19 @@ static long long process_cpu_us()
 // F1 guard: with one seat dropped and the other simply sitting at the map, the
 // baton must not be handed around faster than the remaining player's own input
 // polling produces. Measurement on 2026-11-19 (rng-seed 1): 1400 driven turns
-// took 58.0 s and produced 934 handoffs -- at most 2 per turn, mean 0.67, every
-// one of them to the connected seat -- while the process spent 140 ms of CPU,
-// i.e. 0.24% of one core. Two handoffs (one release_to + one yield_to) is one
-// input poll cycle, and the idle player's map loop polls every 125 ms
-// (handle_action.cpp:334,468): 934 / 2 / 58.0 s = one cycle per 124 ms. That is
-// the designed waiting path, not a spin, so the bound below is per turn rather
-// than a rate and does not depend on how fast the machine is.
+// took 58.0 s and produced 934 handoffs -- at most 2 per turn, mean 0.67, and
+// the sampled trace ring names only the connected seat -- while the process
+// spent 140 ms of CPU, i.e. 0.24% of one core. Two handoffs (one release_to +
+// one yield_to) is one input poll cycle, and the idle player's map loop polls
+// every 125 ms (handle_action.cpp:334,468): 934 / 2 / 58.0 s = one cycle per
+// 124 ms. That is the designed waiting path, not a spin.
+//
+// Two bounds, because they see different regressions. The per-turn count does
+// not depend on machine speed and catches an intra-turn busy loop, but it
+// cannot see the input poll itself get faster: halving the poll to 62 ms would
+// keep 2 handoffs per turn and double the rate. The cycle-time lower bound
+// pins the rate the spec caps (one cycle per input timeout, with 20% slack for
+// a slow machine); CPU pins that the waiting path sleeps rather than spins.
 TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
 {
     restore_active_state restore;
@@ -1706,11 +1712,27 @@ TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
     WARN( "idle handoffs by destination: " << holders );
 
     INFO( "handoffs=" << delta << " over " << turns << " turns, max_per_turn="
-          << max_per_turn );
+          << max_per_turn << " elapsed_ms=" << elapsed_ms );
     CHECK( max_per_turn <= handoffs_per_turn_bound );
     CHECK( delta <= handoffs_per_turn_bound * static_cast<size_t>( turns ) );
-    // The dropped seat is not the one being woken: every grant in the sampled
-    // ring names the connected seat.
+    // Each complete cycle is 2 handoffs and is gated by the idle seat's 125 ms
+    // input poll. 100 ms per cycle leaves the poll 20% of slack and is a lower
+    // bound only, so a slow or loaded machine raises elapsed_ms and stays
+    // green; only a faster poll (or a cycle that stopped waiting) fails. A
+    // per-turn count cannot see that: the same 2 handoffs per turn at a 62 ms
+    // poll is twice the rate.
+    if( delta >= 4 ) {
+        CHECK( elapsed_ms >= 100 * static_cast<long long>( delta / 2 ) );
+    }
+    // The waiting path sleeps: measured 0.24% of one core. Under 50% still
+    // separates "a blocking input wait" from any spin by two orders of
+    // magnitude. The probe is Linux-only and report-only otherwise; on a
+    // platform without it both samples are -1 and the check is skipped.
+    if( cpu0 >= 0 && cpu1 >= 0 && elapsed_ms > 0 ) {
+        CHECK( ( cpu1 - cpu0 ) * 2 < elapsed_ms * 1000 );
+    }
+    // The dropped seat is not the one being woken: every handoff in the sampled
+    // ring names the connected seat (the ring is a tail sample, see above).
     CHECK( grants_to_disconnected == 0 );
 }
 
