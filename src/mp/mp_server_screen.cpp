@@ -54,10 +54,11 @@ bool mp_server_peer_connected()
     }
     for( const std::unique_ptr<mp_session> &s : mp_sessions() ) {
         if( !s || !s->transport || !s->transport->connected() ) {
-            // The roster is fixed: one player leaving ends the session for
-            // everybody. Keeping the others playing would mean parking the
-            // absent context and handing their character to the AI, which is
-            // Phase 5's job, not a half-version of it here.
+            // Whole-roster answer: true only while every seat's wire is up. A
+            // player leaving no longer ends the session -- that seat is marked
+            // disconnected and play continues -- so the caller pairs this with
+            // the active seat's own session rather than reading false as its
+            // own loss.
             return false;
         }
     }

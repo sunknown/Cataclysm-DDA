@@ -4,6 +4,7 @@
 
 #include "avatar.h"
 #include "color.h"
+#include "coordinates.h"
 #include "cursesdef.h"
 #include "enums.h"
 #include "filesystem.h"
@@ -100,6 +101,14 @@ static bool settle_name( avatar &ava )
 mp_join_choice mp_run_join_menu( const std::string &card_save_id )
 {
     avatar &ava = get_avatar();
+    // A replacement seat enters this menu standing where its character fell.
+    // Every reset below builds a blank avatar, whose Creature constructor puts
+    // it at the invalid sentinel; left there, a living unplaced seat poisons
+    // mp_bubble_anchor() -- and so the map centre and z -- and any other
+    // seat's replacement anchor. Keep the position across the resets. The join
+    // phase starts at the sentinel with nothing legal to keep, and no world is
+    // ticking there to consume it.
+    const tripoint_abs_ms last_pos = ava.pos_abs();
     enum { NEW_CUSTOM, NEW_PRESET, NEW_RANDOM, CONTINUE, SETTINGS, HELP, QUIT };
 
     while( true ) {
@@ -145,10 +154,12 @@ mp_join_choice mp_run_join_menu( const std::string &card_save_id )
                 // Into a blank avatar, so nothing of an earlier attempt or of
                 // the empty slot survives into the character.
                 ava = avatar();
+                ava.set_pos_abs_only( last_pos );
                 if( !ava.create( type, tmpl ) || !settle_name( ava ) ) {
                     // Backed out. Back to the menu, not into the session with a
                     // half-built character.
                     ava = avatar();
+                    ava.set_pos_abs_only( last_pos );
                     continue;
                 }
                 choice.decision = mp_join_choice::kind::created;

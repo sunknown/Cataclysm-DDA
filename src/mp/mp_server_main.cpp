@@ -643,7 +643,9 @@ void mp_run_replacement_menu( const size_t slot )
         }
         // Anchor on somebody still playing. The corpse is not a place to put
         // the replacement; an away player is still at their terminal, so they
-        // count, while a disconnected seat has nobody to anchor to.
+        // count, while a disconnected seat has nobody to anchor to. A seat in
+        // its creator counts too: mp_run_join_menu() keeps it on its dead
+        // character's tile, so it is as good an anchor as any living one.
         std::optional<tripoint_abs_ms> anchor;
         for( size_t i = 0; i < g->player_slot_count() && !anchor; ++i ) {
             if( i == slot || g->player_at( i ).is_dead_state() ||
@@ -1096,11 +1098,9 @@ void mp_run_player_thread( mp_sched &sched, const size_t slot )
             mp_assert_holds( slot );
             mp_activate_player( slot );
             // The creator draws its own screen; the main game screen must not
-            // be underneath it, exactly as during the join phase. It also
-            // draws the map around the active avatar, and creation resets that
-            // avatar to the invalid sentinel position before the character is
-            // placed -- a main screen left registered here would try to draw
-            // the map at that position. The next player_act() recreates it.
+            // be underneath it, exactly as during the join phase: the menu and
+            // the creator own the terminal until the seat has a placed
+            // character. The next player_act() recreates it.
             main_ui.reset();
             mp_run_replacement_menu( slot );
             if( sched.unwind_if_stopping( slot ) ) {

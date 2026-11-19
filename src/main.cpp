@@ -467,7 +467,8 @@ cli_opts parse_commandline( int argc, const char **argv )
             {
                 "--players", "<count>",
                 "How many clients the multiplayer server waits for before starting. "
-                "The roster is fixed: nobody joins or leaves once play begins.",
+                "The number of seats is fixed: a player who leaves frees a seat for "
+                "someone else to take, but no seat is added or removed.",
                 section_default,
                 0,
                 [&result]( int argc, const char **params ) -> int {

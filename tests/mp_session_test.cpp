@@ -18,6 +18,7 @@
 #include "game_test_helper.h"
 #include "input.h"
 #include "item.h"
+#include "line.h"
 #include "mp_session_harness.h"
 #include "map.h"
 #include "map_helpers.h"
@@ -29,6 +30,7 @@
 #include "mp/mp_sched.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
+#include "mp/mp_tether.h"
 #include "mp/mp_turn.h"
 #include "overmapbuffer.h"
 #include "overmap.h"
@@ -492,6 +494,81 @@ TEST_CASE( "a_death_opens_a_replacement_instead_of_ending_the_session", "[mp]" )
     // A placed replacement is a fresh character: the seat's corpse fact must
     // not make its next death skip the corpse.
     CHECK_FALSE( mp_player_corpse_placed( victim ) );
+}
+
+TEST_CASE( "an_unplaced_replacement_keeps_the_dead_character_s_tile", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const size_t victim = 1;
+    const tripoint_abs_ms dead_pos = g->player_at( victim ).pos_abs();
+    const tripoint_abs_ms partner = g->player_at( 0 ).pos_abs();
+    g->player_at( victim ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    REQUIRE( harness.run_until( [victim]() {
+        return mp_player_needs_replacement( victim );
+    }, 3 ) );
+
+    // Open the creator but do not finish it. The reset that builds the blank
+    // avatar must leave it on the character's last legal tile, not on the
+    // invalid sentinel Creature's constructor uses.
+    harness.press( victim, 'r' );
+    REQUIRE( harness.run_until( [victim]() {
+        return !g->player_at( victim ).is_dead_state() &&
+               mp_player_holds_barrier( victim );
+    }, 20 ) );
+    CHECK( g->player_at( victim ).pos_abs() == dead_pos );
+
+    // The client leaves while the creator is still open. The creator unwinds,
+    // the menu's back-out reset runs, and the seat is marked disconnected:
+    // alive, blank, and -- without the position kept across the reset -- at the
+    // sentinel the next closed turn would average into the bubble anchor.
+    harness.drop_client( victim );
+    REQUIRE( harness.run_until( [victim]() {
+        return mp_player_is_disconnected( victim ) &&
+               !mp_player_holds_barrier( victim );
+    }, 40 ) );
+    CHECK_FALSE( g->player_at( victim ).is_dead_state() );
+    CHECK( g->player_at( victim ).pos_abs() == dead_pos );
+
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    // Both living seats still count towards the anchor, so it is the midpoint
+    // of their legal tiles. Averaging in the sentinel moves it by thousands of
+    // tiles and off the map.
+    const tripoint_abs_ms expected( ( partner.x() + dead_pos.x() ) / 2,
+                                    ( partner.y() + dead_pos.y() ) / 2,
+                                    partner.z() );
+    CHECK( mp_bubble_anchor() == expected );
+}
+
+TEST_CASE( "a_second_replacement_anchors_on_a_seat_mid_creation", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 3 );
+    const tripoint_abs_ms first_dead = g->player_at( 0 ).pos_abs();
+    g->player_at( 0 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    g->player_at( 2 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_needs_replacement( 0 ) && mp_player_needs_replacement( 2 );
+    }, 5 ) );
+
+    // P0 is in its creator, alive and unplaced. Its seat is the first one the
+    // anchor loop sees, and it now stands on the tile its dead character held,
+    // not on the sentinel where every candidate tile is rejected.
+    harness.press( 0, 'r' );
+    REQUIRE( harness.run_until( []() {
+        return !g->player_at( 0 ).is_dead_state() &&
+               mp_player_holds_barrier( 0 );
+    }, 20 ) );
+    REQUIRE( g->player_at( 0 ).pos_abs() == first_dead );
+
+    harness.choose_random_character( 2 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_player_needs_replacement( 2 ) &&
+               !g->player_at( 2 ).is_dead_state();
+    }, 60 ) );
+    CHECK( rl_dist( g->player_at( 2 ).pos_abs(), first_dead ) <= MP_TETHER_SOFT_LIMIT );
 }
 
 TEST_CASE( "the_session_does_not_end_when_the_last_character_dies", "[mp]" )

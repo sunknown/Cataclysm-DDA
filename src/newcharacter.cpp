@@ -458,7 +458,12 @@ void Character::randomize( const bool random_scenario, bool play_now )
     const int max_trait_points = get_option<int>( "MAX_TRAIT_POINTS" );
     // Reset everything to the defaults to have a clean state.
     if( is_avatar() ) {
+        // A re-roll must not move the avatar: in co-op this runs on a seat whose
+        // replacement already stands on a legal tile, and the blank avatar's
+        // invalid sentinel would poison the bubble anchor.
+        const tripoint_abs_ms old_pos = pos_abs();
         *this->as_avatar() = avatar();
+        set_pos_abs_only( old_pos );
     }
 
     bool gender_selection = one_in( 2 );
