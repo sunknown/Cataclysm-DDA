@@ -776,6 +776,7 @@ bool game::do_turn()
         // closing it -- the calendar stays frozen until every living player has
         // acted or been dropped by the hurry countdown.
         mp_activate_world();
+        mp_sched_trace_phase( "turn-start" );
 #if defined(MP_SERVER)
         // A client that dropped may come back: its seat is parked, and the
         // listener is polled by the world once per turn. Non-blocking, and a
@@ -822,6 +823,7 @@ bool game::do_turn()
         // mp_turn_all_away: with every living player away there is nobody to
         // wait for and nobody to pace, and the world must not move either.
         while( !mp_barrier_satisfied() || mp_turn_paced() || mp_turn_all_away() ) {
+            mp_sched_trace_phase( "poll-begin" );
             mp_tick_hurry();
             bool moved = false;
             std::vector<bool> owes_turn( player_slot_count(), false );
@@ -862,6 +864,7 @@ bool game::do_turn()
                 // from here on is a real one and the watchdog should say so.
                 sched->set_world_waiting( false );
             }
+            mp_sched_trace_phase( "poll-end" );
             if( !moved ) {
                 // Waiting turn: the loop above -- the sole authority on who owes
                 // the turn -- found nobody both parked and actionable. Sleep out
@@ -875,6 +878,7 @@ bool game::do_turn()
                 // reading a menu does not log as a stalled participant.
                 sched->wait_for_request( MP_POLL_MS, owes_turn );
                 sched->set_world_waiting( true );
+                mp_sched_trace_phase( "park" );
                 return false;
             }
             if( mp_session_end_requested() ) {
@@ -885,6 +889,7 @@ bool game::do_turn()
         }
         sched->set_world_waiting( false );
         mp_activate_world();
+        mp_sched_trace_phase( "tail-begin" );
         world_turn_post();
 
         // Standing still is what being dropped means, and it has to be charged
@@ -909,6 +914,7 @@ bool game::do_turn()
             }
         }
         mp_set_turn_open( false );
+        mp_sched_trace_phase( "tail-end" );
 #if defined(EMSCRIPTEN)
         // This will cause a prompt to be shown if the window is closed, until the
         // game is saved.

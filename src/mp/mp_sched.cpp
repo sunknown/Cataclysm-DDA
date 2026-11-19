@@ -18,6 +18,10 @@ namespace
 // default (sequentially consistent) ordering avoids inventing a weaker one
 // that would need its own separate justification.
 std::atomic<mp_sched *> g_active_sched{ nullptr };
+
+// How many trace records trace_ keeps; the oldest is dropped first. Enough to
+// cover several watchdog polls, small enough that the ring's cost is noise.
+constexpr size_t trace_capacity = 256;
 } // namespace
 
 mp_sched::mp_sched( const size_t players ) : players_( players ),
@@ -45,6 +49,8 @@ void mp_sched::yield_to( const size_t from, const size_t to )
     std::unique_lock<std::mutex> lock( mutex_ );
     cata_assert( holder_ == from );
     holder_ = to;
+    ++holder_generation_;
+    const std::string entry = record_trace_locked( "yield_to" );
     if( from != world ) {
         // The caller is now parked waiting for the baton back. Flag first,
         // notify second, exactly as in wait_for_turn: the two orders are
@@ -65,6 +71,8 @@ void mp_sched::yield_to( const size_t from, const size_t to )
     // observe parked_ == 0 -- is what makes that wait meaningful.
     --parked_;
     cv_.notify_all();
+    lock.unlock();
+    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
 }
 
 void mp_sched::wait_for_turn( const size_t who )
@@ -92,10 +100,18 @@ void mp_sched::wait_for_turn( const size_t who )
 void mp_sched::release_to( const size_t from, const size_t to )
 {
     check_target( to );
-    std::lock_guard<std::mutex> lock( mutex_ );
-    cata_assert( holder_ == from );
-    holder_ = to;
-    cv_.notify_all();
+    std::string entry;
+    {
+        std::lock_guard<std::mutex> lock( mutex_ );
+        cata_assert( holder_ == from );
+        holder_ = to;
+        ++holder_generation_;
+        entry = record_trace_locked( "release_to" );
+        cv_.notify_all();
+    }
+    // Outside the lock: DebugLog does file I/O, and no caller may wait on the
+    // scheduler's mutex for it.
+    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
 }
 
 bool mp_sched::waiting_for_baton( const size_t who ) const
@@ -178,6 +194,50 @@ size_t mp_sched::holder() const
 {
     std::lock_guard<std::mutex> lock( mutex_ );
     return holder_;
+}
+
+size_t mp_sched::holder_generation() const
+{
+    std::lock_guard<std::mutex> lock( mutex_ );
+    return holder_generation_;
+}
+
+std::vector<std::string> mp_sched::trace_snapshot() const
+{
+    std::lock_guard<std::mutex> lock( mutex_ );
+    return std::vector<std::string>( trace_.begin(), trace_.end() );
+}
+
+// Caller holds mutex_.
+std::string mp_sched::record_trace_locked( const char *reason )
+{
+    std::string entry = std::to_string( holder_generation_ );
+    entry += ' ';
+    entry += holder_ == world ? std::string( "world" ) : std::to_string( holder_ );
+    entry += ' ';
+    entry += reason;
+    trace_.push_back( entry );
+    if( trace_.size() > trace_capacity ) {
+        trace_.pop_front();
+    }
+    return entry;
+}
+
+void mp_sched::trace_phase( const char *phase )
+{
+    std::string entry;
+    {
+        std::lock_guard<std::mutex> lock( mutex_ );
+        entry = record_trace_locked( phase );
+    }
+    DebugLog( D_INFO, D_MAIN ) << "mp sched trace: " << entry;
+}
+
+void mp_sched_trace_phase( const char *phase )
+{
+    if( mp_sched *const sched = mp_active_sched() ) {
+        sched->trace_phase( phase );
+    }
 }
 
 bool mp_sched::holds( const size_t who ) const

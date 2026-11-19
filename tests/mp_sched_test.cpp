@@ -306,6 +306,25 @@ TEST_CASE( "shut_down_does_not_return_until_a_parked_waiter_has_left", "[mp]" )
     SUCCEED( "every destructor returned only after its parked waiter had left" );
 }
 
+TEST_CASE( "a_baton_handoff_is_traced_with_its_generation", "[mp]" )
+{
+    mp_sched sched( 2 );
+    mp_set_active_sched( &sched );
+    const size_t gen0 = sched.holder_generation();
+
+    sched.release_to( mp_sched::world, 1 );
+    CHECK( sched.holder_generation() == gen0 + 1 );
+    mp_sched_trace_phase( "turn-start" );
+
+    const std::vector<std::string> trace = sched.trace_snapshot();
+    REQUIRE( trace.size() >= 2 );
+    CHECK( trace.back().find( "turn-start" ) != std::string::npos );
+
+    sched.release_to( 1, mp_sched::world );
+    CHECK( sched.holder_generation() == gen0 + 2 );
+    mp_set_active_sched( nullptr );
+}
+
 TEST_CASE( "the_watchdog_reports_a_stall_once_not_repeatedly", "[mp]" )
 {
     // Finding 4: nothing exercised the watchdog before this. threshold_ms is

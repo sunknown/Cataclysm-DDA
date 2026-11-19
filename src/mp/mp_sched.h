@@ -5,7 +5,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -61,6 +63,21 @@ class mp_sched
 
         // Who holds the baton right now.
         size_t holder() const;
+
+        // Monotonic count of baton handoffs. Incremented under mutex_ wherever
+        // holder_ changes (release_to and the handoff half of yield_to), so a
+        // watcher that samples this sees every handoff even when two samples
+        // find the same holder: the watchdog uses it to tell "the holder never
+        // changed" from "the holder changed and came back between my polls".
+        size_t holder_generation() const;
+
+        // Up to the last 256 trace records, oldest first, each formatted
+        // "<generation> <holder> <reason>" with holder "world" or a slot
+        // number. Written under mutex_ at every handoff and by
+        // mp_sched_trace_phase(). Test-visible so a test can prove what the
+        // watchdog sampled without scraping DebugLog; every record is also
+        // mirrored there as "mp sched trace: ..." for a manual run.
+        std::vector<std::string> trace_snapshot() const;
 
         // Whether the calling thread is the current holder. The debug assert
         // "only the holder runs" is written in terms of this.
@@ -227,10 +244,26 @@ class mp_sched
         // index nobody waits on parks it forever.
         void check_target( size_t to ) const;
 
+        // Appends "<generation> <holder> <reason>" to trace_ and returns it.
+        // The caller holds mutex_; the return value lets it emit the DebugLog
+        // mirror after unlocking, so no I/O happens under the scheduler lock.
+        std::string record_trace_locked( const char *reason );
+
+        // record_trace_locked() under the lock, then the DebugLog mirror.
+        void trace_phase( const char *phase );
+
+        friend void mp_sched_trace_phase( const char *phase );
+
         mutable std::mutex mutex_;
         std::condition_variable cv_;
         size_t players_ = 0;
         size_t holder_ = world;
+        // Incremented under mutex_ with every assignment to holder_; see
+        // holder_generation().
+        size_t holder_generation_ = 0;
+        // Ring of the last 256 trace records; see trace_snapshot(). Written
+        // only under mutex_; read by tests and by the DebugLog mirror.
+        std::deque<std::string> trace_;
         bool stopping_ = false;
         bool world_waiting_ = false;
         // Per-participant "parked on wait_for_turn / the resume half of
@@ -335,6 +368,11 @@ bool mp_seat_released();
 // apart. The world's own menus are answered for by mp_input_must_not_wait()
 // instead and are not unwound: the world has no seat to lose.
 bool mp_menu_must_unwind();
+
+// Records one world-phase marker in the active scheduler's trace, when there is
+// one. A no-op in single player. Used by do_turn() to name what the world was
+// doing while it held the baton, so a watchdog report can be read against it.
+void mp_sched_trace_phase( const char *phase );
 
 // Starts the watchdog thread owned by `sched`. It logs the current holder
 // whenever the baton has not moved for longer than `threshold_ms`, then keeps
