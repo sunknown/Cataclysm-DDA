@@ -1906,6 +1906,11 @@ TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
         REQUIRE( harness.run_until( [turn_before]() {
             return to_turn<int>( calendar::turn ) > turn_before;
         } ) );
+        // The calendar moving only proves the barrier let seat 1 act. The pin is
+        // only real if seat 0 is still parked in the pick selector when the
+        // hotkey is delivered: otherwise the press lands on the map screen and
+        // the test goes green while reproducing nothing.
+        CHECK( inventory_is_open() );
         // The hotkey lookup is the frame that dereferenced the stale location.
         harness.press( 0, 'a' );
         harness.run_until( []() {
