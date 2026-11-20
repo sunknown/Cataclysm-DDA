@@ -190,7 +190,7 @@ std::shared_ptr<ui_adaptor> &mp_active_overmap_ui()
     if( player_context *ctx = mp_active_context_ptr() ) {
         return ctx->overmap_ui;
     }
-    // No context installed: single-player and non-session callers keep the
+    // No context installed: callers that never install one (tests) keep the
     // adaptor on the game, as before.
     return g->overmap_data.ui;
 }

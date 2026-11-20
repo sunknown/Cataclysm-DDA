@@ -151,9 +151,9 @@ player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for r
 // close it.
 live_view &mp_active_live_view();
 // The active player's retained overmap ui_adaptor. Falls back to the game's
-// overmap_data.ui when no context is installed: single-player installs
-// contexts[0] and uses the context path, so the fallback serves callers that
-// run before or without one (the main menu, tests that never install one).
+// overmap_data.ui when no context is installed. Single-player installs
+// contexts[0] and uses the context path, so the fallback serves only callers
+// that never install a context (tests).
 std::shared_ptr<ui_adaptor> &mp_active_overmap_ui();
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
