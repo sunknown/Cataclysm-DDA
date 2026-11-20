@@ -15,6 +15,7 @@
 #include "enums.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "lightmap.h"
 #include "map.h"
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
@@ -233,8 +234,21 @@ TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )
     stand_on_a_cleared_map();
     map &here = get_map();
     avatar &you = get_avatar_legacy();
-    // Night plus the boomer effect turns the whole outdoors into BOOMER_DARK,
-    // the class that must carry terrain only.
+    you.clear_map_memory();
+
+    // First remember a floor tile; then replace it with a wall in the map. The
+    // scene must keep sending the remembered floor, never the wall the player
+    // cannot see. Night plus the boomer effect puts the tile in the
+    // BOOMER_DARK class, which must carry terrain only.
+    const tripoint_bub_ms centre = you.pos_bub();
+    const tripoint_bub_ms target = centre + tripoint_rel_ms( 2, 0, 0 );
+    here.ter_set( target, ter_id( "t_floor" ) );
+    set_time_to_day();
+    refresh_visibility( 0 );
+    mp_scene_build( target, 21, 21, 1 );
+    REQUIRE( you.has_memory_at( here.get_abs( target ) ) );
+
+    here.ter_set( target, ter_id( "t_wall" ) );
     set_time( calendar::turn_zero );
     you.add_effect( effect_boomered, 1_hours );
     on_out_of_scope remove_boomered( [&]() {
@@ -242,12 +256,16 @@ TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )
     } );
     refresh_visibility( 0 );
 
-    const tripoint_bub_ms centre = you.pos_bub();
+    auto &vis_cache = here.access_cache( 0 ).visibility_cache;
+    const visibility_variables &cache = here.get_visibility_variables_cache();
+    // Pin the target's class: ambient light next to the avatar varies with the
+    // test world, but extraction must treat a DARK tile while boomered as
+    // BOOMER_DARK regardless of how dark it actually got.
+    vis_cache[target.x()][target.y()] = lit_level::DARK;
+
     const mp_scene scene = mp_scene_build( centre, 21, 21, 1 );
     REQUIRE( scene.levels.size() == 1 );
     const mp_scene_level &level = scene.levels[0];
-    const visibility_variables &cache = here.get_visibility_variables_cache();
-    const auto &vis_cache = here.access_cache( 0 ).visibility_cache;
 
     size_t boomer_tiles = 0;
     for( int y = 0; y < scene.tiles_h; ++y ) {
@@ -267,6 +285,19 @@ TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )
         }
     }
     CHECK( boomer_tiles > 0 );
+
+    // The target is the wallhack case: the real terrain is a wall the player
+    // has never seen, so only the remembered floor may be sent.
+    const int target_x = target.x() - ( centre.x() + scene.view_dx );
+    const int target_y = target.y() - ( centre.y() + scene.view_dy );
+    const visibility_type target_vis =
+        here.get_visibility( vis_cache[target.x()][target.y()], cache );
+    CHECK( ( target_vis == visibility_type::BOOMER ||
+             target_vis == visibility_type::BOOMER_DARK ) );
+    const mp_scene_terrain_run *target_run = run_at( scene, level, target_x, target_y );
+    REQUIRE( target_run != nullptr );
+    CHECK( target_run->flags == 0 );
+    CHECK( id_at( scene, target_run->terrain_idx ) == "t_floor" );
 
     // The vision-effect classes carry no overlay entry in any layer.
     CHECK( level.furniture.empty() );

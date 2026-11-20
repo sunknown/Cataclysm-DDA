@@ -179,6 +179,10 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
                             you.get_memorized_tile( here.get_abs( p ) );
                         terrain_idx = dictionary.add( memory.get_ter_id() );
                         flags = terrain_memorized;
+                        // The wire model has no decoration block, so a
+                        // memorized decoration rides the furniture vector.
+                        // Task 3 writes real furniture only in the CLEAR
+                        // branch, so the two never collide on a cell.
                         const uint16_t decoration_idx = dictionary.add( memory.get_dec_id() );
                         if( decoration_idx != 0 ) {
                             level.furniture.push_back( mp_scene_point_id{
@@ -188,12 +192,15 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
                         }
                         break;
                     }
-                    // Only the `#` indicator is drawn for these, so no layer
-                    // information is revealed; the terrain shape remains.
+                    // The text renderer draws only the `#` indicator for these
+                    // and never reads the map terrain, so sending the actual
+                    // terrain id would be a wallhack. Only remembered knowledge
+                    // may be sent; an unseen tile carries index 0.
                     case visibility_type::LIT:
                     case visibility_type::BOOMER:
                     case visibility_type::BOOMER_DARK:
-                        terrain_idx = dictionary.add( here.ter( p ).id().str() );
+                        terrain_idx = dictionary.add(
+                                         you.get_memorized_tile( here.get_abs( p ) ).get_ter_id() );
                         break;
                 }
 
