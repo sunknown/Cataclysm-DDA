@@ -91,6 +91,46 @@ TEST_CASE( "view_state_written_under_one_context_is_invisible_to_another", "[mp]
     CHECK( mp_active_context().driving_view_offset == point_rel_ms( 1, 2 ) );
 }
 
+TEST_CASE( "each_context_keeps_its_own_overmap_view", "[mp]" )
+{
+    restore_active_context restore;
+    player_context a;
+    player_context b;
+
+    const tripoint_abs_omt default_origin( -1, -1, -1 );
+    const point_omt_ms default_remainder( SEEX, SEEY );
+
+    mp_set_active_context( &a );
+    overmap_view_state &view_a = mp_active_overmap_view();
+    // A fresh context starts from the defaults the shared struct used to have.
+    CHECK( view_a.origin_pos == default_origin );
+    CHECK( view_a.origin_remainder == default_remainder );
+    CHECK( view_a.cursor_pos == default_origin );
+
+    const tripoint_abs_omt a_origin( 10, 20, 0 );
+    const point_omt_ms a_remainder( 3, 4 );
+    const tripoint_abs_omt a_cursor( 11, 21, 0 );
+    view_a.origin_pos = a_origin;
+    view_a.origin_remainder = a_remainder;
+    view_a.cursor_pos = a_cursor;
+
+    mp_set_active_context( &b );
+    overmap_view_state &view_b = mp_active_overmap_view();
+    // Activating another seat must not carry seat A's view across.
+    CHECK( view_b.origin_pos == default_origin );
+    CHECK( view_b.origin_remainder == default_remainder );
+    CHECK( view_b.cursor_pos == default_origin );
+    CHECK( view_b.cursor_pos != a_cursor );
+    view_b.origin_pos = tripoint_abs_omt( 30, 40, 0 );
+    view_b.cursor_pos = tripoint_abs_omt( 31, 41, 0 );
+
+    // And seat A's view survived while B wrote its own.
+    mp_set_active_context( &a );
+    CHECK( mp_active_overmap_view().origin_pos == a_origin );
+    CHECK( mp_active_overmap_view().origin_remainder == a_remainder );
+    CHECK( mp_active_overmap_view().cursor_pos == a_cursor );
+}
+
 TEST_CASE( "ui_adaptors_register_into_the_active_stack", "[mp]" )
 {
     restore_active_state restore;
