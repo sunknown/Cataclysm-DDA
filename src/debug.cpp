@@ -805,6 +805,14 @@ std::ostream &DebugFile::get_file()
     return *file;
 }
 
+bool ensure_debug_log_parent( const cata_path &file )
+{
+    // A fresh --userdir has no config directory yet and std::ofstream does not
+    // create missing parents, so the open would fail and the process would log
+    // nothing at all. Create the directory before opening the file.
+    return assure_dir_exist( file.parent_path() );
+}
+
 void DebugFile::init( DebugOutput output_mode, const cata_path &filename )
 {
     std::shared_ptr<std::ostringstream> str_buffer = std::dynamic_pointer_cast<std::ostringstream>
@@ -818,6 +826,7 @@ void DebugFile::init( DebugOutput output_mode, const cata_path &filename )
             break;
         case DebugOutput::file: {
             this->filename = filename;
+            ensure_debug_log_parent( filename );
             // Continue with the old log file if it's smaller than 1 MiB
             namespace fs = std::filesystem;
             if( fs::exists( fs::path( filename ) )
