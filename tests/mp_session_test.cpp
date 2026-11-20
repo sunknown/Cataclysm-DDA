@@ -2138,4 +2138,98 @@ TEST_CASE( "a_dead_row_is_not_replaced_under_the_filter_prompt", "[mp]" )
     }, 20 ) );
 }
 
+// The compare selector kept its selection as raw item pointers. An item on the
+// map is not an avatar member, so a partner's turn that removes it frees the
+// object instead of leaving a moved-from copy behind: the pointer really
+// dangles, and it used to be handed straight to compare_item_menu once a second
+// item was marked. The selection has to be held as item_location and the dead
+// one dropped by the post-wait prune.
+TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Both live items are worn: inventory list nodes survive the avatar swap that
+    // ends the partner's turn, unlike the wielded item's direct member. The map
+    // rock is then the only selection that can expire under the menu.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "socks" ) ), false ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    // The rock sits on the partner's tile: adjacent to seat 0, so the compare
+    // menu's nearby-items pass lists it, and on the tile the partner's turn can
+    // remove it from.
+    g->player_at( 1 ).setpos( get_map(),
+                              g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 1, 0, 0 ) );
+    const tripoint_bub_ms rock_pos = g->player_at( 1 ).pos_bub();
+    get_map().add_item_or_charges( rock_pos, item( itype_id( "rock" ) ) );
+
+    const auto compare_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "ITEMS TO COMPARE" );
+    };
+    // The item row and the selection pane both render the marked item's name, on
+    // the same screen row when the columns fit side by side, so count occurrences.
+    const auto rock_cells = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        int hits = 0;
+        for( int y = 0; y < grid.height(); ++y ) {
+            std::string row;
+            for( int x = 0; x < grid.width(); ++x ) {
+                row += grid.at( x, y ).ch;
+            }
+            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
+                 pos = row.find( "rock", pos + 1 ) ) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    harness.press( 0, 'I' );
+    REQUIRE( harness.run_until( compare_is_open ) );
+
+    // At this terminal width the columns are merged into one, and the map item
+    // is added after the character's gear, so it is the last row. Mark it.
+    harness.press( 0, KEY_END );
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return rock_cells() == 2;
+    }, 20 ) );
+
+    // A pickup would move the rock into an inventory and destroy it at the old
+    // address just the same, so clearing the tile is the partner's turn as far
+    // as the saved location is concerned: it expires while the menu waits.
+    get_map().i_clear( rock_pos );
+    REQUIRE( take_a_partner_turn( harness ) );
+    CHECK( compare_is_open() );
+
+    // Mark one of the live items. The dead rock must already be gone from the
+    // selection; a raw pointer kept across the wait would complete the pair
+    // here and open the comparison window instead. The first key after the
+    // wait is also the one that runs the prune, so it only sets the highlight.
+    harness.press( 0, KEY_HOME );
+    harness.press( 0, 'l' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( compare_is_open() );
+
+    // A second live item completes a live pair, which does open the comparison.
+    harness.press( 0, KEY_END );
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return !compare_is_open();
+    }, 20 ) );
+
+    // Close the comparison; the compare selector reopens, so Escape twice returns
+    // to the main screen. Reaching it proves the pair was usable and the server
+    // survived the case.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( compare_is_open, 20 ) );
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !compare_is_open();
+    }, 20 ) );
+}
+
 #endif // MP_SERVER
