@@ -19,6 +19,9 @@ constexpr int MP_PROTOCOL_VERSION = 2;
 enum class mp_msg_kind : uint8_t {
     control = 1,
     screen = 2,
+    // A full 3D scene frame. Sent only to clients that negotiated `caps` bit0;
+    // the server itself never receives one.
+    scene = 3,
 };
 
 std::vector<uint8_t> mp_wrap( mp_msg_kind kind, const std::vector<uint8_t> &body );
@@ -50,6 +53,12 @@ struct mp_hello {
     int width = 0;
     int height = 0;
     bool colors_256 = false;
+    // Capability bits; bit0 asks for the 3D scene stream. Absent means 0, so an
+    // old text client is served exactly as before.
+    uint32_t caps = 0;
+    // Requested encoded z-levels, 1..10. Absent means 10; the parser clamps out
+    // of range requests rather than refusing the client.
+    uint8_t z_levels = 10;
 };
 
 struct mp_hello_ack {

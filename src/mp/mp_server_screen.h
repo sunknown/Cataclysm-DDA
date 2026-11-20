@@ -44,7 +44,14 @@ void mp_server_set_cursor( int x, int y, bool visible );
 
 // Encodes and sends the dirty rows and the cursor, then clears the dirty
 // flags. Does nothing when nothing changed or no session/transport is active.
+// Also calls mp_server_flush_scene() after the grid, so a capable client sees
+// the screen frame before the scene frame that belongs with it.
 void mp_server_flush_screen();
+
+// Sends one scene frame if this seat negotiated the capability, holds the baton
+// and the scene changed since the last send. Silent on every other path,
+// including the world phase and the legacy no-scheduler path.
+void mp_server_flush_scene();
 
 // Drops all state. Tests only -- these modules hold process-wide state because
 // the curses backend they serve is itself a set of free functions.

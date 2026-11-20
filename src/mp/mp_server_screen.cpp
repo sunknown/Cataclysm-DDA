@@ -7,10 +7,15 @@
 #include <utility>
 #include <vector>
 
+#include "mp/mp_context.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
+#include "mp/mp_scene_codec.h"
+#include "mp/mp_sched.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_session.h"
 #include "mp/mp_server_log.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_transport.h"
 
 // Defined in mp_server_input.cpp; the screen reset drops the input state too.
@@ -137,6 +142,80 @@ void mp_server_flush_screen()
                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
         s->cursor_changed = false;
     }
+
+    // After the grid, so a client can paint the scene under the text it just
+    // received. The gates live in the scene flush: the world phase, the join
+    // loop (which flushes under the world's baton) and the legacy path all
+    // reach here and must leave without building.
+    mp_server_flush_scene();
+}
+
+void mp_server_flush_scene()
+{
+    mp_session *const s = mp_active_session();
+    if( s == nullptr || !s->transport ) {
+        return;
+    }
+    if( ( s->scene_caps & 1u ) == 0 ) {
+        // A text client. Nothing below this point may run for it.
+        return;
+    }
+    mp_sched *const sched = mp_active_sched();
+    if( sched == nullptr ) {
+        // No baton exists in single player or in a legacy session.
+        return;
+    }
+    if( !sched->holds( s->context_index ) ) {
+        // The join loop draws for a player while the world still holds the
+        // baton; only the acting seat may send a scene.
+        return;
+    }
+
+    const player_context *const ctx = mp_active_context_ptr();
+    if( ctx == nullptr ) {
+        return;
+    }
+    // The viewport and the map size are the active context's terrain window,
+    // read fresh on every flush and never cached on the session.
+    mp_scene_rect rect;
+    if( !mp_scene_mask_map_rect( rect ) ) {
+        return;
+    }
+    if( rect.w == 0 || rect.h == 0 ) {
+        return;
+    }
+
+    const uint64_t mask_hash = mp_scene_mask_hash();
+    const bool need = s->scene_terrain_dirty || s->scene_mask_hash != mask_hash ||
+                      !s->scene_sent_once;
+    if( !need ) {
+        return;
+    }
+
+    mp_scene scene = mp_scene_build( ctx->ter_view_p, rect.w, rect.h,
+                                     s->scene_z_levels );
+    scene.ui_x = rect.x;
+    scene.ui_y = rect.y;
+    scene.ui_w = rect.w;
+    scene.ui_h = rect.h;
+    scene.masks = mp_scene_mask_rects();
+    scene.frame_seq = s->scene_seq + 1;
+
+    const std::vector<uint8_t> body = mp_scene_encode( scene );
+    const uint64_t hash = mp_scene_body_hash( body );
+    if( s->scene_sent_once && hash == s->scene_hash ) {
+        // Nothing the client would see changed. The sequence stays put, and
+        // the dirty flag is deliberately left alone: the next flush re-tests
+        // the same frame rather than losing a change that arrives after it.
+        return;
+    }
+
+    s->scene_seq = scene.frame_seq;
+    s->transport->send( mp_wrap( mp_msg_kind::scene, body ) );
+    s->scene_hash = hash;
+    s->scene_mask_hash = mask_hash;
+    s->scene_sent_once = true;
+    s->scene_terrain_dirty = false;
 }
 
 void mp_server_reset_for_test()

@@ -5,6 +5,7 @@
 #if defined(MP_SERVER)
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,6 +46,25 @@ struct mp_session {
     // player_context pointer: player_context ships in every build and must not
     // learn about networking types.
     size_t context_index = 0;
+    // Capability bits from the hello. Bit0 is the 3D scene stream; zero means
+    // this client is a text client and must never receive a scene frame.
+    uint32_t scene_caps = 0;
+    // The encoded z-levels this client asked for, already clamped to 1..10.
+    uint8_t scene_z_levels = 10;
+    // Sequence of the last scene frame actually sent; a skipped frame does not
+    // advance it, so the client can tell a repeated full frame from a new one.
+    uint32_t scene_seq = 0;
+    // Body hash of the last sent frame, with `frame_seq` excluded, and the mask
+    // hash at that moment. Together they are the change gate.
+    uint64_t scene_hash = 0;
+    uint64_t scene_mask_hash = 0;
+    // False until a frame has been sent: the first flush must build even when
+    // the mask hash happens to equal the zero-initialised one.
+    bool scene_sent_once = false;
+    // Set by the curses hook when this seat's terrain window blits; cleared on
+    // a successful send. The only thing that forces a rebuild without a mask
+    // change.
+    bool scene_terrain_dirty = false;
 };
 
 // The sessions of the running server, indexed the same way as game::contexts.

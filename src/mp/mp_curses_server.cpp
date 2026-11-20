@@ -90,6 +90,13 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
     player_context *const ctx = mp_active_context_ptr();
     if( ctx != nullptr && ctx->w_terrain == win_ ) {
         mp_scene_mask_clear();
+        // This seat's map changed, so its next flush must build a scene even
+        // if the mask set is unchanged. The session may be absent (world
+        // phase, startup); only the seat that owns the terrain window is
+        // marked.
+        if( mp_session *const session = mp_active_session() ) {
+            session->scene_terrain_dirty = true;
+        }
     } else {
         mp_scene_mask_note( static_cast<uint16_t>( win->pos.x ),
                             static_cast<uint16_t>( win->pos.y ),

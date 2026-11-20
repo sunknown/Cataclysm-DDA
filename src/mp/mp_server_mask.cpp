@@ -165,6 +165,23 @@ uint8_t mp_scene_mask_role_for( const catacurses::window &win )
     return it->second.role;
 }
 
+bool mp_scene_mask_map_rect( mp_scene_rect &out )
+{
+    if( !sync_geometry() ) {
+        return false;
+    }
+    const mask_grid &g = grid();
+    if( g.w == 0 || g.h == 0 ) {
+        return false;
+    }
+    out.x = g.ox;
+    out.y = g.oy;
+    out.w = g.w;
+    out.h = g.h;
+    out.role = 0;
+    return true;
+}
+
 std::vector<mp_scene_rect> mp_scene_mask_rects()
 {
     std::vector<mp_scene_rect> rects;

@@ -35,6 +35,12 @@ uint8_t mp_scene_mask_role_for( const catacurses::window &win );
 // text over 3D and role 1 is the native log.
 std::vector<mp_scene_rect> mp_scene_mask_rects();
 
+// The active context's map window as one rect with `role` 0, in absolute
+// terminal cells. Returns false when there is no map window or it has no
+// area. This is the scene's viewport and map size; the same geometry the mask
+// grid covers.
+bool mp_scene_mask_map_rect( mp_scene_rect &out );
+
 // FNV-1a 64-bit over `mp_scene_mask_rects()`, each rect's x, y, w, h and role
 // as big-endian bytes. Equal lists hash equal.
 uint64_t mp_scene_mask_hash();

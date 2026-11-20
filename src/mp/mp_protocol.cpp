@@ -1,5 +1,6 @@
 #include "mp/mp_protocol.h"
 
+#include <algorithm>
 #include <sstream>
 
 #include "json.h"
@@ -27,6 +28,9 @@ bool mp_unwrap( const std::vector<uint8_t> &payload, mp_msg_kind &kind,
             break;
         case static_cast<uint8_t>( mp_msg_kind::screen ):
             kind = mp_msg_kind::screen;
+            break;
+        case static_cast<uint8_t>( mp_msg_kind::scene ):
+            kind = mp_msg_kind::scene;
             break;
         default:
             return false;
@@ -149,6 +153,8 @@ std::string mp_control_to_json( const mp_control &msg )
             jo.member( "w", msg.hello.width );
             jo.member( "h", msg.hello.height );
             jo.member( "c256", msg.hello.colors_256 );
+            jo.member( "caps", static_cast<int>( msg.hello.caps ) );
+            jo.member( "zl", static_cast<int>( msg.hello.z_levels ) );
             break;
         case mp_control_kind::hello_ack:
             jo.member( "ok", msg.hello_ack.accepted );
@@ -212,6 +218,14 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 msg.hello.width = obj.get_int( "w" );
                 msg.hello.height = obj.get_int( "h" );
                 msg.hello.colors_256 = obj.get_bool( "c256" );
+                // Both are optional so an old client still parses. A negative
+                // capability mask must not turn into a full set of bits, and an
+                // out-of-range level request clamps to the range the scene
+                // builder can honour instead of refusing the connection.
+                msg.hello.caps = static_cast<uint32_t>(
+                                     std::max( 0, obj.get_int( "caps", 0 ) ) );
+                msg.hello.z_levels = static_cast<uint8_t>(
+                                         std::clamp( obj.get_int( "zl", 10 ), 1, 10 ) );
                 break;
             case mp_control_kind::hello_ack:
                 msg.hello_ack.accepted = obj.get_bool( "ok" );
