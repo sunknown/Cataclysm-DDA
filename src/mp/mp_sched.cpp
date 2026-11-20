@@ -93,7 +93,9 @@ void mp_sched::yield_to( const size_t from, const size_t to )
     // hands it back: log it while the handoff is still in flight, not after
     // the wait. DebugLog does file I/O, so the lock is dropped for it; the
     // predicate below re-checks under the lock, so a return handed over while
-    // this thread was logging is not missed.
+    // this thread was logging is not missed. Because the line is written after
+    // notify_all(), a very fast receiver can log its release_to first: the ring
+    // buffer is authoritative, and the file mirror's order is best-effort.
     lock.unlock();
     log_trace_entry( entry );
     lock.lock();

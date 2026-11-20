@@ -190,9 +190,19 @@ std::shared_ptr<ui_adaptor> &mp_active_overmap_ui()
     if( player_context *ctx = mp_active_context_ptr() ) {
         return ctx->overmap_ui;
     }
-    // No context installed: single-player and non-session callers keep the
-    // adaptor on the game, as before.
+    // No context installed: defensive branch only. Every in-tree caller
+    // installs a context (single-player too, as contexts[0]), so this is
+    // currently unreached.
     return g->overmap_data.ui;
+}
+
+overmap_view_state &mp_active_overmap_view()
+{
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->overmap_view;
+    }
+    // No context installed: the same defensive branch as the ui accessor.
+    return g->overmap_data.overmap_view;
 }
 
 void mp_set_active_context( player_context *ctx )

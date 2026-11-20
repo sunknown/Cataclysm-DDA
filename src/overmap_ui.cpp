@@ -193,7 +193,7 @@ void overmap_sidebar::print_hint( const std::string &action, nc_color color )
 
 void overmap_sidebar::draw_tile_info()
 {
-    const tripoint_abs_omt &cursor_pos = draw_data.cursor_pos;
+    const tripoint_abs_omt &cursor_pos = mp_active_overmap_view().cursor_pos;
 
     avatar &player_character = get_avatar();
     // Debug vision allows seeing everything
@@ -300,7 +300,7 @@ void overmap_sidebar::draw_quick_reference()
 void overmap_sidebar::draw_layer_info()
 {
 
-    const tripoint_abs_omt &cursor_pos = draw_data.cursor_pos;
+    const tripoint_abs_omt &cursor_pos = mp_active_overmap_view().cursor_pos;
     const bool show_overlays = uistate.overmap_show_overlays || uistate.overmap_blinking;
     const bool is_explored = overmap_buffer.is_explored( cursor_pos );
 
@@ -319,7 +319,7 @@ void overmap_sidebar::draw_layer_info()
 
 void overmap_sidebar::draw_debug()
 {
-    const tripoint_abs_omt &cursor_pos = draw_data.cursor_pos;
+    const tripoint_abs_omt &cursor_pos = mp_active_overmap_view().cursor_pos;
     avatar &player_character = get_avatar();
     // Debug vision allows seeing everything
     const bool has_debug_vision = player_character.has_trait( trait_DEBUG_NIGHTVISION );
@@ -412,7 +412,7 @@ void overmap_sidebar::draw_debug()
 
 void overmap_sidebar::draw_mission_info()
 {
-    const tripoint_abs_omt &cursor_pos = draw_data.cursor_pos;
+    const tripoint_abs_omt &cursor_pos = mp_active_overmap_view().cursor_pos;
     avatar &player_character = get_avatar();
     const tripoint_abs_omt target = player_character.get_active_mission_target();
     const bool has_target = !target.is_invalid();
@@ -944,8 +944,9 @@ bool is_generated_omt( const point_abs_omt &omp )
 
 static void draw_ascii( const catacurses::window &w, overmap_draw_data_t &data )
 {
-    const tripoint_abs_omt &orig = data.origin_pos;
-    const tripoint_abs_omt &cursor_pos = data.cursor_pos;
+    overmap_view_state &view = mp_active_overmap_view();
+    const tripoint_abs_omt &orig = view.origin_pos;
+    const tripoint_abs_omt &cursor_pos = view.cursor_pos;
     const std::vector<tripoint_abs_omt> &display_path = data.display_path;
     bool blink = uistate.overmap_show_overlays;
 
@@ -986,7 +987,7 @@ static void draw_ascii( const catacurses::window &w, overmap_draw_data_t &data )
 
     if( data.fast_traveling ) {
         tripoint_abs_omt &next_path = player_character.omt_path.back();
-        data.cursor_pos = next_path;
+        view.cursor_pos = next_path;
         oter_opts.center = next_path;
         blink = true;
         corner_text.emplace_back( c_yellow, _( "FAST TRAVELING" ) );
@@ -1324,7 +1325,8 @@ static void draw( overmap_draw_data_t &data )
     cata_assert( static_cast<bool>( mp_active_overmap_ui() ) );
 #if defined( TILES )
     if( use_tiles && use_tiles_overmap ) {
-        redraw_info = tiles_redraw_info { data.cursor_pos, uistate.overmap_show_overlays };
+        redraw_info = tiles_redraw_info { mp_active_overmap_view().cursor_pos,
+                                           uistate.overmap_show_overlays };
         werase( g->w_overmap );
         // trigger the actual redraw code in sdltiles.cpp
         wnoutrefresh( g->w_overmap );
@@ -2078,7 +2080,8 @@ static tripoint_abs_omt display()
     map &here = get_map();
 
     overmap_draw_data_t &data = g->overmap_data;
-    tripoint_abs_omt &orig = data.origin_pos;
+    overmap_view_state &view = mp_active_overmap_view();
+    tripoint_abs_omt &orig = view.origin_pos;
     std::vector<tripoint_abs_omt> &display_path = data.display_path;
     tripoint_abs_omt &select = data.select;
     input_context ictxt( "OVERMAP" );
@@ -2110,8 +2113,8 @@ static tripoint_abs_omt display()
     ui->mark_resize();
 
     tripoint_abs_omt ret = tripoint_abs_omt::invalid;
-    data.cursor_pos = data.origin_pos;
-    tripoint_abs_omt &curs = data.cursor_pos;
+    view.cursor_pos = view.origin_pos;
+    tripoint_abs_omt &curs = view.cursor_pos;
 
     if( select != tripoint_abs_omt( -1, -1, -1 ) ) {
         curs = select;
@@ -2230,7 +2233,7 @@ static tripoint_abs_omt display()
                    ( mouse_pos = ictxt.get_coordinates_rel_omt( g->w_overmap, point::zero, true ) ) ) {
             curs += mouse_pos->xy().raw();
         } else if( action == "look" ) {
-            tripoint_abs_ms pos = project_combine( curs, g->overmap_data.origin_remainder );
+            tripoint_abs_ms pos = project_combine( curs, view.origin_remainder );
             tripoint_bub_ms pos_rel = here.get_bub( pos );
             uistate.open_menu = [pos_rel]() {
                 tripoint_bub_ms pos_cpy = pos_rel;
@@ -2404,7 +2407,7 @@ static tripoint_abs_omt display()
     } else {
         data.fast_traveling = true;
     }
-    if( overmap_buffer.distance_limit( g->overmap_data.distance, g->overmap_data.origin_pos, ret ) ) {
+    if( overmap_buffer.distance_limit( g->overmap_data.distance, view.origin_pos, ret ) ) {
         return ret;
     } else {
         return tripoint_abs_omt::invalid;
@@ -2421,6 +2424,17 @@ struct blended_omt {
     nc_color color;
     std::string name;
 };
+
+// Starts an overmap invocation from the view's defaults, matching what the
+// single shared overmap_draw_data_t used to get when the whole struct was
+// reassigned. The view is per player now, so that reassignment no longer
+// covers it.
+overmap_view_state &reset_overmap_view()
+{
+    overmap_view_state &view = mp_active_overmap_view();
+    view = overmap_view_state();
+    return view;
+}
 } // namespace
 
 oter_vision::blended_omt oter_vision::get_blended_omt_info( const tripoint_abs_omt &omp,
@@ -2565,7 +2579,8 @@ std::pair<std::string, nc_color> oter_symbol_and_color( const tripoint_abs_omt &
     } else if( opts.debug_scent && overmap_ui::get_scent_glyph( omp, ret.second, ret.first ) ) {
         // get_scent_glyph has changed ret.second and ret.first if omp has a scent
     } else if( blink &&
-               overmap_buffer.distance_limit_line( g->overmap_data.distance, g->overmap_data.origin_pos, omp ) ) {
+               overmap_buffer.distance_limit_line( g->overmap_data.distance,
+                                                   mp_active_overmap_view().origin_pos, omp ) ) {
         ret.second = c_light_red;
         ret.first = "X";
     } else if( blink && overmap_buffer.is_marked_dangerous( omp ) ) {
@@ -2698,7 +2713,8 @@ std::pair<std::string, nc_color> oter_symbol_and_color( const tripoint_abs_omt &
 void ui::omap::display()
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t(); //reset data
-    g->overmap_data.origin_pos = get_player_character().pos_abs_omt();
+    overmap_view_state &view = reset_overmap_view();
+    view.origin_pos = get_player_character().pos_abs_omt();
     g->overmap_data.debug_editor = debug_mode; // always display debug editor if game is in debug mode
     overmap_ui::display();
 }
@@ -2706,8 +2722,9 @@ void ui::omap::display()
 void ui::omap::look_around_map( tripoint_abs_ms starting_pos )
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t(); //reset data
-    std::tie( g->overmap_data.origin_pos,
-              g->overmap_data.origin_remainder ) = project_remain<coords::omt>( starting_pos );
+    overmap_view_state &view = reset_overmap_view();
+    std::tie( view.origin_pos,
+              view.origin_remainder ) = project_remain<coords::omt>( starting_pos );
     overmap_ui::display();
 }
 
@@ -2715,7 +2732,8 @@ void ui::omap::display_npc_path( tripoint_abs_omt starting_pos,
                                  const std::vector<tripoint_abs_omt> &display_path )
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
-    g->overmap_data.origin_pos = starting_pos;
+    overmap_view_state &view = reset_overmap_view();
+    view.origin_pos = starting_pos;
     g->overmap_data.display_path = display_path;
     overmap_ui::display();
 }
@@ -2723,7 +2741,8 @@ void ui::omap::display_npc_path( tripoint_abs_omt starting_pos,
 void ui::omap::display_hordes()
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
-    g->overmap_data.origin_pos = get_player_character().pos_abs_omt();
+    overmap_view_state &view = reset_overmap_view();
+    view.origin_pos = get_player_character().pos_abs_omt();
     uistate.overmap_debug_mongroup = true;
     overmap_ui::display();
     uistate.overmap_debug_mongroup = false;
@@ -2732,9 +2751,10 @@ void ui::omap::display_hordes()
 void ui::omap::display_weather()
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
+    overmap_view_state &view = reset_overmap_view();
     tripoint_abs_omt pos = get_player_character().pos_abs_omt();
     pos.z() = OVERMAP_HEIGHT;
-    g->overmap_data.origin_pos = pos;
+    view.origin_pos = pos;
     uistate.overmap_debug_weather = true;
     overmap_ui::display();
     uistate.overmap_debug_weather = false;
@@ -2743,9 +2763,10 @@ void ui::omap::display_weather()
 void ui::omap::display_visible_weather()
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
+    overmap_view_state &view = reset_overmap_view();
     tripoint_abs_omt pos = get_player_character().pos_abs_omt();
     pos.z() = OVERMAP_HEIGHT;
-    g->overmap_data.origin_pos = pos;
+    view.origin_pos = pos;
     uistate.overmap_visible_weather = true;
     overmap_ui::display();
     uistate.overmap_visible_weather = false;
@@ -2754,7 +2775,8 @@ void ui::omap::display_visible_weather()
 void ui::omap::display_scents()
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
-    g->overmap_data.origin_pos = get_player_character().pos_abs_omt();
+    overmap_view_state &view = reset_overmap_view();
+    view.origin_pos = get_player_character().pos_abs_omt();
     g->overmap_data.debug_scent = true;
     overmap_ui::display();
 }
@@ -2762,7 +2784,8 @@ void ui::omap::display_scents()
 void ui::omap::display_editor()
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
-    g->overmap_data.origin_pos = get_player_character().pos_abs_omt();
+    overmap_view_state &view = reset_overmap_view();
+    view.origin_pos = get_player_character().pos_abs_omt();
     g->overmap_data.debug_editor = true;
     overmap_ui::display();
 }
@@ -2771,7 +2794,8 @@ void ui::omap::display_zones( const tripoint_abs_omt &center, const tripoint_abs
                               const int iZoneIndex )
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
-    g->overmap_data.origin_pos = center;
+    overmap_view_state &view = reset_overmap_view();
+    view.origin_pos = center;
     g->overmap_data.select = select;
     g->overmap_data.iZoneIndex = iZoneIndex;
     overmap_ui::display();
@@ -2788,8 +2812,9 @@ tripoint_abs_omt ui::omap::choose_point( const std::string &message, const tripo
         bool show_debug_info, const int distance )
 {
     g->overmap_data = overmap_ui::overmap_draw_data_t();
+    overmap_view_state &view = reset_overmap_view();
     g->overmap_data.message = message;
-    g->overmap_data.origin_pos = origin;
+    view.origin_pos = origin;
     g->overmap_data.debug_info = show_debug_info;
     g->overmap_data.distance = distance;
     return overmap_ui::display();

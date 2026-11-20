@@ -313,7 +313,7 @@ in-progress avatar swap before freeing, so it is correct with any active slot, w
 byte-identical (single slot, single context). This is the same repair the `[mp]` harness destructor
 already performs, applied to the cases that do not use that harness.
 
-Before/after: both minimal pairs exit 139 → exit 0 (`All tests passed (5 assertions in 2 test
+Before/after: both minimal pairs exit 134 → exit 0 (`All tests passed (5 assertions in 2 test
 cases)`); shard-03 filter exit 134 → exit 0, `All tests passed (6321564 assertions in 168 test
 cases)`; shard-11 filter exit 134 → exit 0, `All tests passed (1678072 assertions in 167 test
 cases)`.
@@ -396,3 +396,37 @@ path inspected; the shard-04 work above did not touch `move_hordes`).
 Changed files: `tests/test_main.cpp` (per-test seat/context teardown), `tests/npc_behavior_rules_
 test.cpp` (arena setup preconditions). No production code, no shard plan, no filter change. The
 full parallel suite was not rerun; the four affected shard filters were.
+
+## Follow-up: `vehicle_drag` is a pre-existing baseline crash
+
+The full parallel suite on the task-8 tree (`fix/mp-followups` at `c170d490f7`, seed 1, `-j 16`,
+`.data/fu-final4`) reported 1998 cases with one failure: `vehicle_drag`
+(`tests/vehicle_drag_test.cpp:38`, SIGSEGV) in shard-08. It passes alone (19.8 s, exit 0) and
+reproduces exactly with the shard-08 filter (94 cases, exit 139).
+
+It is **not** this branch's regression. The same filter, seed and binary flags on a worktree of
+the merge base (`3411708395`, `git worktree add .data/base-tree`, built with
+`TESTS=1 MULTIPLAYER=1 TILES=0 BUILD_PREFIX=base-`) crashes identically: exit 139, same
+assertion line, same 94 cases, 93 passed. So the crash predates the branch and belongs in the
+baseline for this shard plan.
+
+Crash site (symbolized with `addr2line` against `tests/plain-cata_test`):
+
+```
+map::on_unload  src/map.cpp:9782    bool adjusted = !const_summary->placeholder;
+  <- map::shift                     src/map.cpp:8931
+  <- clear_game_drag                tests/vehicle_drag_test.cpp:50
+  <- vehicle_drag                   tests/vehicle_drag_test.cpp:166
+```
+
+`overmap_buffer.get_omt_summary( omt_abs_origin )` returns a null `shared_ptr` when that OMT's
+overmap is not loaded — the last log line before the trace is
+`loading non-main map at (-6,-8,0) which overlaps with main map (abs_sub = (-10,-10,0))` — and
+`on_unload()` dereferences it without a null check. A predecessor test leaves the reality bubble
+at an OMT whose overmap is not in the buffer; `vehicle_drag`'s `here.shift( south )` then unloads
+a submap there.
+
+Not fixed here: it is outside this plan's F-list, it predates the branch, and the fix is either
+a null guard in `on_unload()` (production behaviour: skip the summary update for an unloaded
+OMT) or restoring the bubble in whichever test leaves it at the edge — a diagnosis of its own.
+Recorded so the next full run treats it as baseline, not as a new failure.

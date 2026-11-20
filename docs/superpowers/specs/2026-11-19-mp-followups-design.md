@@ -1,7 +1,8 @@
 # MP follow-ups after the live-view and watchdog fixes — дизайн
 
 - Дата: 2026-11-19
-- Статус: на ревью у пользователя (имплементация не начата)
+- Статус: реализовано в ветке `fix/mp-followups` (коммиты `3411708395..d37a805fa3`);
+  ждёт ручного вердикта пользователя перед merge в `mp`.
 - Основание: отложенные пункты ревью и леджеров
   `docs/superpowers/plans/2026-11-19-mp-liveview-ownership.md`,
   `docs/superpowers/plans/2026-11-19-mp-baton-hold-diagnosis.md`,

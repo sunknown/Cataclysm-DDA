@@ -302,6 +302,62 @@ TEST_CASE( "two_players_can_hold_the_overmap_open_at_once", "[mp]" )
     CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker ) );
 }
 
+// The overmap's view -- where the map is centred and where the cursor is -- is
+// per player too. It used to be one process-wide overmap_draw_data_t, so one
+// seat's movement keys moved the other seat's crosshair and re-centred its map.
+// The cursor's coordinates are drawn in the sidebar, which makes the leak
+// visible on the other seat's screen after it redraws.
+TEST_CASE( "two_players_overmaps_do_not_share_a_cursor", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Opening and reading the map costs no moves, so both seats stay live and
+    // each keeps its own overmap parked at its input wait.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    // The cursor starts on the player's own OMT, which the sidebar prints.
+    const tripoint_abs_omt seat1_origin = g->player_at( 1 ).pos_abs_omt();
+    tripoint_abs_omt seat1_one_right = seat1_origin;
+    seat1_one_right.x() += 1;
+    tripoint_abs_omt seat1_shifted_by_seat0 = seat1_origin;
+    seat1_shifted_by_seat0.x() += 4;
+    REQUIRE( seat1_origin != seat1_one_right );
+
+    harness.press( 0, mp_menu_map.key );
+    harness.press( 1, mp_menu_map.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker ) &&
+               mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker ) &&
+               mp_grid_contains( harness.screen( 1 ), seat1_origin.to_string() );
+    } ) );
+
+    // Move only seat 0's cursor. On a shared view these three presses land on
+    // seat 1's cursor too, because seat 1 opened its map last and the open
+    // re-centres the one shared cursor on that seat's position.
+    for( int i = 0; i < 3; ++i ) {
+        harness.press( 0, KEY_RIGHT );
+        harness.run_until( []() {
+            return false;
+        }, 2 );
+    }
+
+    // Seat 1 presses right once: that both wakes its parked loop (so its screen
+    // is redrawn from the current view) and gives a deterministic expected
+    // cursor. On a per-seat view it moves one step from its own origin; on the
+    // shared view it continues seat 0's three presses.
+    harness.press( 1, KEY_RIGHT );
+    harness.run_until( []() {
+        return false;
+    }, 5 );
+    CAPTURE( seat1_origin.to_string(), seat1_one_right.to_string(),
+             seat1_shifted_by_seat0.to_string() );
+    // The shared cursor's position must not reach this seat's screen: that is
+    // the leak the manual pass saw.
+    CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), seat1_shifted_by_seat0.to_string() ) );
+    CHECK( mp_grid_contains( harness.screen( 1 ), seat1_one_right.to_string() ) );
+}
+
 // The teardown half of the same ownership question: a session can end while a
 // seat is still in the overmap, and its ui_adaptor must die under that seat's
 // stack rather than whichever stack the shutdown happens to run under.
