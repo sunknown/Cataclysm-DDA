@@ -125,7 +125,9 @@ mp_scene full_scene()
     ground.traps = { { 0, 3, 1 } };
     ground.constructions = { { 5, 2, 2, 62 } };
     ground.graffiti = { { 7, 3, 1 } };
-    ground.creatures = { { 4, 2, 0, 4, 150, 1 } };
+    ground.creatures = { { 4, 2, 0, 4, 150, 1 },
+        // A marker_only creature one level above the player.
+        { 5, 1, 1, 4, 0, 0x04 } };
 
     mp_scene_level below;
     below.z_rel = -1;
@@ -177,6 +179,7 @@ struct minimal_body {
     std::vector<uint8_t> bytes;
     size_t mask_role = 0;
     size_t z_count = 0;
+    size_t level_z_rel = 0;
     size_t terrain_repeat = 0;
     size_t furniture_x = 0;
     size_t furniture_id_idx = 0;
@@ -219,6 +222,7 @@ minimal_body make_minimal_body()
 
     f.z_count = b.size();
     put_u8( b, 1 );             // z_count
+    f.level_z_rel = b.size();
     put_u8( b, 0 );             // z_rel, as int8_t
 
     put_u16( b, 1 );            // terrain run count
@@ -348,6 +352,12 @@ TEST_CASE( "mp_scene_codec_round_trips_every_block", "[mp]" )
         CHECK( same( decoded.levels[i], scene.levels[i] ) );
     }
 
+    // An above-player marker lives in the player's level with z_rel +1; the
+    // decoder must not reject the whole frame because of it.
+    REQUIRE( decoded.levels[0].creatures.size() == 2 );
+    CHECK( decoded.levels[0].creatures[1].z_rel == 1 );
+    CHECK( decoded.levels[0].creatures[1].flags == 0x04 );
+
     // The encoder, not the decoder, is what turns equal neighbouring cells
     // into one run. A scene whose terrain vector still holds two adjacent
     // repeat-1 runs of the same cell must come back as one repeat-2 run.
@@ -395,6 +405,8 @@ TEST_CASE( "mp_scene_decoder_rejects_malformed_bodies", "[mp]" )
     bad.emplace_back( "z_count 11", with_u8( valid, fixture.z_count, 11 ) );
     bad.emplace_back( "repeat 0", with_u16( valid, fixture.terrain_repeat, 0 ) );
     bad.emplace_back( "mask role 2", with_u8( valid, fixture.mask_role, 2 ) );
+    bad.emplace_back( "level 0 with z_rel -1",
+                      with_u8( valid, fixture.level_z_rel, 0xFF ) );
     std::vector<uint8_t> trailing = valid;
     trailing.push_back( 0 );
     bad.emplace_back( "trailing byte", trailing );

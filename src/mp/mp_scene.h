@@ -57,7 +57,8 @@ struct mp_scene_vpart {
 };
 
 // One creature on a level. `z_rel` is relative to the player's level; a value
-// below zero marks a creature one or more levels down.
+// below zero marks a creature one or more levels down, and a marker_only entry
+// one level above the player carries +1.
 struct mp_scene_creature {
     uint16_t x = 0;
     uint16_t y = 0;

@@ -199,8 +199,8 @@ bool read_creatures( reader &r, std::vector<mp_scene_creature> &out,
             return false;
         }
         // The frame carries the player's level and nine levels below it; a
-        // creature can only be sent for one of those.
-        if( entry.z_rel < -MP_SCENE_MAX_LEVELS || entry.z_rel > 0 ) {
+        // creature can also be a marker one level above the player.
+        if( entry.z_rel < -MP_SCENE_MAX_LEVELS || entry.z_rel > 1 ) {
             return false;
         }
         out.push_back( entry );
@@ -427,6 +427,12 @@ bool mp_scene_apply( mp_scene &target, const std::vector<uint8_t> &body )
     for( uint8_t i = 0; i < z_count; ++i ) {
         mp_scene_level level;
         if( !r.i8( level.z_rel ) ) {
+            return false;
+        }
+        // Levels arrive as the player's level and the nine below it, in that
+        // order; z_rel is what every client layer is placed against, so any
+        // other value would silently put the level somewhere it is not.
+        if( level.z_rel != -static_cast<int8_t>( i ) ) {
             return false;
         }
 

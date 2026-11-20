@@ -32,8 +32,11 @@ struct mp_scene;
 //
 // The encoder merges neighbouring terrain runs that share terrain_idx, flags
 // and lit, and guarantees that ids[0] exists. The decoder does not expand runs:
-// the run vector is the model. Counts and indices are assumed to fit their wire
-// widths; mp_scene_apply rejects a body that does not.
+// the run vector is the model. Levels must arrive in order, level i carrying
+// z_rel -i (the player's level first); a creature may carry z_rel from
+// -MP_SCENE_MAX_LEVELS to +1, the latter being a marker one level above the
+// player. Counts and indices are assumed to fit their wire widths;
+// mp_scene_apply rejects a body that does not.
 
 // Encodes a full frame. `scene.body_version` is written as-is and the level
 // vector as-is; the builder is responsible for clamping levels to ten and for
