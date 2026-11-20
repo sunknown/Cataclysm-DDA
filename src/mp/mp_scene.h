@@ -25,8 +25,10 @@ struct mp_scene_rect {
     uint8_t role = 0;
 };
 
-// One vehicle in the window. Its parts refer to it by `veh_id`; the heading
-// lets the client orient the whole vehicle without spinning each part.
+// One vehicle present on the level, with or without parts inside the window.
+// Its parts refer to it by `veh_id`; ids are frame-local, and the client
+// ignores ids with no part in the window. The heading lets the client orient
+// the whole vehicle without spinning each part.
 struct mp_scene_vehicle {
     uint16_t veh_id = 0;
     uint16_t heading = 0;

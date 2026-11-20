@@ -549,35 +549,88 @@ TEST_CASE( "mp_scene_build_sends_graffiti_text_sanitized", "[mp]" )
     avatar &you = get_avatar_legacy();
     set_time_to_day();
 
+    const tripoint_bub_ms base = you.pos_bub();
+
+    // One tile per sanitizer rule, so a regression in any rule is visible.
     std::string raw = "hello\n\x01world";
     raw += "\xE2\x80\xAE"; // U+202E RIGHT-TO-LEFT OVERRIDE
+    raw += "\xE2\x81\xA6"; // U+2066 LEFT-TO-RIGHT ISOLATE
+    raw += "\xC2\x85";     // U+0085 NEXT LINE (C1)
     raw += "!";
     raw += std::string( 200, 'x' );
-    const tripoint_bub_ms target = you.pos_bub() + tripoint_rel_ms( 1, 0, 0 );
-    here.set_graffiti( target, raw );
+    here.set_graffiti( base + tripoint_rel_ms( 1, 0, 0 ), raw );
+
+    // 119 bytes plus a 4-byte code point: a byte slice at 120 would keep one
+    // invalid byte, while a boundary-safe cap drops the whole code point.
+    const std::string boundary = std::string( 119, 'a' ) + "\xF0\x9F\x98\x80" + "tail";
+    here.set_graffiti( base + tripoint_rel_ms( 2, 0, 0 ), boundary );
+
+    // Exactly at the cap, with trailing bytes that must not fit.
+    here.set_graffiti( base + tripoint_rel_ms( 3, 0, 0 ),
+                       std::string( 120, 'a' ) + "zzz" );
+
+    // Invalid UTF-8: a lone continuation byte and a truncated sequence.
+    here.set_graffiti( base + tripoint_rel_ms( 4, 0, 0 ), "ok" + std::string( "\x80" ) );
+    here.set_graffiti( base + tripoint_rel_ms( 5, 0, 0 ), "ok" + std::string( "\xC3" ) );
+
+    // Sanitizes to nothing: the tile must produce no entry at all.
+    here.set_graffiti( base + tripoint_rel_ms( 6, 0, 0 ), "\n\x01" );
+
     refresh_visibility( you.posz() );
 
-    const mp_scene scene = mp_scene_build( you.pos_bub(), 21, 21, 1 );
+    const mp_scene scene = mp_scene_build( base, 21, 21, 1 );
     REQUIRE( scene.levels.size() == 1 );
     const mp_scene_level &level = scene.levels[0];
-    REQUIRE( level.graffiti.size() == 1 );
-    CHECK( level.graffiti[0].x == 11 );
-    CHECK( level.graffiti[0].y == 10 );
 
-    const uint16_t text_idx = level.graffiti[0].id_idx;
-    REQUIRE( text_idx != 0 );
-    const std::string &text = id_at( scene, text_idx );
-    CHECK( text.rfind( "helloworld!", 0 ) == 0 );
-    CHECK( text.find( '\n' ) == std::string::npos );
-    CHECK( text.find( '\x01' ) == std::string::npos );
-    CHECK( text.find( "\xE2\x80\xAE" ) == std::string::npos );
-    CHECK( text.size() <= 120 );
-    // Valid UTF-8 round-trips; an invalid sequence would decode to U+FFFD and
-    // re-encode differently.
-    CHECK( utf32_to_utf8( utf8_to_utf32( text ) ) == text );
+    const auto text_at = [&]( int x, int y ) -> const std::string * {
+        for( const mp_scene_point_id &entry : level.graffiti ) {
+            if( entry.x == x && entry.y == y ) {
+                return &id_at( scene, entry.id_idx );
+            }
+        }
+        return nullptr;
+    };
+
+    // Five entries: the empty-after-sanitize tile contributes none.
+    REQUIRE( level.graffiti.size() == 5 );
+
+    const std::string *mixed = text_at( 11, 10 );
+    REQUIRE( mixed != nullptr );
+    CHECK( mixed->rfind( "helloworld!", 0 ) == 0 );
+    CHECK( mixed->find( '\n' ) == std::string::npos );
+    CHECK( mixed->find( '\x01' ) == std::string::npos );
+    CHECK( mixed->find( "\xE2\x80\xAE" ) == std::string::npos );
+    CHECK( mixed->find( "\xE2\x81\xA6" ) == std::string::npos );
+    CHECK( mixed->find( "\xC2\x85" ) == std::string::npos );
+    CHECK( mixed->size() == 120 );
+    CHECK( utf32_to_utf8( utf8_to_utf32( *mixed ) ) == *mixed );
+
+    const std::string *truncated = text_at( 12, 10 );
+    REQUIRE( truncated != nullptr );
+    CHECK( *truncated == std::string( 119, 'a' ) );
+    CHECK( truncated->size() == 119 );
+    CHECK( truncated->find( "\xF0\x9F\x98\x80" ) == std::string::npos );
+    CHECK( utf32_to_utf8( utf8_to_utf32( *truncated ) ) == *truncated );
+
+    const std::string *exact_cap = text_at( 13, 10 );
+    REQUIRE( exact_cap != nullptr );
+    CHECK( *exact_cap == std::string( 120, 'a' ) );
+    CHECK( exact_cap->size() == 120 );
+
+    const std::string *lone_continuation = text_at( 14, 10 );
+    REQUIRE( lone_continuation != nullptr );
+    CHECK( *lone_continuation == "ok" );
+
+    const std::string *truncated_sequence = text_at( 15, 10 );
+    REQUIRE( truncated_sequence != nullptr );
+    CHECK( *truncated_sequence == "ok" );
+
+    CHECK( text_at( 16, 10 ) == nullptr );
 
     // Graffiti text is opaque: it must never share an index with an entity id
     // the layers reference.
+    const uint16_t text_idx = level.graffiti.front().id_idx;
+    REQUIRE( text_idx != 0 );
     std::vector<uint16_t> entity_ids;
     for( const mp_scene_terrain_run &run : level.terrain ) {
         entity_ids.push_back( run.terrain_idx );
