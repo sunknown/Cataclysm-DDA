@@ -23,6 +23,7 @@
 #include "input_context.h"
 #include "json.h"
 #include "map.h"
+#include "mp/mp_server_mask.h"
 #include "options.h"
 #include "output.h"
 #include "panels.h"
@@ -619,6 +620,8 @@ void Messages::dialog::init( ui_adaptor &ui )
     }
 
     w = catacurses::newwin( w_height, w_width, point( w_x, w_y ) );
+    // The scene stream sends this rect as a native-log mask instead of glyphs.
+    mp_scene_mask_register_role( w, 1 );
 
     if( first_init ) {
         ctxt = input_context( "MESSAGE_LOG" );

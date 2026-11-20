@@ -26,6 +26,7 @@
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_main.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_transport.h"
 #include "mp/mp_turn.h"
@@ -82,6 +83,19 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
     cata_cursesport::WINDOW *const win = win_.get<cata_cursesport::WINDOW>();
     if( win == nullptr ) {
         return;
+    }
+    // A terrain blit wipes the map, so no text covers it any more. Every other
+    // window owns its whole rectangle once blitted, whether or not a line in
+    // this call actually changed.
+    player_context *const ctx = mp_active_context_ptr();
+    if( ctx != nullptr && ctx->w_terrain == win_ ) {
+        mp_scene_mask_clear();
+    } else {
+        mp_scene_mask_note( static_cast<uint16_t>( win->pos.x ),
+                            static_cast<uint16_t>( win->pos.y ),
+                            static_cast<uint16_t>( win->width ),
+                            static_cast<uint16_t>( win->height ),
+                            mp_scene_mask_role_for( win_ ) );
     }
     std::vector<mp_cell> row;
     for( int j = 0; j < win->height; ++j ) {
