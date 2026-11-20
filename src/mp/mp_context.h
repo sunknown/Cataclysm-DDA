@@ -150,10 +150,10 @@ player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for r
 // context's ui stack and is destroyed there, so no other player's key can
 // close it.
 live_view &mp_active_live_view();
-// The active player's retained overmap ui_adaptor. Falls back to the game's
-// overmap_data.ui when no context is installed. Single-player installs
-// contexts[0] and uses the context path, so the fallback serves only callers
-// that never install a context (tests).
+// The active player's per-context overmap ui_adaptor. Falls back to
+// g->overmap_data.ui when no context is installed -- a defensive branch:
+// every in-tree caller installs a context (single-player too, as contexts[0]),
+// so the fallback is currently unreached.
 std::shared_ptr<ui_adaptor> &mp_active_overmap_ui();
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
