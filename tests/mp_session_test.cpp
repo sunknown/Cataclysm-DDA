@@ -1863,4 +1863,60 @@ TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
     CHECK( grants_to_disconnected == 0 );
 }
 
+// The field sequence that killed the server: open the inventory, press the
+// first stack's hotkey, close, and repeat. The crash was
+// inventory_entry::get_invlet() reached from find_by_invlet() while
+// process_input() looked the pressed key up -- a reopened selector whose
+// entries still held an item_location that had gone stale between openings.
+// Both seats are driven so the turn barrier and the per-turn context switches
+// run exactly as they do on a live server.
+TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Both seats can act. A player with moves who opens a free menu holds the
+    // barrier, so the partner's hurry is what lets the world move under them.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    // A wielded item lives directly in the avatar, so it travels with the
+    // avatar when the server swaps the active context between turns. The
+    // inventory entry built for it holds an item_location into that avatar.
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+
+    for( int cycle = 0; cycle < 4; ++cycle ) {
+        CAPTURE( cycle );
+        harness.press( 0, mp_menu_inventory.key );
+        REQUIRE( harness.run_until( inventory_is_open ) );
+        // Seat 1 hurries. When the countdown expires seat 0 is dropped from
+        // the barrier for this turn, and the world takes seat 1's action while
+        // seat 0's menu stays open -- the spec's accepted "your choice may
+        // have gone stale" case. The turn boundary swaps the active avatar
+        // out and back; the entries built above are not rebuilt by any of it.
+        harness.press( 1, '`' );
+        REQUIRE( harness.run_until( []() {
+            return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+        } ) );
+        mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+        const int turn_before = to_turn<int>( calendar::turn );
+        harness.press( 1, '.' );
+        REQUIRE( harness.run_until( [turn_before]() {
+            return to_turn<int>( calendar::turn ) > turn_before;
+        } ) );
+        // The hotkey lookup is the frame that dereferenced the stale location.
+        harness.press( 0, 'a' );
+        harness.run_until( []() {
+            return false;
+        }, 1 );
+        harness.press( 0, KEY_ESCAPE );
+        REQUIRE( harness.run_until( [&]() {
+            return !inventory_is_open();
+        }, 20 ) );
+    }
+    SUCCEED( "four inventory reopen cycles did not crash the server" );
+}
+
 #endif // MP_SERVER
