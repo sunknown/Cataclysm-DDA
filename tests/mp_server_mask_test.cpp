@@ -7,6 +7,7 @@
 
 #include "cursesdef.h"
 #include "mp/mp_context.h"
+#include "mp/mp_imgui_server.h"
 #include "mp/mp_scene.h"
 #include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
@@ -73,6 +74,19 @@ TEST_CASE( "mp_scene_mask_tracks_windows_over_the_map", "[mp]" )
     CHECK( rects[0].w == 5 );
     CHECK( rects[0].h == 4 );
     CHECK( rects[0].role == 0 );
+
+    // (30, 6) 25x8 overhangs the map's right and bottom edges instead.
+    blit( map );
+    catacurses::window overhang = catacurses::newwin( 8, 25, point( 30, 6 ) );
+    blit( overhang, "overhang" );
+
+    const std::vector<mp_scene_rect> clipped = mp_scene_mask_rects();
+    REQUIRE( clipped.size() == 1 );
+    CHECK( clipped[0].x == 30 );
+    CHECK( clipped[0].y == 6 );
+    CHECK( clipped[0].w == 20 );
+    CHECK( clipped[0].h == 4 );
+    CHECK( clipped[0].role == 0 );
 }
 
 TEST_CASE( "mp_scene_mask_rects_merge_and_keep_roles", "[mp]" )
@@ -83,25 +97,33 @@ TEST_CASE( "mp_scene_mask_rects_merge_and_keep_roles", "[mp]" )
 
     mp_scene_mask_note( 10, 1, 1, 1, 0 );
     mp_scene_mask_note( 11, 1, 1, 1, 0 );
+    // Same span one row down, but a different role: must not merge.
+    mp_scene_mask_note( 10, 2, 2, 1, 1 );
 
     catacurses::window log = catacurses::newwin( 1, 2, point( 20, 3 ) );
     mp_scene_mask_register_role( log, 1 );
     blit( log, "lo" );
 
     const std::vector<mp_scene_rect> rects = mp_scene_mask_rects();
-    REQUIRE( rects.size() == 2 );
+    REQUIRE( rects.size() == 3 );
     // The two adjacent text cells collapse into one run.
     CHECK( rects[0].x == 10 );
     CHECK( rects[0].y == 1 );
     CHECK( rects[0].w == 2 );
     CHECK( rects[0].h == 1 );
     CHECK( rects[0].role == 0 );
-    // The log keeps its own role instead of merging with the text.
-    CHECK( rects[1].x == 20 );
-    CHECK( rects[1].y == 3 );
+    // The same span with another role stays a second rect.
+    CHECK( rects[1].x == 10 );
+    CHECK( rects[1].y == 2 );
     CHECK( rects[1].w == 2 );
     CHECK( rects[1].h == 1 );
     CHECK( rects[1].role == 1 );
+    // The log keeps its own role instead of merging with the text.
+    CHECK( rects[2].x == 20 );
+    CHECK( rects[2].y == 3 );
+    CHECK( rects[2].w == 2 );
+    CHECK( rects[2].h == 1 );
+    CHECK( rects[2].role == 1 );
 }
 
 TEST_CASE( "mp_scene_mask_ignores_windows_outside_the_map", "[mp]" )
@@ -114,6 +136,46 @@ TEST_CASE( "mp_scene_mask_ignores_windows_outside_the_map", "[mp]" )
     blit( outside, "far" );
 
     CHECK( mp_scene_mask_rects().empty() );
+}
+
+TEST_CASE( "mp_scene_mask_no_context_is_a_no_op", "[mp]" )
+{
+    reset_mask_test();
+
+    // An empty terrain window leaves nothing to cover.
+    mp_scene_mask_note( 12, 2, 3, 2, 0 );
+    CHECK( mp_scene_mask_rects().empty() );
+
+    // Prove the note works once a map is installed, then drop the context.
+    catacurses::window map = make_map_window();
+    blit( map );
+    mp_scene_mask_note( 12, 2, 3, 2, 0 );
+    REQUIRE( mp_scene_mask_rects().size() == 1 );
+
+    mp_set_active_context( nullptr );
+    mp_scene_mask_note( 14, 3, 3, 2, 0 );
+    CHECK( mp_scene_mask_rects().empty() );
+    mp_set_active_context( &test_mask_ctx );
+}
+
+TEST_CASE( "mp_scene_mask_imgui_text_over_the_map", "[mp]" )
+{
+    reset_mask_test();
+    catacurses::window map = make_map_window();
+    blit( map );
+
+    // A 30-column imgui frame crosses the map's left edge at x = 10. ImGui
+    // draws after the terrain and is text over 3D, role 0.
+    mp_test_fill_imtui_screen( 30, 4, 'X', 7, 0 );
+    mp_imgui_draw_screen();
+
+    const std::vector<mp_scene_rect> rects = mp_scene_mask_rects();
+    REQUIRE( rects.size() == 1 );
+    CHECK( rects[0].x == 10 );
+    CHECK( rects[0].y == 0 );
+    CHECK( rects[0].w == 20 );
+    CHECK( rects[0].h == 4 );
+    CHECK( rects[0].role == 0 );
 }
 
 TEST_CASE( "mp_scene_mask_hash_changes_with_the_rect_list", "[mp]" )
