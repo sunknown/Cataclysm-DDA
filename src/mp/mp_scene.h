@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "coords_fwd.h"
+
 // Version of the scene body, the first byte on the wire. A bump may add
 // compression behind a flag; the decoder currently accepts exactly this value.
 constexpr uint8_t MP_SCENE_BODY_VERSION = 1;
@@ -115,5 +117,13 @@ struct mp_scene {
     std::vector<std::string> ids;
     std::vector<mp_scene_level> levels;
 };
+
+// Extracts one scene frame around `view_centre` from the map and the active
+// avatar. The rectangle holds `tiles_w` by `tiles_h` cells; its origin sits
+// `view_dx`/`view_dy` cells from the centre. Levels are emitted from the
+// centre z downward, in the order the wire requires. Overlay layers and masks
+// are left for later passes to fill.
+mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
+                         uint8_t z_levels );
 
 #endif // CATA_SRC_MP_MP_SCENE_H
