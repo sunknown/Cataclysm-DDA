@@ -893,9 +893,10 @@ void exit_handler( int s )
     // scheduler wait or a turn, where joining the player threads would deadlock
     // on the wait it interrupted (shut_down() waits for the parked thread count
     // to reach zero, and the interrupted frame is one of those parked) and the
-    // save would race the player that holds the baton. The world thread picks
-    // the request up between turns and comes back through this function with a
-    // non-signal code; see mp_server_request_stop().
+    // save would race the player that holds the baton. The world picks the
+    // request up when it next holds the baton (the turn may still be open) and
+    // comes back through this function with a non-signal code; see
+    // mp_server_request_stop().
     if( s > 0 ) {
         mp_server_request_stop( s );
         return;

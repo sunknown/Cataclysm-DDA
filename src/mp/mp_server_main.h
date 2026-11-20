@@ -119,8 +119,8 @@ bool mp_server_session_running();
 // Records a stop requested from the operator's console. This is all the signal
 // handler does: it may interrupt a scheduler wait or a turn, where saving and
 // joining the session's threads are neither safe nor possible, so the world
-// thread acts on the request at its next pump, which can be with a turn still
-// open. Async-signal-safe.
+// thread acts on the request at its next orchestrator check (the turn loop or
+// the join loop), which can be with a turn still open. Async-signal-safe.
 void mp_server_request_stop( int signal_number );
 
 // Takes the recorded stop's signal number once, or 0 when none was requested.

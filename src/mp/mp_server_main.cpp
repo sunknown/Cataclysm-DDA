@@ -1306,7 +1306,8 @@ bool mp_server_session_running()
 // acted on by the world. The handler needs no lock and no logging: it may
 // interrupt a scheduler wait (whose parked count it would strand) or a turn
 // (whose player would keep mutating the state a save reads), so it only stores
-// the number, and the world does the stopping between turns.
+// the number, and the world does the stopping at its next point of holding the
+// baton, which can be with the turn still open.
 static std::atomic<int> g_stop_signal{ 0 };
 
 void mp_server_request_stop( const int signal_number )
