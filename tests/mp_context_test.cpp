@@ -443,3 +443,33 @@ TEST_CASE( "a_context_destroyed_under_its_own_stack_restores_the_world_stack", "
     CHECK( ui_manager::get_active_stack() != nullptr );
     CHECK( ui_manager::get_active_stack() != dead );
 }
+
+TEST_CASE( "shrinking_contexts_drops_each_contexts_overmap_adaptor", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot().set_body();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+
+    mp_activate_player( 1 );
+    // The retained overmap adaptor lives in the context it was created under,
+    // and its ui_adaptor registers in that context's own stack.
+    ui_stack_t *const dead = &g->contexts[1].ui_stack;
+    mp_active_overmap_ui() = std::make_shared<ui_adaptor>();
+    REQUIRE( dead->size() == 1 );
+
+    // Shrink with slot 1's stack active and no force_quit(): the only thing
+    // that can drop the adaptor is mp_sync_context_count()'s own reset. The
+    // assertion in ~ui_adaptor, or the stack-empty check in the shrink loop,
+    // aborts the run if that reset is missing.
+    g->remove_extra_player_slots();
+    REQUIRE( ui_manager::get_active_stack() == dead );
+    mp_sync_context_count();
+
+    CHECK( g->contexts.size() == 1 );
+    CHECK( ui_manager::get_active_stack() != nullptr );
+    CHECK( ui_manager::get_active_stack() != dead );
+}
