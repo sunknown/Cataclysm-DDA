@@ -22,7 +22,9 @@
 #include "activity_actor_definitions.h"
 #include "avatar.h"
 #include "bodypart.h"
+#include "catacharset.h"
 #include "debug.h"
+#include "filesystem.h"
 #include "game.h"
 #include "game_test_helper.h"
 #include "input.h"
@@ -33,6 +35,8 @@
 #include "map_helpers.h"
 #include "messages.h"
 #include "output.h"
+#include "path_info.h"
+#include "worldfactory.h"
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
@@ -1533,6 +1537,73 @@ TEST_CASE( "the_last_client_leaving_ends_the_session_by_itself", "[mp]" )
     overmap_buffer.create_custom_overmap( point_abs_om{}, empty_specials );
     get_map().load( tripoint_abs_sm( get_map().get_abs_sub() ), false );
     get_avatar().move_to( tripoint_abs_ms::zero );
+}
+
+namespace
+{
+// The per-character save inside the active world. A world may store it plain or
+// inside `<base>.sav.zzip`, and the world's compression setting decides which;
+// the restart scan below lists either, so the test has to accept either too.
+bool character_save_exists( const std::string &save_id )
+{
+    const cata_path base = PATH_INFO::world_base_save_path() /
+                           ( base64_encode( save_id ) + SAVE_EXTENSION );
+    return file_exist( base ) || file_exist( base + zzip_suffix );
+}
+
+// Whether the active world's save list carries `save_id`. That list is what the
+// join menu's Continue entry reads, through mp_continue_target().
+bool world_lists_save( const std::string &save_id )
+{
+    const std::vector<save_t> &saves = world_generator->active_world->world_saves;
+    return std::any_of( saves.begin(), saves.end(), [&save_id]( const save_t &save ) {
+        return save.decoded_name() == save_id;
+    } );
+}
+} // namespace
+
+// A stopped server used to leave nothing behind. The only save was inside
+// end_session() (src/do_turn.cpp), which a signal never reaches: the process
+// ends from the signal handler, before the turn loop returns. The shutdown path
+// is therefore the second save, and this is the half of it a test can drive:
+// exit_handler() itself calls exit(), so what it calls is tested here, then the
+// restart scan that fills world_saves for the join menu.
+TEST_CASE( "a_stopped_server_leaves_its_characters_behind", "[mp]" )
+{
+    restore_active_state restore;
+    const std::string first = "Session Stop One";
+    const std::string second = "Session Stop Two";
+    {
+        mp_session_harness harness( 2 );
+        g->player_at( 0 ).name = first;
+        g->player_at( 0 ).set_save_id( first );
+        g->player_at( 1 ).name = second;
+        g->player_at( 1 ).set_save_id( second );
+        // No turn has run, so no autosave has written anything: what appears
+        // below is the shutdown call's, not the world's own.
+        REQUIRE_FALSE( character_save_exists( first ) );
+        REQUIRE_FALSE( character_save_exists( second ) );
+
+        mp_server_save_on_shutdown();
+
+        CHECK( character_save_exists( first ) );
+        CHECK( character_save_exists( second ) );
+        CHECK( world_lists_save( first ) );
+        CHECK( world_lists_save( second ) );
+    }
+
+    // The restart the user hit: a fresh directory scan, which is what fills
+    // world_saves before the join menu can offer Continue. init() rebuilds the
+    // world list from disk, so the active world has to be let go first; it is
+    // put back by name afterwards, which is the world every later test expects.
+    const std::string world_name = world_generator->active_world->world_name;
+    world_generator->set_active_world( nullptr );
+    world_generator->init();
+    WORLD *rescanned = world_generator->get_world( world_name );
+    REQUIRE( rescanned != nullptr );
+    world_generator->set_active_world( rescanned );
+    CHECK( world_lists_save( first ) );
+    CHECK( world_lists_save( second ) );
 }
 
 TEST_CASE( "a_reconnecting_client_gets_the_same_character_back", "[mp]" )
