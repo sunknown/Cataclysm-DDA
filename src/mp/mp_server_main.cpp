@@ -1329,9 +1329,12 @@ void mp_server_save_on_shutdown()
     if( g == nullptr || !mp_server_session_running() || mp_join_in_progress() ) {
         return;
     }
-    // A signal can arrive between turns, when the world is the phase that owns
-    // the state: save from there, as end_session() does, so the avatar and map
-    // the save reads are the world's and not a player's half-played turn.
+    // The world holds the baton here, as end_session() requires; it may be with
+    // the turn still open, since the stop is acted on where do_turn() paused.
+    // The save is therefore a quiescent mid-turn snapshot -- every player is
+    // parked and the world is not being written -- not a turn tail: it carries
+    // the avatars and the map as they stand, without world_turn_post()'s
+    // closing work on the open turn.
     mp_activate_world();
     if( !g->save() ) {
         mp_server_log( "the server stopped but the session could not be saved" );

@@ -702,9 +702,14 @@ static void run_server_session( const std::string &world_name, const std::option
                        "\"" );
         while( !g->do_turn() ) {
             // An operator's Ctrl-C or SIGTERM only records a stop (exit_handler
-            // does that much in signal context); acting on it here is what lets
-            // the session be saved and its threads joined from the world, at a
-            // turn boundary rather than inside the wait the signal interrupted.
+            // does that much in signal context). The world acts on it here, at
+            // the next point it holds the baton -- which can be with the turn
+            // still open, because do_turn() returns from its pause branch before
+            // closing it. The save is then a quiescent mid-turn snapshot: the
+            // world holds the baton and parked players touch no state, so it is
+            // consistent, but the open turn's tail (world_turn_post()) is not in
+            // it. Acting here rather than inside the wait the signal interrupted
+            // is what makes saving and joining the threads safe.
             if( const int stop_signal = mp_server_take_stop_signal() ) {
                 mp_server_log( "stopping on signal " + std::to_string( stop_signal ) );
                 exit_handler( 0 );
