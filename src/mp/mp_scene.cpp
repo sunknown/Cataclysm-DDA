@@ -1,16 +1,21 @@
 #include "mp_scene.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "avatar.h"
+#include "catacharset.h"
+#include "construction.h"
 #include "coordinates.h"
 #include "enums.h"
+#include "field.h"
 #include "game.h"
 #include "level_cache.h"
 #include "lightmap.h"
@@ -19,6 +24,8 @@
 #include "map_scale_constants.h"
 #include "trap.h"
 #include "type_id.h"
+#include "units.h"
+#include "veh_type.h"
 #include "vehicle.h"
 #include "vpart_position.h"
 
@@ -96,6 +103,50 @@ void append_run( mp_scene_level &level, uint16_t terrain_idx, uint8_t flags, uin
 constexpr uint8_t terrain_visible = 0x1;
 constexpr uint8_t terrain_memorized = 0x2;
 
+// Graffiti is untrusted player text: strip controls and bidi overrides that
+// could reorder a terminal, then cap it. The cap is in bytes so the wire entry
+// stays bounded; whole UTF-8 sequences are kept or dropped together.
+constexpr size_t max_graffiti_bytes = 120;
+
+bool stripped_graffiti_codepoint( uint32_t codepoint )
+{
+    return codepoint <= 0x1F ||                                  // C0 controls
+           ( codepoint >= 0x80 && codepoint <= 0x9F ) ||         // C1 controls
+           codepoint == 0x200E || codepoint == 0x200F ||         // LRM, RLM
+           ( codepoint >= 0x202A && codepoint <= 0x202E ) ||     // LRE..PDF
+           ( codepoint >= 0x2066 && codepoint <= 0x2069 );       // LRI..PDI
+}
+
+std::string sanitize_graffiti( const std::string &text )
+{
+    std::string result;
+    for( const char32_t codepoint : utf8_view( text ) ) {
+        // UTF8_getch reports invalid sequences as the replacement character;
+        // dropping them also keeps the output valid UTF-8.
+        if( codepoint == UNKNOWN_UNICODE || stripped_graffiti_codepoint( codepoint ) ) {
+            continue;
+        }
+        const std::string encoded = utf32_to_utf8( codepoint );
+        if( result.size() + encoded.size() > max_graffiti_bytes ) {
+            break;
+        }
+        result += encoded;
+    }
+    return result;
+}
+
+int8_t part_direction_256( units::angle direction )
+{
+    const long turn = std::lround( units::to_degrees( direction ) * 256.0 / 360.0 );
+    return static_cast<int8_t>( ( turn % 256 + 256 ) % 256 );
+}
+
+uint16_t vehicle_heading_65536( const vehicle &veh )
+{
+    return static_cast<uint16_t>(
+               std::lround( units::to_degrees( veh.face.dir() ) * 65536.0 / 360.0 ) & 0xFFFF );
+}
+
 } // namespace
 
 mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
@@ -119,6 +170,10 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
 
     scene_dictionary dictionary;
 
+    // Vehicle headings are needed once per vehicle, not once per tile. The
+    // same vehicle can be reported for several levels, so dedupe by its id.
+    std::unordered_set<uint16_t> emitted_vehicles;
+
     // The wire says z_rel is relative to the player's level, so the stack is
     // anchored at the avatar even when the view centre has a z offset (look
     // mode). Only x/y come from `view_centre`.
@@ -132,6 +187,17 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
 
         mp_scene_level level;
         level.z_rel = static_cast<int8_t>( -i );
+
+        for( const wrapped_vehicle &wv : here.get_vehicles() ) {
+            if( wv.pos.z() != z ) {
+                continue;
+            }
+            const uint16_t veh_id = static_cast<uint16_t>( wv.v->om_id );
+            if( emitted_vehicles.insert( veh_id ).second ) {
+                scene.vehicles.push_back(
+                    mp_scene_vehicle{ veh_id, vehicle_heading_65536( *wv.v ) } );
+            }
+        }
 
         // Writes below are silently dropped on an unprepared region, so prepare
         // the whole rect first.
@@ -174,6 +240,67 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
                         const std::string decoration = tile_decoration_id( here, you, p );
                         if( you.get_memorized_tile( abs ).get_dec_id() != decoration ) {
                             you.memorize_decoration( abs, decoration, 0, 0 );
+                        }
+
+                        const uint16_t x16 = static_cast<uint16_t>( x );
+                        const uint16_t y16 = static_cast<uint16_t>( y );
+
+                        if( const furn_id furn = here.furn( p ) ) {
+                            level.furniture.push_back(
+                                mp_scene_point_id{ x16, y16, dictionary.add( furn.id().str() ) } );
+                        }
+
+                        if( here.sees_some_items( p, you ) ) {
+                            const map_stack items = here.i_at( p );
+                            level.items.push_back( mp_scene_point_id_aux{
+                                x16, y16, dictionary.add( items.rbegin()->typeId().str() ),
+                                static_cast<uint8_t>( std::min<size_t>( items.size(), UINT8_MAX ) )
+                            } );
+                        }
+
+                        const field &fields_here = here.field_at( p );
+                        if( fields_here.field_count() > 0 ) {
+                            const field_type_id &fid = fields_here.displayed_field_type();
+                            if( const field_entry *entry = fields_here.find_field( fid ) ) {
+                                level.fields.push_back( mp_scene_point_id_aux{
+                                    x16, y16, dictionary.add( fid.id().str() ),
+                                    static_cast<uint8_t>( std::min( entry->get_field_intensity(),
+                                                         static_cast<int>( UINT8_MAX ) ) )
+                                } );
+                            }
+                        }
+
+                        if( const optional_vpart_position vp = here.veh_at( p ) ) {
+                            const vehicle &veh = vp->vehicle();
+                            const vehicle_part &part = veh.part( vp->part_index() );
+                            level.vparts.push_back( mp_scene_vpart{
+                                x16, y16, dictionary.add( part.info().id.str() ),
+                                static_cast<uint16_t>( vp->part_index() ),
+                                static_cast<uint16_t>( veh.om_id ),
+                                part_direction_256( part.direction )
+                            } );
+                        }
+
+                        const trap &tr = here.tr_at( p );
+                        if( !tr.is_null() && tr.can_see( p, you ) ) {
+                            level.traps.push_back(
+                                mp_scene_point_id{ x16, y16, dictionary.add( tr.id.str() ) } );
+                        }
+
+                        if( const partial_con *con = here.partial_con_at( p ) ) {
+                            level.constructions.push_back( mp_scene_point_id_aux{
+                                x16, y16, dictionary.add( con->id.obj().id.str() ),
+                                static_cast<uint8_t>( std::min( con->counter / 100000,
+                                                         static_cast<int>( UINT8_MAX ) ) )
+                            } );
+                        }
+
+                        if( here.has_graffiti_at( p ) ) {
+                            const std::string text = sanitize_graffiti( here.graffiti_at( p ) );
+                            if( !text.empty() ) {
+                                level.graffiti.push_back(
+                                    mp_scene_point_id{ x16, y16, dictionary.add( text ) } );
+                            }
                         }
                         break;
                     }

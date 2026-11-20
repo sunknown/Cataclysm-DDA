@@ -120,9 +120,9 @@ struct mp_scene {
 
 // Extracts one scene frame around `view_centre` from the map and the active
 // avatar. The rectangle holds `tiles_w` by `tiles_h` cells; its origin sits
-// `view_dx`/`view_dy` cells from the centre. Levels are emitted from the
-// centre z downward, in the order the wire requires. Overlay layers and masks
-// are left for later passes to fill.
+// `view_dx`/`view_dy` cells from the centre. Levels start at the avatar's own
+// z and step downward, in the order the wire requires. Overlay layers and
+// masks are left for later passes to fill.
 mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
                          uint8_t z_levels );
 

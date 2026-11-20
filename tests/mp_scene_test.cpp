@@ -2,6 +2,8 @@
 
 #if defined(MP_SERVER)
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -9,12 +11,15 @@
 
 #include "avatar.h"
 #include "calendar.h"
+#include "catacharset.h"
 #include "cata_scope_helpers.h"
+#include "construction.h"
 #include "coordinates.h"
 #include "effect.h"
 #include "enums.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "item.h"
 #include "level_cache.h"
 #include "lightmap.h"
 #include "map.h"
@@ -24,12 +29,21 @@
 #include "mp/mp_context.h"
 #include "mp/mp_scene.h"
 #include "player_helpers.h"
+#include "trap.h"
 #include "type_id.h"
+#include "units.h"
+#include "veh_type.h"
+#include "vehicle.h"
+#include "vpart_position.h"
 
 namespace
 {
 
 static const efftype_id effect_boomered( "boomered" );
+static const itype_id itype_2x4( "2x4" );
+static const itype_id itype_rock( "rock" );
+static const itype_id itype_stick( "stick" );
+static const vproto_id vehicle_prototype_test_shopping_cart( "test_shopping_cart" );
 
 // A world with a cleared map, one avatar and no creatures. The active context
 // is restored when the test ends, as every other co-op test does.
@@ -347,6 +361,226 @@ TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )
     CHECK( level.vparts.empty() );
     CHECK( level.creatures.empty() );
     CHECK( scene.vehicles.empty() );
+}
+
+TEST_CASE( "mp_scene_build_sends_top_item_only", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    const tripoint_bub_ms target = you.pos_bub();
+    here.add_item( target, item( itype_rock ) );
+    here.add_item( target, item( itype_stick ) );
+    here.add_item( target, item( itype_2x4 ) );
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( target, 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+    const mp_scene_level &level = scene.levels[0];
+
+    // One entry for the tile: the uppermost (last-placed) item and the stack
+    // size, never one entry per item.
+    REQUIRE( level.items.size() == 1 );
+    CHECK( level.items[0].x == 10 );
+    CHECK( level.items[0].y == 10 );
+    CHECK( id_at( scene, level.items[0].id_idx ) == "2x4" );
+    CHECK( level.items[0].aux == 3 );
+}
+
+TEST_CASE( "mp_scene_build_hides_sealed_container_contents", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    // A sealed container is terrain/furniture the text renderer refuses to
+    // draw items over, even though the map stack holds one.
+    const tripoint_bub_ms target = you.pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+    here.furn_set( target, furn_id( "f_machinery_heavy" ) );
+    here.add_item( target, item( itype_rock ) );
+    REQUIRE( here.has_items( target ) );
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( target, 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+    CHECK( scene.levels[0].items.empty() );
+}
+
+TEST_CASE( "mp_scene_build_sends_known_traps_only", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    const trap_id glass( "tr_glass" );
+    const tripoint_bub_ms known = you.pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+    const tripoint_bub_ms unknown = you.pos_bub() + tripoint_rel_ms( 2, 0, 0 );
+    here.trap_set( known, glass );
+    here.trap_set( unknown, glass );
+    you.add_known_trap( known, glass.obj() );
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( you.pos_bub(), 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+    const mp_scene_level &level = scene.levels[0];
+
+    REQUIRE( level.traps.size() == 1 );
+    CHECK( level.traps[0].x == 11 );
+    CHECK( level.traps[0].y == 10 );
+    CHECK( id_at( scene, level.traps[0].id_idx ) == "tr_glass" );
+}
+
+TEST_CASE( "mp_scene_build_sends_vehicle_heading_and_part_angle", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    const tripoint_bub_ms origin = you.pos_bub() + tripoint_rel_ms( 2, 0, 0 );
+    vehicle *veh = here.add_vehicle( vehicle_prototype_test_shopping_cart, origin, 45_degrees, 0,
+                                     veh_spawn_status::UNDAMAGED );
+    REQUIRE( veh != nullptr );
+
+    const optional_vpart_position vp = here.veh_at( origin );
+    REQUIRE( vp.has_value() );
+    const int part_index = static_cast<int>( vp->part_index() );
+    vehicle_part &part = veh->part( part_index );
+    part.direction = 90_degrees;
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( origin, 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+
+    const uint16_t expected_heading = static_cast<uint16_t>(
+                                          std::lround( units::to_degrees( veh->face.dir() ) *
+                                                       65536.0 / 360.0 ) & 0xFFFF );
+    REQUIRE( scene.vehicles.size() == 1 );
+    CHECK( scene.vehicles[0].veh_id == veh->om_id );
+    CHECK( scene.vehicles[0].heading == expected_heading );
+
+    const std::vector<mp_scene_vpart> &vparts = scene.levels[0].vparts;
+    const auto found = std::find_if( vparts.begin(), vparts.end(),
+    [&]( const mp_scene_vpart & entry ) {
+        return entry.part_index == part_index;
+    } );
+    REQUIRE( found != vparts.end() );
+    CHECK( found->veh_id == veh->om_id );
+    CHECK( id_at( scene, found->id_idx ) == part.info().id.str() );
+    // 90 degrees is 64/256 of a turn; the spawn angle must not be sent.
+    CHECK( found->dir == 64 );
+}
+
+TEST_CASE( "mp_scene_build_sends_graffiti_text_sanitized", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    std::string raw = "hello\n\x01world";
+    raw += "\xE2\x80\xAE"; // U+202E RIGHT-TO-LEFT OVERRIDE
+    raw += "!";
+    raw += std::string( 200, 'x' );
+    const tripoint_bub_ms target = you.pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+    here.set_graffiti( target, raw );
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( you.pos_bub(), 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+    const mp_scene_level &level = scene.levels[0];
+    REQUIRE( level.graffiti.size() == 1 );
+    CHECK( level.graffiti[0].x == 11 );
+    CHECK( level.graffiti[0].y == 10 );
+
+    const uint16_t text_idx = level.graffiti[0].id_idx;
+    REQUIRE( text_idx != 0 );
+    const std::string &text = id_at( scene, text_idx );
+    CHECK( text.rfind( "helloworld!", 0 ) == 0 );
+    CHECK( text.find( '\n' ) == std::string::npos );
+    CHECK( text.find( '\x01' ) == std::string::npos );
+    CHECK( text.find( "\xE2\x80\xAE" ) == std::string::npos );
+    CHECK( text.size() <= 120 );
+    // Valid UTF-8 round-trips; an invalid sequence would decode to U+FFFD and
+    // re-encode differently.
+    CHECK( utf32_to_utf8( utf8_to_utf32( text ) ) == text );
+
+    // Graffiti text is opaque: it must never share an index with an entity id
+    // the layers reference.
+    std::vector<uint16_t> entity_ids;
+    for( const mp_scene_terrain_run &run : level.terrain ) {
+        entity_ids.push_back( run.terrain_idx );
+    }
+    for( const mp_scene_point_id &p : level.furniture ) {
+        entity_ids.push_back( p.id_idx );
+    }
+    for( const mp_scene_point_id &p : level.traps ) {
+        entity_ids.push_back( p.id_idx );
+    }
+    for( const mp_scene_point_id_aux &p : level.items ) {
+        entity_ids.push_back( p.id_idx );
+    }
+    for( const mp_scene_point_id_aux &p : level.fields ) {
+        entity_ids.push_back( p.id_idx );
+    }
+    for( const mp_scene_point_id_aux &p : level.constructions ) {
+        entity_ids.push_back( p.id_idx );
+    }
+    for( const mp_scene_vpart &p : level.vparts ) {
+        entity_ids.push_back( p.id_idx );
+    }
+    CHECK( std::find( entity_ids.begin(), entity_ids.end(), text_idx ) == entity_ids.end() );
+}
+
+TEST_CASE( "mp_scene_build_sends_construction_percent", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    const construction_id build_id = construction_str_id( "constr_pit" ).id();
+    const tripoint_bub_ms quarter = you.pos_bub() + tripoint_rel_ms( 1, 0, 0 );
+    const tripoint_bub_ms almost = you.pos_bub() + tripoint_rel_ms( 2, 0, 0 );
+    partial_con pc_quarter;
+    pc_quarter.id = build_id;
+    pc_quarter.counter = 2500000;
+    here.partial_con_set( quarter, pc_quarter );
+    partial_con pc_almost;
+    pc_almost.id = build_id;
+    pc_almost.counter = 9900000;
+    here.partial_con_set( almost, pc_almost );
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( you.pos_bub(), 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+    const mp_scene_level &level = scene.levels[0];
+    REQUIRE( level.constructions.size() == 2 );
+
+    bool saw_quarter = false;
+    bool saw_almost = false;
+    for( const mp_scene_point_id_aux &entry : level.constructions ) {
+        CHECK( id_at( scene, entry.id_idx ) == "constr_pit" );
+        if( entry.x == 11 && entry.y == 10 ) {
+            saw_quarter = true;
+            CHECK( entry.aux == 25 );
+        } else if( entry.x == 12 && entry.y == 10 ) {
+            saw_almost = true;
+            CHECK( entry.aux == 99 );
+        }
+    }
+    CHECK( saw_quarter );
+    CHECK( saw_almost );
 }
 
 #endif // MP_SERVER
