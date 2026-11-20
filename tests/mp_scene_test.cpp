@@ -26,6 +26,7 @@
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
 #include "map_memory.h"
+#include "monster.h"
 #include "mp/mp_context.h"
 #include "mp/mp_scene.h"
 #include "player_helpers.h"
@@ -351,7 +352,8 @@ TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )
     CHECK( target_run->flags == 0 );
     CHECK( id_at( scene, target_run->terrain_idx ) == "t_floor" );
 
-    // The vision-effect classes carry no overlay entry in any layer.
+    // The vision-effect classes carry no overlay entry in any layer. The only
+    // creature is the avatar's own body: it is always on its own level.
     CHECK( level.furniture.empty() );
     CHECK( level.traps.empty() );
     CHECK( level.graffiti.empty() );
@@ -359,7 +361,8 @@ TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )
     CHECK( level.fields.empty() );
     CHECK( level.constructions.empty() );
     CHECK( level.vparts.empty() );
-    CHECK( level.creatures.empty() );
+    REQUIRE( level.creatures.size() == 1 );
+    CHECK( level.creatures[0].flags == 0x1 );
     CHECK( scene.vehicles.empty() );
 }
 
@@ -703,6 +706,154 @@ TEST_CASE( "mp_scene_build_sends_construction_percent", "[mp]" )
     }
     CHECK( saw_quarter );
     CHECK( saw_almost );
+}
+
+TEST_CASE( "mp_scene_build_omits_unseen_creatures", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    // A wall between the avatar and the monster keeps the monster's tile out
+    // of sight, so it must not appear even though it is inside the rect.
+    const tripoint_bub_ms base = you.pos_bub();
+    here.ter_set( base + tripoint_rel_ms( 1, 0, 0 ), ter_id( "t_wall" ) );
+    // Rebuild so no earlier test's cached sight line survives the new wall.
+    here.build_map_cache( base.z() );
+    spawn_test_monster( "mon_zombie", base + tripoint_rel_ms( 2, 0, 0 ) );
+    refresh_visibility( you.posz() );
+
+    const mp_scene scene = mp_scene_build( base, 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+    const mp_scene_level &level = scene.levels[0];
+
+    // The avatar itself is always a body; nobody else is.
+    REQUIRE( level.creatures.size() == 1 );
+    const mp_scene_creature &avatar_body = level.creatures[0];
+    CHECK( ( avatar_body.flags & 0x1 ) == 0x1 );
+    CHECK( ( avatar_body.flags & 0x4 ) == 0 );
+    CHECK( avatar_body.x == 10 );
+    CHECK( avatar_body.y == 10 );
+    CHECK( avatar_body.z_rel == 0 );
+    CHECK( id_at( scene, avatar_body.id_idx ) == "avatar" );
+    CHECK( avatar_body.size_hint == static_cast<uint8_t>( you.get_size() ) );
+}
+
+TEST_CASE( "mp_scene_build_marks_creatures_one_level_away", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    // The player stands over open air; the monster below stands on a floor.
+    // That is the vertical drop the sight and move checks accept, so the
+    // monster arrives as a marker in the player's own level.
+    const tripoint_bub_ms base = you.pos_bub();
+    const tripoint_bub_ms below( base.x(), base.y(), base.z() - 1 );
+    here.ter_set( base, ter_id( "t_open_air" ) );
+    here.ter_set( below, ter_id( "t_pavement" ) );
+    here.build_map_cache( base.z() );
+    here.build_map_cache( base.z() - 1 );
+    const monster &mon = spawn_test_monster( "mon_zombie", below );
+    refresh_visibility( base.z() );
+    refresh_visibility( base.z() - 1 );
+
+    const mp_scene scene = mp_scene_build( base, 21, 21, 2 );
+    REQUIRE( scene.levels.size() == 2 );
+
+    const mp_scene_creature *marker = nullptr;
+    for( const mp_scene_creature &entry : scene.levels[0].creatures ) {
+        if( ( entry.flags & 0x4 ) != 0 ) {
+            REQUIRE( marker == nullptr );
+            marker = &entry;
+        }
+    }
+    REQUIRE( marker != nullptr );
+    CHECK( marker->x == 10 );
+    CHECK( marker->y == 10 );
+    CHECK( marker->z_rel == -1 );
+    CHECK( ( marker->flags & 0x2 ) == 0 );
+    CHECK( ( marker->flags & 0x1 ) == 0 );
+    CHECK( id_at( scene, marker->id_idx ) == "mon_zombie" );
+    CHECK( marker->size_hint == static_cast<uint8_t>( mon.get_size() ) );
+
+    // A floor over the drop blocks both the sight line and the vertical move,
+    // so the marker must disappear.
+    here.ter_set( base, ter_id( "t_floor" ) );
+    here.build_map_cache( base.z() );
+    refresh_visibility( base.z() );
+    refresh_visibility( base.z() - 1 );
+
+    const mp_scene blocked = mp_scene_build( base, 21, 21, 2 );
+    REQUIRE( blocked.levels.size() == 2 );
+    for( const mp_scene_creature &entry : blocked.levels[0].creatures ) {
+        CHECK( ( entry.flags & 0x4 ) == 0 );
+    }
+}
+
+TEST_CASE( "mp_scene_build_sends_coop_slots_unconditionally", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    on_out_of_scope restore_slots( []() {
+        game_test_helper::reset_player_slots();
+        mp_sync_context_count();
+    } );
+
+    const tripoint_bub_ms base = you.pos_bub();
+    avatar &partner = g->add_player_slot();
+    mp_sync_context_count();
+    // Production slot creation fills the body and id in; a bare slot is not
+    // representative.
+    partner.set_body();
+    partner.setID( g->assign_npc_id() );
+    const tripoint_bub_ms partner_pos = base + tripoint_rel_ms( 8, 0, 0 );
+    partner.setpos( here, partner_pos, false );
+
+    // The partner is not visible through the wall, yet a co-op slot is sent
+    // unconditionally.
+    here.ter_set( base + tripoint_rel_ms( 1, 0, 0 ), ter_id( "t_wall" ) );
+    here.build_map_cache( base.z() );
+    refresh_visibility( you.posz() );
+    REQUIRE_FALSE( you.sees( here, partner ) );
+
+    const mp_scene scene = mp_scene_build( base, 21, 21, 2 );
+    REQUIRE( scene.levels.size() == 2 );
+
+    const mp_scene_creature *slot = nullptr;
+    for( const mp_scene_creature &entry : scene.levels[0].creatures ) {
+        if( entry.x == 18 && entry.y == 10 && entry.z_rel == 0 ) {
+            REQUIRE( slot == nullptr );
+            slot = &entry;
+        }
+    }
+    REQUIRE( slot != nullptr );
+    CHECK( ( slot->flags & 0x2 ) == 0x2 );
+    CHECK( ( slot->flags & 0x1 ) == 0 );
+    CHECK( ( slot->flags & 0x4 ) == 0 );
+    CHECK( id_at( scene, slot->id_idx ) == "avatar" );
+    CHECK( slot->size_hint == static_cast<uint8_t>( partner.get_size() ) );
+
+    // One level away the same slot is not sent at all: co-op slots never
+    // become markers, and the avatar's own level has no body for it.
+    partner.setpos( here, tripoint_bub_ms( partner_pos.x(), partner_pos.y(), base.z() - 1 ),
+                    false );
+    refresh_visibility( base.z() - 1 );
+    const mp_scene below = mp_scene_build( base, 21, 21, 2 );
+    REQUIRE( below.levels.size() == 2 );
+    REQUIRE( below.levels[0].creatures.size() == 1 );
+    for( const mp_scene_creature &entry : below.levels[0].creatures ) {
+        CHECK( entry.z_rel == 0 );
+        CHECK( ( entry.flags & 0x1 ) == 0x1 );
+    }
 }
 
 #endif // MP_SERVER

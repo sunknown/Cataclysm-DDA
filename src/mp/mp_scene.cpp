@@ -14,6 +14,7 @@
 #include "catacharset.h"
 #include "construction.h"
 #include "coordinates.h"
+#include "creature.h"
 #include "enums.h"
 #include "field.h"
 #include "game.h"
@@ -22,6 +23,9 @@
 #include "map.h"
 #include "map_memory.h"
 #include "map_scale_constants.h"
+#include "monster.h"
+#include "mtype.h"
+#include "npc.h"
 #include "trap.h"
 #include "type_id.h"
 #include "units.h"
@@ -102,6 +106,28 @@ void append_run( mp_scene_level &level, uint16_t terrain_idx, uint8_t flags, uin
 
 constexpr uint8_t terrain_visible = 0x1;
 constexpr uint8_t terrain_memorized = 0x2;
+
+// Creature flags: the local avatar, another body (NPC or co-op slot), a
+// one-level-away hint with no body, and inclusion through an enchantment's
+// special vision rather than normal sight.
+constexpr uint8_t creature_is_you = 0x1;
+constexpr uint8_t creature_other_body = 0x2;
+constexpr uint8_t creature_marker_only = 0x4;
+constexpr uint8_t creature_special_vision = 0x8;
+
+// The dictionary id the client resolves to a mesh. The local avatar and co-op
+// slots share "avatar"; NPC classes fall back to a generic body when unset.
+std::string creature_dictionary_id( const Creature &critter )
+{
+    if( const monster *mon = critter.as_monster() ) {
+        return mon->type->id.str();
+    }
+    if( const npc *guy = critter.as_npc() ) {
+        const std::string cls = guy->myclass.str();
+        return cls.empty() ? "npc" : cls;
+    }
+    return "avatar";
+}
 
 // Graffiti is untrusted player text: strip controls and bidi overrides that
 // could reorder a terminal, then cap it. The cap is in bytes so the wire entry
@@ -351,6 +377,101 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
         }
 
         scene.levels.push_back( std::move( level ) );
+    }
+
+    // Creatures belong to the player's own level. A creature one level away is
+    // only a marker there: the vertical drop is what sight and movement allow,
+    // and the client draws a hint rather than a body. Co-op slots are avatars
+    // outside all_creatures() and are sent unconditionally.
+    if( !scene.levels.empty() ) {
+        mp_scene_level &own_level = scene.levels.front();
+
+        // The wire cannot express a cell outside the rect, and the decoder
+        // rejects one, so everything here is clipped to it. The avatar itself
+        // can be outside while the player looks around; the frame still carries
+        // its position in avatar_dx/avatar_dy.
+        const auto rect_cell = [&]( const tripoint_bub_ms & p, uint16_t & x16, uint16_t & y16 ) {
+            const int x = p.x() - origin.x();
+            const int y = p.y() - origin.y();
+            if( x < 0 || y < 0 || x >= width || y >= height ) {
+                return false;
+            }
+            x16 = static_cast<uint16_t>( x );
+            y16 = static_cast<uint16_t>( y );
+            return true;
+        };
+
+        for( const Creature &critter : g->all_creatures() ) {
+            const tripoint_bub_ms p = critter.pos_bub();
+            const int dz = p.z() - base_z;
+            uint8_t flags = 0;
+
+            if( dz == 0 ) {
+                // Only the active avatar is in all_creatures(), so is_avatar()
+                // is exactly the frame's `you`.
+                if( critter.is_avatar() ) {
+                    flags = creature_is_you;
+                } else if( you.sees( here, critter ) ) {
+                    flags = critter.is_npc() ? creature_other_body : 0;
+                } else if( you.sees_with_specials( critter ) ) {
+                    // Seen only through an enchantment: the client needs to
+                    // know so it can pick its special-vision presentation.
+                    flags = creature_special_vision;
+                    if( critter.is_npc() ) {
+                        flags |= creature_other_body;
+                    }
+                } else {
+                    continue;
+                }
+            } else if( std::abs( dz ) == 1 ) {
+                if( critter.is_avatar() || !you.sees( here, critter ) ) {
+                    continue;
+                }
+                // The move faces the player's level; an open-air tile between
+                // is passable, a floor is not.
+                if( !here.valid_move( p, p + tripoint_rel_ms( 0, 0, -dz ) ) ) {
+                    continue;
+                }
+                flags = creature_marker_only;
+                if( critter.is_npc() ) {
+                    flags |= creature_other_body;
+                }
+            } else {
+                continue;
+            }
+
+            uint16_t x16 = 0;
+            uint16_t y16 = 0;
+            if( !rect_cell( p, x16, y16 ) ) {
+                continue;
+            }
+            own_level.creatures.push_back( mp_scene_creature{
+                x16, y16, static_cast<int16_t>( dz ),
+                dictionary.add( creature_dictionary_id( critter ) ),
+                static_cast<uint8_t>( critter.get_size() ), flags
+            } );
+        }
+
+        // draw_ter() draws every co-op slot on the player's level without any
+        // visibility check: you always know where your own other character is.
+        for( avatar *slot : g->get_players() ) {
+            if( slot == &you ) {
+                continue;
+            }
+            const tripoint_bub_ms p = slot->pos_bub( here );
+            if( p.z() != base_z ) {
+                continue;
+            }
+            uint16_t x16 = 0;
+            uint16_t y16 = 0;
+            if( !rect_cell( p, x16, y16 ) ) {
+                continue;
+            }
+            own_level.creatures.push_back( mp_scene_creature{
+                x16, y16, 0, dictionary.add( "avatar" ),
+                static_cast<uint8_t>( slot->get_size() ), creature_other_body
+            } );
+        }
     }
 
     scene.ids = std::move( dictionary.ids );
