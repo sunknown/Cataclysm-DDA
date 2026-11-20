@@ -763,8 +763,20 @@ class inventory_selector
         /**
          * Drop rows whose item locations died while the menu was waiting for input.
          * A no-op, with no layout recomputation, when nothing was dropped.
+         * @param keep_invlets Keep the letters the rows were displayed with. The input
+         *        that ended the wait is resolved against them right after the call, and
+         *        reassigning positionally here would shift rows up past a dropped one.
+         * @return Whether anything was dropped.
          */
-        void drop_dead_entries();
+        bool drop_dead_entries( bool keep_invlets = false );
+        /**
+         * Drop dead rows and the expired copies derived selectors keep (the hook), but
+         * do not recompute the layout. Safe to call from the layout and draw paths,
+         * which the full drop_dead_entries() must not be used from: its layout
+         * recomputation re-enters those paths.
+         * @return Whether anything was dropped.
+         */
+        bool prune_dead_entries();
         /**
          * Called after dead rows were dropped so derived selectors can discard their
          * own copies of the expired locations (e.g. inventory_multiselector::to_use).
@@ -1012,6 +1024,9 @@ class inventory_selector
         bool is_empty = true;
         bool display_stats = true;
         bool use_invlet = true;
+        /// Set while a post-wait layout rebuild must keep the letters the rows were
+        /// displayed with; the key that ended the wait is resolved against them after.
+        bool defer_invlet_reassign = false;
         selector_invlet_type invlet_type_ = SELECTOR_INVLET_DEFAULT;
         size_t entry_generation_number = 0;
 

@@ -2576,7 +2576,11 @@ void inventory_selector::prepare_layout( size_t client_width, size_t client_heig
         visible_columns.front()->set_width( client_width );
     }
 
-    reassign_custom_invlets();
+    // While the input that ended a wait is still unresolved, the rows must keep the
+    // letters the player pressed against; see drop_dead_entries( true ).
+    if( !defer_invlet_reassign ) {
+        reassign_custom_invlets();
+    }
 
     refresh_active_column();
 }
@@ -2649,6 +2653,11 @@ shared_ptr_fast<ui_adaptor> inventory_selector::create_or_get_ui_adaptor()
     if( !current_ui ) {
         ui = current_ui = make_shared_fast<ui_adaptor>();
         current_ui->on_screen_resize( [this]( ui_adaptor & ) {
+            // A terminal resize is handled after the redraw that noticed it, and the
+            // world may have taken another player's turn between the two: the layout
+            // reads every row's invlet. Only a prune here -- prepare_layout() is the
+            // layout path the full drop_dead_entries() must not re-enter from.
+            prune_dead_entries();
             prepare_layout();
         } );
         current_ui->mark_resize();
@@ -3265,6 +3274,10 @@ void inventory_selector::resize_window( int width, int height )
 void inventory_selector::refresh_window()
 {
     cata_assert( w_inv );
+    // Every draw reads invlets and names through the rows, and the world can take
+    // another player's turn between two draws (including between the filter prompt's
+    // redraws). Only a prune here -- the draw path must not re-enter prepare_layout().
+    prune_dead_entries();
 
     if( get_option<std::string>( "INVENTORY_HIGHLIGHT" ) != "disable" ) {
         highlight();
@@ -3313,6 +3326,11 @@ std::pair< bool, std::string > inventory_selector::query_string( const std::stri
     }
 
     spopup.reset();
+    // The prompt's input waits let the world take another player's turn, which expires
+    // the locations the rows were built from. The caller then reads the highlighted row
+    // and to_use (the count path) or marks the layout for a rebuild (the filter path)
+    // before the next draw, so the dead rows must go now.
+    prune_dead_entries();
     return std::make_pair( confirmed, rval );
 }
 
@@ -3570,26 +3588,42 @@ inventory_input inventory_selector::get_input()
     // The menu may have been blocked here while the world took another player's turn.
     // The coop design (§7.3) accepts that the choice goes stale that way and promises an
     // ordinary refusal, not a crash: the avatar swap that ends the turn expires the
-    // item_location snapshots the rows were built from. Nothing reads the entries while
-    // we are blocked, so the dead rows are dropped right here -- before process_input()
-    // resolves the key against them and before the next redraw draws their invlets.
-    drop_dead_entries();
-    return process_input( action, ch );
+    // item_location snapshots the rows were built from. Drop the dead rows right here,
+    // before process_input() resolves the key against them, but keep the letters the key
+    // was read against.
+    bool const dropped = drop_dead_entries( true );
+    inventory_input res = process_input( action, ch );
+    if( dropped ) {
+        // The key is resolved; give the next draw a compact set of letters again.
+        reassign_custom_invlets();
+    }
+    return res;
 }
 
-void inventory_selector::drop_dead_entries()
+bool inventory_selector::drop_dead_entries( bool keep_invlets )
+{
+    if( !prune_dead_entries() ) {
+        return false;
+    }
+    defer_invlet_reassign = keep_invlets;
+    prepare_layout();
+    defer_invlet_reassign = false;
+    return true;
+}
+
+bool inventory_selector::prune_dead_entries()
 {
     bool dropped = false;
     for( inventory_column *column : columns ) {
         dropped |= column->drop_dead_entries();
     }
     if( !dropped ) {
-        return;
+        return false;
     }
     on_dead_entries_dropped();
     // Entries of the previous draw are gone; a mouse action must not resolve to them.
     rect_entry_map.clear();
-    prepare_layout();
+    return true;
 }
 
 inventory_input inventory_selector::process_input( const std::string &action, int ch )
@@ -5449,8 +5483,12 @@ trade_selector::trade_selector( trade_ui *parent, Character &u,
     _ui = create_or_get_ui_adaptor();
 }
 
-trade_selector::select_t trade_selector::to_trade() const
+trade_selector::select_t trade_selector::to_trade()
 {
+    // Every consumer of a pane's offer dereferences its pairs (the trade values, the
+    // fit check, the return of perform_trade()), and a pane that was not active while
+    // the world took another player's turn never ran the post-wait drop itself.
+    prune_dead_entries();
     return to_use;
 }
 
@@ -5462,6 +5500,10 @@ void trade_selector::execute()
     get_active_column().on_activate();
 
     while( !exit ) {
+        // perform_trade() re-runs execute() on the pane that stayed inactive while the
+        // other pane held the input; its rows can be dead before this activation's
+        // first draw, which happens before any input wait of our own.
+        drop_dead_entries();
         _ui->invalidate_ui();
         ui_manager::redraw_invalidated();
         std::string const &action = _ctxt_trade.handle_input();
@@ -5469,8 +5511,8 @@ void trade_selector::execute()
         // waits in the same way: the world can take another player's turn while this
         // menu is open and expire the item locations its rows and selection were built
         // from. Drop them before any branch, including OK, which recomputes trade values
-        // from the selection.
-        drop_dead_entries();
+        // from the selection, but keep the letters the key was read against.
+        bool const dropped = drop_dead_entries( true );
         if( action == ACTION_SWITCH_PANES ) {
             _parent->pushevent( trade_ui::event::SWITCH );
             get_active_column().on_deactivate();
@@ -5493,6 +5535,10 @@ void trade_selector::execute()
             if( input.action == "HELP_KEYBINDINGS" ) {
                 ctxt.display_menu();
             }
+        }
+        if( dropped ) {
+            // The action is dispatched; give the next draw compact letters again.
+            reassign_custom_invlets();
         }
     }
 }
