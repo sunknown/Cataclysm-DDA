@@ -701,6 +701,14 @@ static void run_server_session( const std::string &world_name, const std::option
         mp_server_log( "game started in world \"" + world_generator->active_world->world_name +
                        "\"" );
         while( !g->do_turn() ) {
+            // An operator's Ctrl-C or SIGTERM only records a stop (exit_handler
+            // does that much in signal context); acting on it here is what lets
+            // the session be saved and its threads joined from the world, at a
+            // turn boundary rather than inside the wait the signal interrupted.
+            if( const int stop_signal = mp_server_take_stop_signal() ) {
+                mp_server_log( "stopping on signal " + std::to_string( stop_signal ) );
+                exit_handler( 0 );
+            }
         }
         mp_server_log( "game ended" );
         // Stops the threads and leaves the process on player 0's context, the
@@ -785,6 +793,12 @@ static int run_game( cli_opts &cli )
     sigemptyset( &sigIntHandler.sa_mask );
     sigIntHandler.sa_flags = 0;
     sigaction( SIGINT, &sigIntHandler, nullptr );
+#if defined(MP_SERVER)
+    // An operator normally stops a dedicated server with SIGTERM. Left at the
+    // default action the process dies mid-session and nothing is written, so
+    // the same handler serves both signals: one that saves and exits cleanly.
+    sigaction( SIGTERM, &sigIntHandler, nullptr );
+#endif
 #endif
 
     if( !assure_essential_dirs_exist() ) {
@@ -842,39 +856,71 @@ static int run_game( cli_opts &cli )
 
 }  // namespace
 
+// The one teardown every exit path runs, in the order it must run in: before
+// anything is torn down, g.reset() and the static destructors that run after
+// exit() can still raise debugmsgs, and the interactive prompt is no longer
+// safe to open once imclient is gone.
+[[noreturn]] static void tear_down_and_exit()
+{
+    debug_set_shutting_down();
+    deinitDebug();
+
+    int exit_status = 0;
+    g.reset();
+
+    catacurses::endwin();
+
+#if defined(__ANDROID__)
+    // Avoid capturing SIGABRT on exit on Android in crash report
+    // Can be removed once the SIGABRT on exit problem is fixed
+    signal( SIGABRT, SIG_DFL );
+#endif
+
+    imclient.reset();
+    exit( exit_status );
+}
+
 void exit_handler( int s )
 {
+#if defined(MP_SERVER)
+    // A signal only records the stop; it does not stop anything here. The
+    // handler runs on whichever thread the kernel picks and may interrupt a
+    // scheduler wait or a turn, where joining the player threads would deadlock
+    // on the wait it interrupted (shut_down() waits for the parked thread count
+    // to reach zero, and the interrupted frame is one of those parked) and the
+    // save would race the player that holds the baton. The world thread picks
+    // the request up between turns and comes back through this function with a
+    // non-signal code; see mp_server_request_stop().
+    if( s > 0 ) {
+        mp_server_request_stop( s );
+        return;
+    }
+    // A dedicated server has nobody at its console to answer the "Really quit?"
+    // question, and the session on screen belongs to the clients: a stop never
+    // asks. It saves the running session first -- the stop below is the last
+    // point at which the world is intact -- and then joins its threads before
+    // the game is torn down. exit() destroys still-joinable std::thread objects
+    // (std::terminate), and g.reset() would free state a parked player thread
+    // can still touch.
+    inp_mngr.reset_timeout();
+    mp_server_save_on_shutdown();
+    if( mp_server_session_running() ) {
+        mp_server_end_session();
+    }
+    // Before deinitDebug(): the log line still has a debug log to mirror
+    // itself into, and stderr is the last thing the operator will see.
+    mp_server_log( "server stopped" );
+    tear_down_and_exit();
+#else
     const int old_timeout = inp_mngr.get_timeout();
     inp_mngr.reset_timeout();
     if( s != 2 || query_yn( _( "Really Quit?  All unsaved changes will be lost." ) ) ) {
-        // Before anything is torn down: g.reset() and the static destructors
-        // that run after exit() can still raise debugmsgs, and the interactive
-        // prompt is no longer safe to open once imclient is gone.
-#if defined(MP_SERVER)
-        // Before deinitDebug(): the log line still has a debug log to mirror
-        // itself into, and stderr is the last thing the operator will see.
-        mp_server_log( "server stopped" );
-#endif
-        debug_set_shutting_down();
-        deinitDebug();
-
-        int exit_status = 0;
-        g.reset();
-
-        catacurses::endwin();
-
-#if defined(__ANDROID__)
-        // Avoid capturing SIGABRT on exit on Android in crash report
-        // Can be removed once the SIGABRT on exit problem is fixed
-        signal( SIGABRT, SIG_DFL );
-#endif
-
-        imclient.reset();
-        exit( exit_status );
+        tear_down_and_exit();
     }
     inp_mngr.set_timeout( old_timeout );
     ui_manager::redraw_invalidated();
     catacurses::doupdate();
+#endif
 }
 
 #if defined(MP_SERVER)

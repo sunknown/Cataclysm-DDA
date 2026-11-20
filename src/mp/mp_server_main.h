@@ -105,6 +105,26 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err );
 // sitting in a menu is parked on the wire until their socket goes away.
 void mp_server_end_session();
 
+// Writes the running session to disk so a restarted server finds it. Called
+// from the shutdown path (exit_handler) because a stopped server never gets
+// back to the turn loop end_session() saves from. A join phase or a session
+// that already ended has nothing to write, and the request is then a no-op.
+void mp_server_save_on_shutdown();
+
+// Whether a session is running: the party playing, or the join phase still
+// seating it. False once mp_server_end_session() has stopped it, which is what
+// lets the shutdown path stop a live session exactly once.
+bool mp_server_session_running();
+
+// Records a stop requested from the operator's console. This is all the signal
+// handler does: it may interrupt a scheduler wait or a turn, where saving and
+// joining the session's threads are neither safe nor possible, so the world
+// thread acts on the request at its next turn boundary. Async-signal-safe.
+void mp_server_request_stop( int signal_number );
+
+// Takes the recorded stop's signal number once, or 0 when none was requested.
+int mp_server_take_stop_signal();
+
 // The halves of a session's thread lifecycle that every owner of one runs the
 // same way -- the server above, and the in-process test harness -- so that a
 // fix to one cannot leave the other behind.
