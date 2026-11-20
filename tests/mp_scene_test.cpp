@@ -445,38 +445,100 @@ TEST_CASE( "mp_scene_build_sends_vehicle_heading_and_part_angle", "[mp]" )
     avatar &you = get_avatar_legacy();
     set_time_to_day();
 
-    const tripoint_bub_ms origin = you.pos_bub() + tripoint_rel_ms( 2, 0, 0 );
-    vehicle *veh = here.add_vehicle( vehicle_prototype_test_shopping_cart, origin, 45_degrees, 0,
-                                     veh_spawn_status::UNDAMAGED );
-    REQUIRE( veh != nullptr );
+    const tripoint_bub_ms first_pos = you.pos_bub() + tripoint_rel_ms( 2, 0, 0 );
+    const tripoint_bub_ms second_pos = you.pos_bub() + tripoint_rel_ms( 5, 0, 0 );
+    vehicle *first = here.add_vehicle( vehicle_prototype_test_shopping_cart, first_pos,
+                                       45_degrees, 0, veh_spawn_status::UNDAMAGED );
+    vehicle *second = here.add_vehicle( vehicle_prototype_test_shopping_cart, second_pos,
+                                        180_degrees, 0, veh_spawn_status::UNDAMAGED );
+    REQUIRE( first != nullptr );
+    REQUIRE( second != nullptr );
 
-    const optional_vpart_position vp = here.veh_at( origin );
-    REQUIRE( vp.has_value() );
-    const int part_index = static_cast<int>( vp->part_index() );
-    vehicle_part &part = veh->part( part_index );
-    part.direction = 90_degrees;
+    const optional_vpart_position first_vp = here.veh_at( first_pos );
+    const optional_vpart_position second_vp = here.veh_at( second_pos );
+    REQUIRE( first_vp.has_value() );
+    REQUIRE( second_vp.has_value() );
+    const int first_part = static_cast<int>( first_vp->part_index() );
+    const int second_part = static_cast<int>( second_vp->part_index() );
+    first->part( first_part ).direction = 90_degrees;
+    second->part( second_part ).direction = 90_degrees;
     refresh_visibility( you.posz() );
 
-    const mp_scene scene = mp_scene_build( origin, 21, 21, 1 );
+    const mp_scene scene = mp_scene_build( first_pos, 21, 21, 1 );
     REQUIRE( scene.levels.size() == 1 );
 
-    const uint16_t expected_heading = static_cast<uint16_t>(
-                                          std::lround( units::to_degrees( veh->face.dir() ) *
-                                                       65536.0 / 360.0 ) & 0xFFFF );
-    REQUIRE( scene.vehicles.size() == 1 );
-    CHECK( scene.vehicles[0].veh_id == veh->om_id );
-    CHECK( scene.vehicles[0].heading == expected_heading );
+    const auto heading_of = []( const vehicle & veh ) -> uint16_t {
+        return static_cast<uint16_t>(
+                   std::lround( units::to_degrees( veh.face.dir() ) * 65536.0 / 360.0 ) & 0xFFFF );
+    };
+    const uint16_t first_heading = heading_of( *first );
+    const uint16_t second_heading = heading_of( *second );
+    REQUIRE( first_heading != second_heading );
+
+    // Both vehicles carry om_id 0 in the test world, so the wire ids must be
+    // frame-local and distinct.
+    REQUIRE( scene.vehicles.size() == 2 );
+    uint16_t first_id = 0xFFFF;
+    uint16_t second_id = 0xFFFF;
+    for( const mp_scene_vehicle &entry : scene.vehicles ) {
+        if( entry.heading == first_heading ) {
+            first_id = entry.veh_id;
+        } else if( entry.heading == second_heading ) {
+            second_id = entry.veh_id;
+        }
+    }
+    CHECK( first_id != 0xFFFF );
+    CHECK( second_id != 0xFFFF );
+    CHECK( first_id != second_id );
+
+    const auto wire_id_of = [&]( const vehicle & veh ) -> uint16_t {
+        for( const mp_scene_vehicle &entry : scene.vehicles ) {
+            if( entry.heading == heading_of( veh ) ) {
+                return entry.veh_id;
+            }
+        }
+        return 0xFFFF;
+    };
 
     const std::vector<mp_scene_vpart> &vparts = scene.levels[0].vparts;
-    const auto found = std::find_if( vparts.begin(), vparts.end(),
-    [&]( const mp_scene_vpart & entry ) {
-        return entry.part_index == part_index;
-    } );
-    REQUIRE( found != vparts.end() );
-    CHECK( found->veh_id == veh->om_id );
-    CHECK( id_at( scene, found->id_idx ) == part.info().id.str() );
+    const tripoint_bub_ms rect_origin =
+        first_pos + tripoint_rel_ms( static_cast<int>( scene.view_dx ),
+                                     static_cast<int>( scene.view_dy ), 0 );
+    const auto part_at = [&]( const tripoint_bub_ms & tile,
+    int part_index ) -> const mp_scene_vpart * {
+        for( const mp_scene_vpart &entry : vparts ) {
+            const tripoint_bub_ms p( rect_origin.x() + entry.x, rect_origin.y() + entry.y,
+                                     rect_origin.z() );
+            if( p == tile && entry.part_index == part_index ) {
+                return &entry;
+            }
+        }
+        return nullptr;
+    };
+
+    const mp_scene_vpart *first_entry = part_at( first_pos, first_part );
+    REQUIRE( first_entry != nullptr );
+    CHECK( first_entry->veh_id == first_id );
+    CHECK( first_entry->veh_id == wire_id_of( *first ) );
+    CHECK( id_at( scene, first_entry->id_idx ) == first->part( first_part ).info().id.str() );
     // 90 degrees is 64/256 of a turn; the spawn angle must not be sent.
-    CHECK( found->dir == 64 );
+    CHECK( first_entry->dir == 64 );
+
+    const mp_scene_vpart *second_entry = part_at( second_pos, second_part );
+    REQUIRE( second_entry != nullptr );
+    CHECK( second_entry->veh_id == second_id );
+    CHECK( second_entry->veh_id == wire_id_of( *second ) );
+    CHECK( id_at( scene, second_entry->id_idx ) == second->part( second_part ).info().id.str() );
+    CHECK( second_entry->dir == 64 );
+
+    // Every part entry names the vehicle actually occupying that tile.
+    for( const mp_scene_vpart &entry : vparts ) {
+        const tripoint_bub_ms tile( rect_origin.x() + entry.x, rect_origin.y() + entry.y,
+                                    rect_origin.z() );
+        const optional_vpart_position tile_vp = here.veh_at( tile );
+        REQUIRE( tile_vp.has_value() );
+        CHECK( entry.veh_id == wire_id_of( tile_vp->vehicle() ) );
+    }
 }
 
 TEST_CASE( "mp_scene_build_sends_graffiti_text_sanitized", "[mp]" )
@@ -552,6 +614,7 @@ TEST_CASE( "mp_scene_build_sends_construction_percent", "[mp]" )
     const construction_id build_id = construction_str_id( "constr_pit" ).id();
     const tripoint_bub_ms quarter = you.pos_bub() + tripoint_rel_ms( 1, 0, 0 );
     const tripoint_bub_ms almost = you.pos_bub() + tripoint_rel_ms( 2, 0, 0 );
+    const tripoint_bub_ms malformed = you.pos_bub() + tripoint_rel_ms( 3, 0, 0 );
     partial_con pc_quarter;
     pc_quarter.id = build_id;
     pc_quarter.counter = 2500000;
@@ -560,6 +623,11 @@ TEST_CASE( "mp_scene_build_sends_construction_percent", "[mp]" )
     pc_almost.id = build_id;
     pc_almost.counter = 9900000;
     here.partial_con_set( almost, pc_almost );
+    // The default construction_id(-1) is invalid; obj() must never be called
+    // on it, so this tile contributes no entry.
+    partial_con pc_malformed;
+    pc_malformed.counter = 500000;
+    here.partial_con_set( malformed, pc_malformed );
     refresh_visibility( you.posz() );
 
     const mp_scene scene = mp_scene_build( you.pos_bub(), 21, 21, 1 );
@@ -578,6 +646,7 @@ TEST_CASE( "mp_scene_build_sends_construction_percent", "[mp]" )
             saw_almost = true;
             CHECK( entry.aux == 99 );
         }
+        CHECK_FALSE( ( entry.x == 13 && entry.y == 10 ) );
     }
     CHECK( saw_quarter );
     CHECK( saw_almost );

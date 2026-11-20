@@ -4,9 +4,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -170,9 +170,21 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
 
     scene_dictionary dictionary;
 
-    // Vehicle headings are needed once per vehicle, not once per tile. The
-    // same vehicle can be reported for several levels, so dedupe by its id.
-    std::unordered_set<uint16_t> emitted_vehicles;
+    // Vehicles need only be unique within this frame; the client groups parts
+    // per frame and frames are rebuilt on every send. `om_id` is 0 for any
+    // vehicle not yet registered with the overmap, so it cannot be used here.
+    std::map<const vehicle *, uint16_t> vehicle_ids;
+    uint16_t next_vehicle_id = 0;
+    auto vehicle_wire_id = [&]( const vehicle &veh ) -> uint16_t {
+        const auto found = vehicle_ids.find( &veh );
+        if( found != vehicle_ids.end() ) {
+            return found->second;
+        }
+        const uint16_t id = next_vehicle_id++;
+        vehicle_ids.emplace( &veh, id );
+        scene.vehicles.push_back( mp_scene_vehicle{ id, vehicle_heading_65536( veh ) } );
+        return id;
+    };
 
     // The wire says z_rel is relative to the player's level, so the stack is
     // anchored at the avatar even when the view centre has a z offset (look
@@ -189,13 +201,8 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
         level.z_rel = static_cast<int8_t>( -i );
 
         for( const wrapped_vehicle &wv : here.get_vehicles() ) {
-            if( wv.pos.z() != z ) {
-                continue;
-            }
-            const uint16_t veh_id = static_cast<uint16_t>( wv.v->om_id );
-            if( emitted_vehicles.insert( veh_id ).second ) {
-                scene.vehicles.push_back(
-                    mp_scene_vehicle{ veh_id, vehicle_heading_65536( *wv.v ) } );
+            if( wv.pos.z() == z ) {
+                vehicle_wire_id( *wv.v );
             }
         }
 
@@ -276,7 +283,7 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
                             level.vparts.push_back( mp_scene_vpart{
                                 x16, y16, dictionary.add( part.info().id.str() ),
                                 static_cast<uint16_t>( vp->part_index() ),
-                                static_cast<uint16_t>( veh.om_id ),
+                                vehicle_wire_id( veh ),
                                 part_direction_256( part.direction )
                             } );
                         }
@@ -288,11 +295,15 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
                         }
 
                         if( const partial_con *con = here.partial_con_at( p ) ) {
-                            level.constructions.push_back( mp_scene_point_id_aux{
-                                x16, y16, dictionary.add( con->id.obj().id.str() ),
-                                static_cast<uint8_t>( std::min( con->counter / 100000,
-                                                         static_cast<int>( UINT8_MAX ) ) )
-                            } );
+                            // A malformed partial construction can carry the
+                            // default construction_id(-1); obj() is unsafe.
+                            if( con->id.is_valid() ) {
+                                level.constructions.push_back( mp_scene_point_id_aux{
+                                    x16, y16, dictionary.add( con->id.obj().id.str() ),
+                                    static_cast<uint8_t>( std::min( con->counter / 100000,
+                                                             static_cast<int>( UINT8_MAX ) ) )
+                                } );
+                            }
                         }
 
                         if( here.has_graffiti_at( p ) ) {
