@@ -33,9 +33,11 @@ tests/mpserver-cata_test "inventory_reopen_cycles_do_not_crash" --rng-seed 1 \
 
 Crash of record: `.data/inv-crash/run6.log`, test start 19:54:02.29, SIGSEGV attributed to
 `tests/mp_session_test.cpp:1906`, the `REQUIRE( harness.run_until( ... ) )` that waits for the
-calendar to advance, `cycle := 0`, exit 134. The sequence per cycle is `i` (open), partner
-presses the hurry key, the countdown is expired, the partner ends the turn, then a key is sent
-to the seat whose menu is open.
+calendar to advance, `cycle := 0`, exit 134. The sequence per cycle is `i` (open), the partner
+presses the hurry key, the countdown expires, the partner ends the turn. No keypress is needed
+for the crash: the dying read is inside the calendar-advance wait above, because the seat's
+thread has already returned from its own input wait — on an idle/timeout event — and is inside
+`process_input()` while the world moves.
 
 The first-cycle death reproduces in three independent runs: `run4.log` and `run6.log` at the
 calendar-advance `REQUIRE` (`:1906`), while the test thread still waits for the world tick, and
@@ -50,6 +52,9 @@ show that the first opening is safe. The invalidation is the other seat's turn b
 `run4`, `run6` and `run7` all die on the first cycle.
 
 ## Stack
+
+The pre-fix snapshot, from the field crash on `df427a66a8`; the line numbers are that revision's
+and have moved since (the selector gained the post-wait drop):
 
 ```
 inventory_entry::get_invlet() const           src/inventory_ui.cpp:636
@@ -206,9 +211,9 @@ GREEN run is the check.
 ## Rejected alternatives
 
 - **A null check in `get_invlet()`.** Hides the symptom and leaves a dead `item_location` in the
-  list: it stays selectable, keeps being drawn, and `execute()` can hand it back to callers
-  through `any_item()` (`src/inventory_ui.cpp:3910,3914`). The plan forbids it before a verdict
-  for the same reason.
+  list: it stays selectable, keeps being drawn, and CONFIRM in `inventory_pick_selector::execute()`
+  hands the highlighted row back through `any_item()` (`src/inventory_ui.cpp:4143`). The plan
+  forbids it before a verdict for the same reason.
 - **Re-resolving `item_on_person` by item uid.** Would change `item_location` semantics
   game-wide; the class's contract is that it "is invalidated by many operations (including
   copying of the item)" (`src/item_location.h:31`).
@@ -226,6 +231,42 @@ GREEN run is the check.
   `trade_selector::execute()` (`:5457`), which reads keys through `_ctxt_trade.handle_input()`
   (`:5467`) and calls `process_input( ctxt.input_to_action( iev ), iev.get_first_input() )`
   itself (`:5491`); the prune is called there before any branch (`:5473`).
+- **The final seam, `41a40526f0` and `a9ff0b7f90`.** `41a40526f0` added the resume points
+  where the menu is *not* entering `get_input()`: `query_string()` after its prompt,
+  `refresh_window()` on every draw, the `ui_adaptor` resize callback (the server applies a
+  pending resize on its way into the input wait, `src/mp/mp_curses_server.cpp:161-169`), and
+  `trade_selector::to_trade()`; it also keeps the displayed letters while the key that ended
+  the wait is resolved (`defer_invlet_reassign`). `a9ff0b7f90` closes the two holes that
+  remained:
+  - **The prune no longer moves the choice.** `inventory_selector::prune_dead_entries()` holds
+    the active column's highlighted `item_location` across the drop, repages the columns,
+    recomputes `is_empty`, and re-highlights the held location. If the location died, every
+    column's highlight is cleared (`inventory_column::clear_highlight()`) and
+    `prepare_paging()` leaves a cleared highlight cleared, so CONFIRM/EXAMINE answer with the
+    dummy entry: the menu stays open and nothing is returned. Before this, an erased row above
+    the highlight — or the highlighted row itself — left the index on the next surviving row,
+    and CONFIRM acted on an item the player never chose.
+  - **A selector's own subject is checked too.** The new virtual
+    `inventory_selector::context_locations_are_live()` is overridden by
+    `container_inventory_selector` (the container whose contents are listed),
+    `inventory_insert_selector` (the holster) and `ammo_inventory_selector` (the reload target).
+    `get_input()` asks it before the drop (whose layout builds the header stats and the presets'
+    cells, which dereference it) and answers `QUIT`; `refresh_window()` and the resize callback
+    return before drawing or laying out. Those menus close with the same empty result Escape
+    gives — the ordinary refusal. The server reaches into nothing: the check runs on the menu's
+    own thread inside its own wait.
+  - **A resize at a boundary keeps the letters.** The callback defers invlet reassignment when
+    it runs inside the input wait (`read_action()` marks the wait), the same deferral the
+    post-wait drop uses.
+  - **Tests.** `a_prune_does_not_move_the_confirmed_row` and
+    `a_dead_row_is_not_replaced_under_the_filter_prompt` (`tests/mp_session_test.cpp`), both
+    green; the first fails at its post-boundary CHECK when the restore is disabled, so it pins
+    the behaviour rather than the code path. The ammo `+` case could not be driven: opening the
+    reload menu (`r`) in the harness hangs the scheduler (a `uilist` redraw aborts inside
+    `mp_imgui_draw_screen`, `src/mp/mp_imgui_server.cpp:67`, and the world then holds the baton
+    until the watchdog fires), so the selector-held contexts are covered by code reasoning only.
+    The resize case has no deterministic harness driver (a resize is only applied inside the
+    server's input wait, and the harness has no resize control).
 - **A dead entry is legal, a dead dereference is not.** The spec accepts the staleness that the
   lazy timeout creates; what it promises is a refusal, not a crash. §7.3
   (`docs/superpowers/specs/2026-08-04-cdda-p2p-coop-design.md:367-374`), verbatim:
