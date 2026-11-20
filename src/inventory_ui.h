@@ -1222,9 +1222,13 @@ class inventory_compare_selector : public inventory_multiselector
         std::pair<const item *, const item *> execute();
 
     protected:
-        /// The (up to 2) items to be compared.
-        std::vector<const item *> compared;
+        /// The (up to 2) items to be compared. Locations rather than raw pointers:
+        /// an item can die while the menu waits for input. The prune in get_input()
+        /// drops a stale one before the key is resolved, so execute() only ever
+        /// returns live locations.
+        std::vector<item_location> compared;
         void toggle_entry( inventory_entry *entry );
+        void on_dead_entries_dropped() override;
 };
 
 class inventory_drop_selector : public inventory_multiselector

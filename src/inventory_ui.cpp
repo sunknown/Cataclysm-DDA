@@ -4834,8 +4834,16 @@ std::pair<const item *, const item *> inventory_compare_selector::execute()
             inventory_selector::on_input( input );
         }
 
+        // The selection is held as locations, so one that died during the wait is
+        // dropped by the prune in get_input() before the key is resolved. Both are
+        // live here; the guard keeps a dead location from ever reaching the caller.
+        compared.erase( std::remove_if( compared.begin(), compared.end(),
+        []( const item_location &loc ) {
+            return !loc;
+        } ), compared.end() );
+
         if( compared.size() == 2 ) {
-            const auto res = std::make_pair( compared[0], compared[1] );
+            const auto res = std::make_pair( &*compared[0], &*compared[1] );
             // Clear second selected entry to prevent comparison reopening too
             // soon
             if( just_selected ) {
@@ -4848,7 +4856,7 @@ std::pair<const item *, const item *> inventory_compare_selector::execute()
 
 void inventory_compare_selector::toggle_entry( inventory_entry *entry )
 {
-    const item *it = &*entry->any_item();
+    const item_location &it = entry->any_item();
     const auto iter = std::find( compared.begin(), compared.end(), it );
 
     entry->chosen_count = iter == compared.end() ? 1 : 0;
@@ -4860,6 +4868,20 @@ void inventory_compare_selector::toggle_entry( inventory_entry *entry )
     }
 
     on_change( *entry );
+}
+
+void inventory_compare_selector::on_dead_entries_dropped()
+{
+    // The column prune already erased the dead rows and clamped their chosen_count;
+    // only the selector's own copy of the selection is left to discard. A location
+    // that expired while the menu waited must never be handed to the caller.
+    compared.erase( std::remove_if( compared.begin(), compared.end(),
+    []( const item_location &loc ) {
+        return !loc;
+    } ), compared.end() );
+    // Still meaningful for the base class's state, even though this selector does
+    // not use to_use.
+    inventory_multiselector::on_dead_entries_dropped();
 }
 
 inventory_selector::header_stats inventory_multiselector::get_raw_stats() const
