@@ -426,6 +426,12 @@ class inventory_column
         inventory_entry *add_entry( const inventory_entry &entry );
         void move_entries_to( inventory_column &dest );
         void clear();
+        /**
+         * Drop locations that expired while the menu waited for input, and any entry
+         * left without a live location.
+         * @return Whether anything was dropped.
+         */
+        bool drop_dead_entries();
         void set_stack_favorite( inventory_entry &entry, bool favorite );
 
         void set_collapsed( inventory_entry &entry, bool collapse );
@@ -753,6 +759,17 @@ class inventory_selector
 
         inventory_input get_input();
         inventory_input process_input( const std::string &action, int ch );
+
+        /**
+         * Drop rows whose item locations died while the menu was waiting for input.
+         * A no-op, with no layout recomputation, when nothing was dropped.
+         */
+        void drop_dead_entries();
+        /**
+         * Called after dead rows were dropped so derived selectors can discard their
+         * own copies of the expired locations (e.g. inventory_multiselector::to_use).
+         */
+        virtual void on_dead_entries_dropped() {}
 
         /**
          * Act according to an action from the input_context.
@@ -1122,6 +1139,7 @@ class inventory_multiselector : public inventory_selector
         bool allow_select_contained;
         virtual void on_toggle() {};
         void on_input( const inventory_input &input );
+        void on_dead_entries_dropped() override;
         int count = 0;
         header_stats get_raw_stats() const override;
         void toggle_categorize_contained();

@@ -1632,6 +1632,74 @@ void inventory_column::clear()
     paging_is_valid = false;
 }
 
+bool inventory_column::drop_dead_entries()
+{
+    bool dropped = false;
+    // An entry stacks the locations of identical items: one may expire while the
+    // others stay alive (a wielded item travels with the avatar swap, an item in an
+    // inventory list does not), so only the dead locations go.
+    const auto prune = [&dropped]( entries_t &ents ) {
+        for( auto iter = ents.begin(); iter != ents.end(); ) {
+            if( !iter->is_item() ) {
+                ++iter;
+                continue;
+            }
+            std::vector<item_location> &locations = iter->locations;
+            const size_t chosen = iter->chosen_count;
+            size_t chosen_alive = 0;
+            bool lost = false;
+            for( size_t i = 0; i < locations.size(); ++i ) {
+                if( locations[i] ) {
+                    if( i < chosen ) {
+                        ++chosen_alive;
+                    }
+                } else {
+                    lost = true;
+                }
+            }
+            if( !lost ) {
+                ++iter;
+                continue;
+            }
+            dropped = true;
+            locations.erase( std::remove_if( locations.begin(), locations.end(),
+            []( const item_location &loc ) {
+                return !loc;
+            } ), locations.end() );
+            if( locations.empty() ) {
+                iter = ents.erase( iter );
+                continue;
+            }
+            // Some of the chosen locations may have been among the dead ones.
+            iter->chosen_count = std::min( iter->chosen_count, chosen_alive );
+            // The row text, its denial and its cached name were built from the old list.
+            iter->reset_entry_cell_cache();
+            iter->denial.reset();
+            iter->cached_denial_space = 0;
+            iter->update_cache();
+            ++iter;
+        }
+    };
+    prune( entries );
+    prune( entries_hidden );
+    if( !dropped ) {
+        return false;
+    }
+    // A collated group sorts by its tip, which may be one of the dropped locations;
+    // un-collating turns the surviving rows back into independent entries.
+    const auto has_dead_tip = []( const entries_t & ents ) {
+        return std::any_of( ents.begin(), ents.end(), []( const inventory_entry &ent ) {
+            return ent.is_collated() && !ent.collation_meta->tip;
+        } );
+    };
+    if( _collated && ( has_dead_tip( entries ) || has_dead_tip( entries_hidden ) ) ) {
+        uncollate();
+    }
+    // Paging counted the dropped rows, so its indices and page offsets are stale.
+    paging_is_valid = false;
+    return true;
+}
+
 bool inventory_column::highlight( const item_location &loc, bool front_only )
 {
     for( size_t index = 0; index < entries.size(); ++index ) {
@@ -1904,6 +1972,10 @@ void selection_column::prepare_paging( const std::string & )
     }
 
     if( !last_changed.is_null() ) {
+        // This copy is not in entries, so drop_dead_entries() does not touch it; it may
+        // still hold a location that expired under an open menu. The search is safe
+        // because entries here carry selected_cat as their custom category (never
+        // dereferenced) and item_location comparison only reads the target pointers.
         const auto iter = std::find( entries.begin(), entries.end(), last_changed );
         if( iter != entries.end() ) {
             highlight( std::distance( entries.begin(), iter ), scroll_direction::FORWARD );
@@ -3495,7 +3567,29 @@ inventory_input inventory_selector::get_input()
 {
     std::string const &action = ctxt.handle_input();
     int const ch = ctxt.get_raw_input().get_first_input();
+    // The menu may have been blocked here while the world took another player's turn.
+    // The coop design (§7.3) accepts that the choice goes stale that way and promises an
+    // ordinary refusal, not a crash: the avatar swap that ends the turn expires the
+    // item_location snapshots the rows were built from. Nothing reads the entries while
+    // we are blocked, so the dead rows are dropped right here -- before process_input()
+    // resolves the key against them and before the next redraw draws their invlets.
+    drop_dead_entries();
     return process_input( action, ch );
+}
+
+void inventory_selector::drop_dead_entries()
+{
+    bool dropped = false;
+    for( inventory_column *column : columns ) {
+        dropped |= column->drop_dead_entries();
+    }
+    if( !dropped ) {
+        return;
+    }
+    on_dead_entries_dropped();
+    // Entries of the previous draw are gone; a mouse action must not resolve to them.
+    rect_entry_map.clear();
+    prepare_layout();
 }
 
 inventory_input inventory_selector::process_input( const std::string &action, int ch )
@@ -4343,6 +4437,16 @@ inventory_multiselector::inventory_multiselector( Character &p,
         elem->set_multiselect( true );
     }
     append_column( *selection_col );
+}
+
+void inventory_multiselector::on_dead_entries_dropped()
+{
+    // to_use is the authoritative selection the menu hands to its caller, and the
+    // header stats dereference it; a pair whose location expired cannot be acted on.
+    to_use.erase( std::remove_if( to_use.begin(), to_use.end(),
+    []( const std::pair<item_location, int> &drop ) {
+        return !drop.first;
+    } ), to_use.end() );
 }
 
 void inventory_multiselector::toggle_entry( inventory_entry &entry, size_t count )
@@ -5361,6 +5465,12 @@ void trade_selector::execute()
         _ui->invalidate_ui();
         ui_manager::redraw_invalidated();
         std::string const &action = _ctxt_trade.handle_input();
+        // The trade loop reads keys itself instead of going through get_input(), but it
+        // waits in the same way: the world can take another player's turn while this
+        // menu is open and expire the item locations its rows and selection were built
+        // from. Drop them before any branch, including OK, which recomputes trade values
+        // from the selection.
+        drop_dead_entries();
         if( action == ACTION_SWITCH_PANES ) {
             _parent->pushevent( trade_ui::event::SWITCH );
             get_active_column().on_deactivate();
