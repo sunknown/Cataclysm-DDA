@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "avatar.h"
+#include "calendar.h"
+#include "cata_scope_helpers.h"
 #include "cursesdef.h"
 #include "game.h"
 #include "game_constants.h"
@@ -27,15 +29,20 @@
 #include "mp/mp_scene_codec.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_transport.h"
+#include "output.h"
+#include "panels.h"
 #include "player_helpers.h"
 #include "point.h"
 #include "type_id.h"
 
 namespace
 {
+
+static const efftype_id effect_boomered( "boomered" );
 
 // Both contexts are static rather than stack locals: the active-context pointer
 // must not dangle between tests.
@@ -492,6 +499,233 @@ TEST_CASE( "mp_scene_stream_terrain_blit_marks_the_scene_dirty", "[mp]" )
     catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
     catacurses::wrefresh( stream_ctx0.w_terrain );
     CHECK( session->scene_terrain_dirty );
+}
+
+TEST_CASE( "activating_a_player_invalidates_the_visibility_cache",
+           "[mp]" )
+{
+    restore_active_state restore;
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+
+    // The visibility cache is keyed on the avatar's position AND its character
+    // flags, and update_visibility_cache() early-outs on an unchanged position
+    // alone. Seat B must therefore sit on seat A's tile, or a positional change
+    // would mask the missing invalidation.
+    const tripoint_bub_ms seat_pos = get_avatar_legacy().pos_bub();
+    g->add_player_slot();
+    mp_sync_context_count();
+    REQUIRE( g->player_slot_count() == 2 );
+    REQUIRE( g->contexts.size() == 2 );
+    arm_context( g->contexts[1], 1, 20, 12, point( 0, 0 ) );
+    // set_pos_abs_only moves the avatar without the cache rebuild setpos()
+    // would run; this seat is not the active one.
+    g->player_at( 1 ).set_pos_abs_only( get_map().get_abs( seat_pos ) );
+
+    // Seat A is the active avatar. Have it draw: the cache is built and carries
+    // A's boomered flag.
+    avatar &you = get_avatar_legacy();
+    REQUIRE( &you == &g->player_at( 0 ) );
+    you.add_effect( effect_boomered, 1_minutes );
+    get_map().update_visibility_cache( you.pos_bub().z() );
+    REQUIRE_FALSE( get_map().get_visibility_variables_cache().visibility_cache_dirty );
+    REQUIRE( get_map().get_visibility_variables_cache().u_is_boomered );
+
+    // Activating seat B, on the same tile, must mark the cache dirty before B
+    // draws: otherwise B's build would read A's computed visibility.
+    mp_activate_player( 1 );
+    REQUIRE( get_avatar_legacy().pos_bub() == seat_pos );
+    CHECK( get_map().get_visibility_variables_cache().visibility_cache_dirty );
+
+    // The draw that follows recomputes with B's own character flags.
+    get_map().update_visibility_cache( get_avatar_legacy().pos_bub().z() );
+    CHECK_FALSE( get_map().get_visibility_variables_cache().u_is_boomered );
+
+    leave_world_phase();
+    // The base avatar outlives the test, so the flag that made the cache
+    // observable must not.
+    get_avatar_legacy().remove_effect( effect_boomered );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+TEST_CASE( "two_sessions_get_their_own_scene_rects", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+
+    // Two real seats, so the scene's avatar cell comes from the seat's own
+    // character rather than from whichever avatar happened to be active.
+    const tripoint_abs_ms saved_pos = get_avatar_legacy().pos_abs();
+    g->add_player_slot();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+    get_avatar().setpos( get_map(), tripoint_bub_ms( 60, 60, 0 ) );
+    stream_ctx0.ter_view_p = get_avatar_legacy().pos_bub();
+
+    mp_activate_player( 1 );
+    get_avatar().setpos( get_map(), tripoint_bub_ms( 65, 64, 0 ) );
+    arm_context( g->contexts[1], 1, 20, 12, point( 0, 0 ) );
+
+    std::shared_ptr<mp_transport> first = install_session( 0 );
+    std::shared_ptr<mp_transport> second = install_session( 1 );
+    REQUIRE( mp_session_of_slot( 0 ) != nullptr );
+    REQUIRE( mp_session_of_slot( 1 ) != nullptr );
+    mp_session_of_slot( 0 )->scene_caps = 1;
+    mp_session_of_slot( 1 )->scene_caps = 1;
+
+    // Seat 0 flushes with its own context active, its own map window and its
+    // own avatar in u. The blit clears the mask grid, then one region of seat
+    // 0's own UI is noted over its map, so its frame and only its frame carries
+    // that rect.
+    mp_activate_player( 0 );
+    mp_set_active_context( &stream_ctx0 );
+    mp_server_set_terminal_size( 80, 24 );
+    catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
+    catacurses::wrefresh( stream_ctx0.w_terrain );
+    mp_scene_mask_note( 10, 0, 4, 2, 0 );
+    flush_scene_under_baton( 0, 2 );
+    const mp_scene scene0 = decode_only_scene( drain_frames( *first ) );
+
+    // Seat 1 flushes next, after seat 0's mask exists in the grid. Its own
+    // window makes the grid re-sync, so seat 0's UI region must not appear.
+    mp_activate_player( 1 );
+    mp_server_set_terminal_size( 80, 24 );
+    flush_scene_under_baton( 1, 2 );
+    const mp_scene scene1 = decode_only_scene( drain_frames( *second ) );
+
+    CHECK( scene0.frame_seq == 1 );
+    CHECK( scene0.tiles_w == 40 );
+    CHECK( scene0.tiles_h == 10 );
+    CHECK( scene0.ui_x == 10 );
+    CHECK( scene0.ui_y == 0 );
+    CHECK( scene0.ui_w == 40 );
+    CHECK( scene0.ui_h == 10 );
+    CHECK( scene0.view_dx == -20 );
+    CHECK( scene0.view_dy == -5 );
+    CHECK( scene0.avatar_dx == 20 );
+    CHECK( scene0.avatar_dy == 5 );
+    REQUIRE( scene0.masks.size() == 1 );
+    CHECK( scene0.masks[0].x == 10 );
+    CHECK( scene0.masks[0].y == 0 );
+    CHECK( scene0.masks[0].w == 4 );
+    CHECK( scene0.masks[0].h == 2 );
+    CHECK( scene0.masks[0].role == 0 );
+
+    CHECK( scene1.frame_seq == 1 );
+    CHECK( scene1.tiles_w == 20 );
+    CHECK( scene1.tiles_h == 12 );
+    CHECK( scene1.ui_x == 0 );
+    CHECK( scene1.ui_y == 0 );
+    CHECK( scene1.ui_w == 20 );
+    CHECK( scene1.ui_h == 12 );
+    CHECK( scene1.view_dx == -10 );
+    CHECK( scene1.view_dy == -6 );
+    CHECK( scene1.avatar_dx == 10 );
+    CHECK( scene1.avatar_dy == 6 );
+    CHECK( scene1.masks.empty() );
+
+    // A second flushed change on seat 0 is seat 0's alone: the other seat's
+    // sequence and wire stay where its last frame left them.
+    const uint32_t seat1_seq = mp_session_of_slot( 1 )->scene_seq;
+    mp_activate_player( 0 );
+    mp_set_active_context( &stream_ctx0 );
+    stream_ctx0.ter_view_p += tripoint_rel_ms( 1, 0, 0 );
+    catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
+    catacurses::wrefresh( stream_ctx0.w_terrain );
+    flush_scene_under_baton( 0, 2 );
+    const mp_scene scene0b = decode_only_scene( drain_frames( *first ) );
+    CHECK( scene0b.frame_seq == 2 );
+    CHECK( scene0b.avatar_dx == 19 );
+    CHECK( scene0b.tiles_w == 40 );
+    CHECK( mp_session_of_slot( 1 )->scene_seq == seat1_seq );
+    CHECK( count_of_kind( drain_frames( *second ), mp_msg_kind::scene ) == 0 );
+
+    leave_world_phase();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    // Back to the position the rest of the suite expects; set_pos_abs_only for
+    // the same reason as the placement above.
+    get_avatar_legacy().set_pos_abs_only( saved_pos );
+}
+
+TEST_CASE( "scene_rect_survives_a_resize", "[mp]" )
+{
+    restore_active_state restore;
+    restore_on_out_of_scope restore_termx( TERMX );
+    restore_on_out_of_scope restore_termy( TERMY );
+    restore_on_out_of_scope restore_tww( TERRAIN_WINDOW_WIDTH );
+    restore_on_out_of_scope restore_twh( TERRAIN_WINDOW_HEIGHT );
+    restore_on_out_of_scope restore_twtw( TERRAIN_WINDOW_TERM_WIDTH );
+    restore_on_out_of_scope restore_twth( TERRAIN_WINDOW_TERM_HEIGHT );
+    restore_on_out_of_scope restore_posx( POSX );
+    restore_on_out_of_scope restore_posy( POSY );
+
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+    arm_context( stream_ctx1, 1, 20, 12, point( 0, 0 ) );
+
+    std::shared_ptr<mp_transport> first = install_session( 0 );
+    std::shared_ptr<mp_transport> second = install_session( 1 );
+    REQUIRE( mp_session_of_slot( 0 ) != nullptr );
+    REQUIRE( mp_session_of_slot( 1 ) != nullptr );
+    mp_session_of_slot( 0 )->scene_caps = 1;
+    mp_session_of_slot( 1 )->scene_caps = 1;
+
+    mp_set_active_context( &stream_ctx0 );
+    mp_server_set_terminal_size( 80, 24 );
+    flush_scene_under_baton( 0, 2 );
+    const mp_scene before0 = decode_only_scene( drain_frames( *first ) );
+
+    mp_set_active_context( &stream_ctx1 );
+    mp_server_set_terminal_size( 80, 24 );
+    flush_scene_under_baton( 1, 2 );
+    const mp_scene before1 = decode_only_scene( drain_frames( *second ) );
+    REQUIRE( before0.tiles_w == 40 );
+    REQUIRE( before0.ui_w == 40 );
+    REQUIRE( before1.tiles_w == 20 );
+    REQUIRE( before1.ui_w == 20 );
+
+    // The production resize path, driven from the wire: the client's control
+    // frame becomes pending_resize, the backend takes it and sizes the grid,
+    // and the context's map window is rebuilt at the new metrics.
+    mp_set_active_context( &stream_ctx0 );
+    const std::string request = R"({"t":"resize","w":100,"h":30})";
+    first->send( mp_wrap( mp_msg_kind::control,
+                          std::vector<uint8_t>( request.begin(), request.end() ) ) );
+    mp_server_pump();
+    int width = 0;
+    int height = 0;
+    REQUIRE( mp_server_take_resize_request( width, height ) );
+    CHECK( width == 100 );
+    CHECK( height == 30 );
+    mp_server_set_terminal_size( width, height );
+    TERMX = width;
+    TERMY = height;
+    mp_resize_active_context();
+
+    const int sidebar_left = panel_manager::get_manager().get_width_left();
+    const int new_tiles_w = TERRAIN_WINDOW_WIDTH;
+    REQUIRE( new_tiles_w != 40 );
+
+    // Redraw the resized map window, then flush: the frame follows the new
+    // geometry instead of reusing the size cached anywhere from before.
+    catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
+    catacurses::wrefresh( stream_ctx0.w_terrain );
+    flush_scene_under_baton( 0, 2 );
+    const mp_scene after0 = decode_only_scene( drain_frames( *first ) );
+
+    CHECK( after0.frame_seq == 2 );
+    CHECK( after0.tiles_w == new_tiles_w );
+    CHECK( after0.tiles_h == 30 );
+    CHECK( after0.ui_x == sidebar_left );
+    CHECK( after0.ui_y == 0 );
+    CHECK( after0.ui_w == new_tiles_w );
+    CHECK( after0.ui_h == 30 );
+    CHECK( after0.view_dx == -new_tiles_w / 2 );
+    CHECK( after0.view_dy == -15 );
+
+    // The other seat's last frame and sequence are untouched by that resize.
+    CHECK( count_of_kind( drain_frames( *second ), mp_msg_kind::scene ) == 0 );
+    CHECK( mp_session_of_slot( 1 )->scene_seq == before1.frame_seq );
 }
 
 #endif // MP_SERVER

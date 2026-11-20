@@ -11,6 +11,7 @@
 #include "game_constants.h"
 #include "game_ui.h"
 #include "live_view.h"
+#include "map.h"
 #include "memorial_logger.h"
 #include "mp/mp_sched.h"
 #include "output.h"
@@ -301,6 +302,12 @@ void mp_activate_player( size_t idx )
     g->w_minimap_ptr = ctx.w_minimap_ptr;
     // 4. Metrics.
     mp_apply_viewport_params( ctx );
+    // The visibility cache is a single per-map object keyed on the avatar's
+    // position and its character flags. Two seats acting on the same tile would
+    // let the second one read the first one's computed visibility, so the
+    // switch marks it dirty; the next draw rebuilds it for the new avatar. Only
+    // a flag is set, so this is safe before the map has generated anything.
+    get_map().invalidate_visibility_cache();
     // 5. UI stack.
     ui_manager::set_active_stack( &ctx.ui_stack );
     // 6. View state and input.
