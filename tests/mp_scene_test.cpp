@@ -15,6 +15,7 @@
 #include "enums.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "level_cache.h"
 #include "lightmap.h"
 #include "map.h"
 #include "map_helpers.h"
@@ -226,6 +227,43 @@ TEST_CASE( "mp_scene_build_covers_ten_z_levels", "[mp]" )
 
     const mp_scene clamped = mp_scene_build( you.pos_bub(), 7, 7, 11 );
     CHECK( clamped.levels.size() == 10 );
+}
+
+TEST_CASE( "mp_scene_build_anchors_levels_to_the_players_level", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    restore_on_out_of_scope restore_view_offset( you.view_offset );
+
+    // The view centre can carry a z offset from look mode. Level 0 must still
+    // be the avatar's own level, so the two z-levels get distinct terrain and
+    // both are pinned visible: a regression to view_centre.z() would send the
+    // wall instead of the floor.
+    const tripoint_bub_ms own = you.pos_bub();
+    you.view_offset = tripoint_rel_ms( 0, 0, 1 );
+    level_cache &own_cache = here.access_cache( own.z() );
+    level_cache &above_cache = here.access_cache( own.z() + 1 );
+    for( int dy = -3; dy <= 3; ++dy ) {
+        for( int dx = -3; dx <= 3; ++dx ) {
+            here.ter_set( tripoint_bub_ms( own.x() + dx, own.y() + dy, own.z() ),
+                          ter_id( "t_floor" ) );
+            here.ter_set( tripoint_bub_ms( own.x() + dx, own.y() + dy, own.z() + 1 ),
+                          ter_id( "t_wall" ) );
+            own_cache.visibility_cache[own.x() + dx][own.y() + dy] = lit_level::LOW;
+            above_cache.visibility_cache[own.x() + dx][own.y() + dy] = lit_level::LOW;
+        }
+    }
+
+    const mp_scene scene = mp_scene_build( own + you.view_offset, 7, 7, 2 );
+    REQUIRE( scene.levels.size() == 2 );
+    CHECK( scene.levels[0].z_rel == 0 );
+    CHECK( scene.levels[1].z_rel == -1 );
+    CHECK( terrain_coverage( scene.levels[0] ) == 49 );
+    for( const mp_scene_terrain_run &run : scene.levels[0].terrain ) {
+        CHECK( id_at( scene, run.terrain_idx ) == "t_floor" );
+    }
 }
 
 TEST_CASE( "mp_scene_build_omits_layers_for_vision_effect_tiles", "[mp]" )

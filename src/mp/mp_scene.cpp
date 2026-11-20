@@ -119,9 +119,13 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
 
     scene_dictionary dictionary;
 
+    // The wire says z_rel is relative to the player's level, so the stack is
+    // anchored at the avatar even when the view centre has a z offset (look
+    // mode). Only x/y come from `view_centre`.
+    const int base_z = you.posz();
     const int requested = std::min<int>( z_levels, MP_SCENE_MAX_LEVELS );
     for( int i = 0; i < requested; ++i ) {
-        const int z = view_centre.z() - i;
+        const int z = base_z - i;
         if( z < -OVERMAP_DEPTH ) {
             break;
         }
