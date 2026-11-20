@@ -1924,4 +1924,94 @@ TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
     SUCCEED( "four inventory reopen cycles did not crash the server" );
 }
 
+// The multiselector branch of the same crash. Marking the wielded item fills
+// to_use with an item_location the turn boundary then kills; the drop menu's
+// header stats and selection pane dereference to_use, so the post-wait drop has
+// to discard the dead pair before it rebuilds the layout. Without that, the
+// keypress that ends the wait dies in inventory_drop_selector::get_raw_stats().
+TEST_CASE( "a_dead_drop_selection_is_discarded_without_a_crash", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    // Direct item member of the avatar: the turn boundary's avatar swap is what
+    // expires its item_location.
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+
+    const auto drop_menu_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "Multidrop" );
+    };
+    const auto screen_text = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        std::string text;
+        for( int y = 0; y < grid.height(); ++y ) {
+            for( int x = 0; x < grid.width(); ++x ) {
+                text += grid.at( x, y ).ch;
+            }
+            text += '\n';
+        }
+        return text;
+    };
+    // The item row and the selection pane both render the marked item's name, on
+    // the same screen row when the columns fit side by side, so count occurrences.
+    const auto rock_cells = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        int hits = 0;
+        for( int y = 0; y < grid.height(); ++y ) {
+            std::string row;
+            for( int x = 0; x < grid.width(); ++x ) {
+                row += grid.at( x, y ).ch;
+            }
+            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
+                 pos = row.find( "rock", pos + 1 ) ) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    // 'd' opens the multidrop menu with the cleared avatar's one item. The
+    // wielded item lives in the gear column, which is not the initially active
+    // (empty) inventory column, so step to it first; TOGGLE_ENTRY then marks the
+    // highlighted rock and fills to_use.
+    harness.press( 0, 'd' );
+    REQUIRE( harness.run_until( drop_menu_is_open ) );
+    harness.press( 0, 'h' );
+    harness.press( 0, 'l' );
+    const bool marked = harness.run_until( [&]() {
+        return rock_cells() == 2;
+    } );
+    INFO( screen_text() );
+    REQUIRE( marked );
+
+    harness.press( 1, '`' );
+    REQUIRE( harness.run_until( []() {
+        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+    } ) );
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 1, '.' );
+    REQUIRE( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+    // The world moved under the open menu and the marked row's location died.
+    CHECK( drop_menu_is_open() );
+    CHECK( g->player_at( 0 ).get_wielded_item() );
+
+    // This keypress is the one that used to dereference the dead to_use pair.
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return rock_cells() == 0;
+    }, 20 ) );
+    CHECK( drop_menu_is_open() );
+
+    // Cancel: the dead selection is discarded rather than reaching the drop.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !drop_menu_is_open();
+    }, 20 ) );
+    CHECK( g->player_at( 0 ).get_wielded_item() );
+}
+
 #endif // MP_SERVER
