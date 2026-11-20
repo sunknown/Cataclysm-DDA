@@ -29,6 +29,7 @@
 #include "monster.h"
 #include "mp/mp_context.h"
 #include "mp/mp_scene.h"
+#include "npc.h"
 #include "player_helpers.h"
 #include "trap.h"
 #include "type_id.h"
@@ -741,6 +742,42 @@ TEST_CASE( "mp_scene_build_omits_unseen_creatures", "[mp]" )
     CHECK( avatar_body.size_hint == static_cast<uint8_t>( you.get_size() ) );
 }
 
+TEST_CASE( "mp_scene_build_sends_classless_npcs_as_generic_bodies", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    // Wanderers spawn with NC_NONE, which str() renders as a non-empty string.
+    // The client must still receive its generic "npc" mesh id.
+    const tripoint_bub_ms base = you.pos_bub();
+    npc &wanderer = spawn_npc( ( base + tripoint_rel_ms( 3, 0, 0 ) ).xy(), "test_talker" );
+    wanderer.myclass = npc_class_id::NULL_ID();
+    REQUIRE( wanderer.myclass.is_null() );
+    here.build_map_cache( base.z() );
+    refresh_visibility( you.posz() );
+    REQUIRE( you.sees( here, wanderer ) );
+
+    const mp_scene scene = mp_scene_build( base, 21, 21, 1 );
+    REQUIRE( scene.levels.size() == 1 );
+
+    const mp_scene_creature *body = nullptr;
+    for( const mp_scene_creature &entry : scene.levels[0].creatures ) {
+        if( entry.x == 13 && entry.y == 10 && entry.z_rel == 0 ) {
+            REQUIRE( body == nullptr );
+            body = &entry;
+        }
+    }
+    REQUIRE( body != nullptr );
+    CHECK( ( body->flags & 0x2 ) == 0x2 );
+    CHECK( ( body->flags & 0x1 ) == 0 );
+    CHECK( ( body->flags & 0x4 ) == 0 );
+    CHECK( id_at( scene, body->id_idx ) == "npc" );
+    CHECK( body->size_hint == static_cast<uint8_t>( wanderer.get_size() ) );
+}
+
 TEST_CASE( "mp_scene_build_marks_creatures_one_level_away", "[mp]" )
 {
     restore_active_state restore;
@@ -749,18 +786,28 @@ TEST_CASE( "mp_scene_build_marks_creatures_one_level_away", "[mp]" )
     avatar &you = get_avatar_legacy();
     set_time_to_day();
 
-    // The player stands over open air; the monster below stands on a floor.
-    // That is the vertical drop the sight and move checks accept, so the
-    // monster arrives as a marker in the player's own level.
+    // The player stands over open air on its own column; the monster hangs one
+    // cell diagonally below, under an open-air tile. The diagonal sight line
+    // checks the drop on the player's column as well, so it stays visible when
+    // the tile above the monster is later blocked: only the vertical move can
+    // remove the marker there.
     const tripoint_bub_ms base = you.pos_bub();
     const tripoint_bub_ms below( base.x(), base.y(), base.z() - 1 );
+    const tripoint_bub_ms monster_pos( base.x() + 1, base.y(), base.z() - 1 );
+    const tripoint_bub_ms above_monster( monster_pos.x(), monster_pos.y(), base.z() );
+    const tripoint_bub_ms under_monster( monster_pos.x(), monster_pos.y(), base.z() - 2 );
     here.ter_set( base, ter_id( "t_open_air" ) );
     here.ter_set( below, ter_id( "t_pavement" ) );
+    here.ter_set( above_monster, ter_id( "t_open_air" ) );
+    here.ter_set( monster_pos, ter_id( "t_pavement" ) );
+    here.ter_set( under_monster, ter_id( "t_pavement" ) );
     here.build_map_cache( base.z() );
     here.build_map_cache( base.z() - 1 );
-    const monster &mon = spawn_test_monster( "mon_zombie", below );
+    const monster &mon = spawn_test_monster( "mon_zombie", monster_pos );
     refresh_visibility( base.z() );
     refresh_visibility( base.z() - 1 );
+    REQUIRE( you.sees( here, mon ) );
+    REQUIRE( here.valid_move( monster_pos, above_monster ) );
 
     const mp_scene scene = mp_scene_build( base, 21, 21, 2 );
     REQUIRE( scene.levels.size() == 2 );
@@ -773,7 +820,7 @@ TEST_CASE( "mp_scene_build_marks_creatures_one_level_away", "[mp]" )
         }
     }
     REQUIRE( marker != nullptr );
-    CHECK( marker->x == 10 );
+    CHECK( marker->x == 11 );
     CHECK( marker->y == 10 );
     CHECK( marker->z_rel == -1 );
     CHECK( ( marker->flags & 0x2 ) == 0 );
@@ -781,12 +828,15 @@ TEST_CASE( "mp_scene_build_marks_creatures_one_level_away", "[mp]" )
     CHECK( id_at( scene, marker->id_idx ) == "mon_zombie" );
     CHECK( marker->size_hint == static_cast<uint8_t>( mon.get_size() ) );
 
-    // A floor over the drop blocks both the sight line and the vertical move,
-    // so the marker must disappear.
-    here.ter_set( base, ter_id( "t_floor" ) );
+    // A see-through but impassable tile over the monster keeps the sight line
+    // open and blocks only the vertical move, so only the move check can
+    // remove the marker here.
+    here.ter_set( above_monster, ter_id( "t_window" ) );
     here.build_map_cache( base.z() );
     refresh_visibility( base.z() );
     refresh_visibility( base.z() - 1 );
+    REQUIRE( you.sees( here, mon ) );
+    REQUIRE_FALSE( here.valid_move( monster_pos, above_monster ) );
 
     const mp_scene blocked = mp_scene_build( base, 21, 21, 2 );
     REQUIRE( blocked.levels.size() == 2 );

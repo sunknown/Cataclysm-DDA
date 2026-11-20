@@ -123,8 +123,10 @@ std::string creature_dictionary_id( const Creature &critter )
         return mon->type->id.str();
     }
     if( const npc *guy = critter.as_npc() ) {
+        // A classless NPC carries NC_NONE, not an empty string, so test the
+        // null id: the generic body mesh is the honest answer either way.
         const std::string cls = guy->myclass.str();
-        return cls.empty() ? "npc" : cls;
+        return guy->myclass.is_null() || cls.empty() ? "npc" : cls;
     }
     return "avatar";
 }
