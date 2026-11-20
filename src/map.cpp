@@ -9779,6 +9779,12 @@ void map::on_unload( const tripoint_rel_sm &loc )
     std::tie( omt_abs_origin, offset_within_omt ) = project_remain<coords::omt>( submap_abs_origin );
     // uuuugh this should be const?
     std::shared_ptr<map_data_summary> const_summary = overmap_buffer.get_omt_summary( omt_abs_origin );
+    // The submap belongs to an overmap the buffer does not hold: the map's absolute origin can
+    // lie outside every loaded overmap (debug teleports, test maps, a bubble left by a
+    // predecessor).  With no overmap there is no summary to make dynamic, so nothing to update.
+    if( !const_summary ) {
+        return;
+    }
     bool adjusted = !const_summary->placeholder;
 
 

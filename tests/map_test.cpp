@@ -26,6 +26,7 @@
 #include "map_scale_constants.h"
 #include "map_selector.h"
 #include "monster.h"
+#include "overmapbuffer.h"
 #include "pocket_type.h"
 #include "point.h"
 #include "ret_val.h"
@@ -84,6 +85,22 @@ TEST_CASE( "map_coordinate_conversion_functions" )
     // Verify round-tripping
     CHECK( here.get_abs( here.get_bub( test_abs ) ) == test_abs );
     CHECK( here.get_bub( here.get_abs( test_point ) ) == test_point );
+}
+
+TEST_CASE( "map_unload_without_loaded_overmap", "[map]" )
+{
+    map &here = get_map();
+    // The shift below unloads the departing row of submaps.  Without the overmap that
+    // contains them, map::on_unload has no summary to update and must return quietly.
+    overmap_buffer.clear();
+    const tripoint_abs_sm abs_before = here.get_abs_sub();
+    CHECK_NOTHROW( here.shift( point_rel_sm::south ) );
+    CHECK( here.get_abs_sub().x() == abs_before.x() );
+    CHECK( here.get_abs_sub().y() == abs_before.y() + 1 );
+    CHECK( here.get_abs_sub().z() == abs_before.z() );
+    // The buffer was emptied for this case; regenerate the overmap the bubble now sits in
+    // so later cases do not inherit a missing overmap.
+    overmap_buffer.ter( project_to<coords::omt>( here.get_abs_sub() ) );
 }
 
 TEST_CASE( "destroy_grabbed_furniture" )
