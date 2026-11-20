@@ -155,7 +155,8 @@ struct overmap_draw_data_t {
     point_omt_ms origin_remainder = point_omt_ms( SEEX, SEEY );
     //UI view cursor position
     tripoint_abs_omt cursor_pos = tripoint_abs_omt( -1, -1, -1 );
-    //the UI adaptor for the overmap; this can keep the overmap displayed while turns are processed
+    // Fallback overmap ui_adaptor: mp_active_overmap_ui() owns the adaptor per
+    // player context and uses this field only when no context is installed.
     std::shared_ptr<ui_adaptor> ui;
 
     overmap_draw_data_t() = default;

@@ -313,7 +313,7 @@ in-progress avatar swap before freeing, so it is correct with any active slot, w
 byte-identical (single slot, single context). This is the same repair the `[mp]` harness destructor
 already performs, applied to the cases that do not use that harness.
 
-Before/after: both minimal pairs exit 139 → exit 0 (`All tests passed (5 assertions in 2 test
+Before/after: both minimal pairs exit 134 → exit 0 (`All tests passed (5 assertions in 2 test
 cases)`); shard-03 filter exit 134 → exit 0, `All tests passed (6321564 assertions in 168 test
 cases)`; shard-11 filter exit 134 → exit 0, `All tests passed (1678072 assertions in 167 test
 cases)`.
