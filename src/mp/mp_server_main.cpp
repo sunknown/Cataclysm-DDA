@@ -3,6 +3,7 @@
 #include "mp/mp_server_main.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -991,6 +992,15 @@ bool mp_server_open_world( const std::string &world_name, std::string &err )
     mp_join_begin( mp_sessions().size(), std::nullopt );
     mp_server_start_player_threads();
     while( true ) {
+        // An operator's stop while the party is still choosing has no
+        // characters of its own to save; the caller closes the wires and takes
+        // the process down, exactly as it does for a world that would not open.
+        if( const int stop_signal = mp_server_take_stop_signal() ) {
+            mp_server_log( "stopping on signal " + std::to_string( stop_signal ) +
+                           " while waiting for the party to choose" );
+            err = "the server was stopped";
+            return false;
+        }
         // A seat a client left is offered again before anything else: accepting
         // is the only thing that can fill it, and until it is filled the phase
         // cannot seat. The attempt itself does not block -- the world keeps
@@ -1285,6 +1295,51 @@ void mp_server_end_session()
     // main() still holds context 0's main screen and drops it at the end of
     // this loop iteration, and ~ui_adaptor asserts it dies in that stack.
     mp_activate_player( 0 );
+}
+
+bool mp_server_session_running()
+{
+    return mp_active_sched() != nullptr;
+}
+
+// The signal an operator sent to stop the server, recorded by the handler and
+// acted on by the world. The handler needs no lock and no logging: it may
+// interrupt a scheduler wait (whose parked count it would strand) or a turn
+// (whose player would keep mutating the state a save reads), so it only stores
+// the number, and the world does the stopping at its next point of holding the
+// baton, which can be with the turn still open.
+static std::atomic<int> g_stop_signal{ 0 };
+
+void mp_server_request_stop( const int signal_number )
+{
+    g_stop_signal.store( signal_number );
+}
+
+int mp_server_take_stop_signal()
+{
+    return g_stop_signal.exchange( 0 );
+}
+
+void mp_server_save_on_shutdown()
+{
+    // Only a party that is actually playing has state of its own to write. The
+    // join phase has seated nobody, and a session that ended through the turn
+    // loop was already saved by end_session() (src/do_turn.cpp) before its
+    // threads were stopped -- saving it again would be a second write of the
+    // same state, at a point where the world has been torn down.
+    if( g == nullptr || !mp_server_session_running() || mp_join_in_progress() ) {
+        return;
+    }
+    // The world holds the baton here, as end_session() requires; it may be with
+    // the turn still open, since the stop is acted on where do_turn() paused.
+    // The save is therefore a quiescent mid-turn snapshot -- every player is
+    // parked and the world is not being written -- not a turn tail: it carries
+    // the avatars and the map as they stand, without world_turn_post()'s
+    // closing work on the open turn.
+    mp_activate_world();
+    if( !g->save() ) {
+        mp_server_log( "the server stopped but the session could not be saved" );
+    }
 }
 
 #endif // MP_SERVER

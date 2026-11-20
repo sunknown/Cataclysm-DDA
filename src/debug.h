@@ -184,6 +184,18 @@ enum class DebugOutput : int {
     file,
 };
 
+class cata_path;
+
+/**
+ * Ensures the parent directory of the given debug log file exists.
+ *
+ * A fresh --userdir has no config directory yet, and std::ofstream does not
+ * create missing parent directories, so opening the log would silently fail
+ * and the process would write no log at all. Returns whether the parent
+ * directory exists afterwards.
+ */
+bool ensure_debug_log_parent( const cata_path &file );
+
 /** Initializes the debugging system, called exactly once from main() */
 void setupDebug( DebugOutput );
 /** Opposite of setupDebug, shuts the debugging system down. */
