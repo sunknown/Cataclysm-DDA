@@ -430,3 +430,8 @@ Not fixed here: it is outside this plan's F-list, it predates the branch, and th
 a null guard in `on_unload()` (production behaviour: skip the summary update for an unloaded
 OMT) or restoring the bubble in whichever test leaves it at the edge — a diagnosis of its own.
 Recorded so the next full run treats it as baseline, not as a new failure.
+
+Fixed since: the null guard landed as `62d6615134` (`fix(map): skip the unload summary when no
+overmap is loaded`), with `map_unload_without_loaded_overmap` in `tests/map_test.cpp` covering the
+unloading shift. The shard-08 filter that used to exit 139 now exits 0 (108 cases, 1,773,703
+assertions), and the full suite on that tree is green: 2014 cases, 0 failed.
