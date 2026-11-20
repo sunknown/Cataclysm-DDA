@@ -177,6 +177,10 @@ void put_id( std::vector<uint8_t> &out, const std::string &text )
 // corrupt in place.
 struct minimal_body {
     std::vector<uint8_t> bytes;
+    size_t tiles_w = 0;
+    size_t tiles_h = 0;
+    size_t id_count = 0;
+    size_t first_id_len = 0;
     size_t mask_role = 0;
     size_t z_count = 0;
     size_t level_z_rel = 0;
@@ -193,7 +197,9 @@ minimal_body make_minimal_body()
 
     put_u8( b, MP_SCENE_BODY_VERSION );
     put_u32( b, 9 );
+    f.tiles_w = b.size();
     put_u16( b, 2 );            // tiles_w
+    f.tiles_h = b.size();
     put_u16( b, 2 );            // tiles_h
     put_i16( b, -1 );           // view_dx
     put_i16( b, -1 );           // view_dy
@@ -216,7 +222,9 @@ minimal_body make_minimal_body()
     put_u16( b, 5 );            // veh_id
     put_u16( b, 0x8000 );       // heading
 
+    f.id_count = b.size();
     put_u16( b, 2 );            // id_count
+    f.first_id_len = b.size();
     put_id( b, "" );
     put_id( b, "t_floor" );
 
@@ -402,7 +410,20 @@ TEST_CASE( "mp_scene_decoder_rejects_malformed_bodies", "[mp]" )
     }
     bad.emplace_back( "body_version 0", with_u8( valid, 0, 0 ) );
     bad.emplace_back( "body_version 2", with_u8( valid, 0, 2 ) );
+    bad.emplace_back( "tiles_w 0", with_u16( valid, fixture.tiles_w, 0 ) );
+    bad.emplace_back( "tiles_h 0", with_u16( valid, fixture.tiles_h, 0 ) );
+    bad.emplace_back( "id_count 0", with_u16( valid, fixture.id_count, 0 ) );
+    // Index 0 carrying a name, not the empty id the contract requires.
+    std::vector<uint8_t> named_first_id(
+        valid.begin(), valid.begin() + fixture.first_id_len );
+    put_u16( named_first_id, 1 );
+    named_first_id.push_back( 'x' );
+    named_first_id.insert( named_first_id.end(),
+                           valid.begin() + fixture.first_id_len + 2, valid.end() );
+    bad.emplace_back( "first id not empty", named_first_id );
     bad.emplace_back( "z_count 11", with_u8( valid, fixture.z_count, 11 ) );
+    bad.emplace_back( "terrain covers too few cells",
+                      with_u16( valid, fixture.terrain_repeat, 3 ) );
     bad.emplace_back( "repeat 0", with_u16( valid, fixture.terrain_repeat, 0 ) );
     bad.emplace_back( "mask role 2", with_u8( valid, fixture.mask_role, 2 ) );
     bad.emplace_back( "level 0 with z_rel -1",
@@ -439,6 +460,33 @@ TEST_CASE( "mp_scene_decoder_rejects_out_of_range_indices", "[mp]" )
     CHECK_FALSE( mp_scene_apply( dest, bad_x ) );
     CHECK_FALSE( mp_scene_apply( dest, bad_z ) );
     CHECK( mp_scene_encode( dest ) == before );
+}
+
+TEST_CASE( "mp_scene_encoder_truncates_masks_to_the_wire_limit", "[mp]" )
+{
+    mp_scene scene;
+    scene.tiles_w = 16;
+    scene.tiles_h = 16;
+    scene.ui_w = 16;
+    scene.ui_h = 16;
+    scene.ids = { "" };
+    mp_scene_level level;
+    level.terrain = { { 256, 0, 0, 0 } };
+    scene.levels = { level };
+    for( int i = 0; i < 256; ++i ) {
+        scene.masks.push_back( { static_cast<uint16_t>( i % 16 ),
+                                 static_cast<uint16_t>( i / 16 ), 1, 1,
+                                 static_cast<uint8_t>( i % 2 ) } );
+    }
+
+    const std::vector<uint8_t> body = mp_scene_encode( scene );
+    mp_scene decoded;
+    REQUIRE( mp_scene_apply( decoded, body ) );
+    REQUIRE( decoded.masks.size() == 255 );
+    CHECK( decoded.masks.size() == MP_SCENE_MAX_MASKS );
+    for( size_t i = 0; i < decoded.masks.size(); ++i ) {
+        CHECK( same( decoded.masks[i], scene.masks[i] ) );
+    }
 }
 
 TEST_CASE( "mp_scene_body_hash_ignores_the_frame_prefix", "[mp]" )

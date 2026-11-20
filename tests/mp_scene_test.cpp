@@ -843,6 +843,27 @@ TEST_CASE( "mp_scene_build_marks_creatures_one_level_away", "[mp]" )
     for( const mp_scene_creature &entry : blocked.levels[0].creatures ) {
         CHECK( ( entry.flags & 0x4 ) == 0 );
     }
+
+    // A stairs-down tile over an ordinary floor blocks a walking descent but
+    // the renderer's flying check lets the text view draw its `v`; the scene
+    // marker must agree rather than silently drop the creature.
+    here.ter_set( above_monster, ter_id( "t_stairs_down" ) );
+    here.build_map_cache( base.z() );
+    refresh_visibility( base.z() );
+    refresh_visibility( base.z() - 1 );
+    REQUIRE( you.sees( here, mon ) );
+    REQUIRE_FALSE( here.valid_move( monster_pos, above_monster ) );
+    REQUIRE( here.valid_move( monster_pos, above_monster, false, true ) );
+
+    const mp_scene stairs = mp_scene_build( base, 21, 21, 2 );
+    REQUIRE( stairs.levels.size() == 2 );
+    bool stairs_marker = false;
+    for( const mp_scene_creature &entry : stairs.levels[0].creatures ) {
+        if( ( entry.flags & 0x4 ) != 0 && entry.x == 11 && entry.y == 10 ) {
+            stairs_marker = true;
+        }
+    }
+    CHECK( stairs_marker );
 }
 
 TEST_CASE( "mp_scene_build_sends_coop_slots_unconditionally", "[mp]" )

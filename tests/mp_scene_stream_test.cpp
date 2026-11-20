@@ -29,10 +29,12 @@
 #include "mp/mp_scene_codec.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_transport.h"
+#include "mp/mp_turn.h"
 #include "output.h"
 #include "panels.h"
 #include "player_helpers.h"
@@ -194,6 +196,36 @@ void blit_full_screen( const int seed )
     for( int y = 0; y < 24; ++y ) {
         mp_server_blit_row( 0, y, pattern_row( y, seed ) );
     }
+}
+
+// A returning client: a real hello carrying the seat's card, run through the
+// handshake and the post-start admission path. Returns the client end of the
+// new wire so the caller can drain what the retained seat sends.
+std::shared_ptr<mp_transport> admit_with_card( const std::string &card, const uint32_t caps,
+        const uint8_t z_levels )
+{
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    auto session = std::make_unique<mp_session>();
+    session->transport = pair.a;
+
+    mp_control hello;
+    hello.kind = mp_control_kind::hello;
+    hello.hello.proto = MP_PROTOCOL_VERSION;
+    hello.hello.name = "reconnect";
+    hello.hello.width = 80;
+    hello.hello.height = 24;
+    hello.hello.caps = caps;
+    hello.hello.z_levels = z_levels;
+    hello.hello.save_id = card;
+    send_hello_json( *pair.b, mp_control_to_json( hello ) );
+
+    std::string reason;
+    REQUIRE( mp_server_handshake( *pair.a, *session, reason ) );
+    CHECK( reason.empty() );
+    std::string err;
+    REQUIRE( mp_server_accept_new_client( std::move( session ), err ) );
+    CHECK( err.empty() );
+    return pair.b;
 }
 
 } // namespace
@@ -726,6 +758,77 @@ TEST_CASE( "scene_rect_survives_a_resize", "[mp]" )
     // The other seat's last frame and sequence are untouched by that resize.
     CHECK( count_of_kind( drain_frames( *second ), mp_msg_kind::scene ) == 0 );
     CHECK( mp_session_of_slot( 1 )->scene_seq == before1.frame_seq );
+}
+
+TEST_CASE( "mp_scene_stream_text_reconnect_clears_the_scene_stream", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+    install_session( 0 );
+    mp_session *const retained = mp_session_of_slot( 0 );
+    REQUIRE( retained != nullptr );
+    retained->card_save_id = "seat-card";
+    retained->scene_caps = 1;
+    retained->scene_seq = 7;
+    retained->scene_hash = 42;
+    retained->scene_mask_hash = 42;
+    retained->scene_sent_once = true;
+    retained->scene_terrain_dirty = false;
+    mp_set_disconnected( 0, true );
+
+    // The newcomer is a text client. The retained seat must forget the previous
+    // client's capability and stream position, or it would send scene frames
+    // nobody asked for.
+    const std::shared_ptr<mp_transport> wire = admit_with_card( "seat-card", 0, 10 );
+    CHECK( retained->scene_caps == 0 );
+    CHECK( retained->scene_seq == 0 );
+    CHECK( retained->scene_hash == 0 );
+    CHECK( retained->scene_mask_hash == 0 );
+    CHECK_FALSE( retained->scene_sent_once );
+    CHECK( retained->scene_terrain_dirty );
+
+    mp_set_active_context( &stream_ctx0 );
+    mp_server_set_terminal_size( 80, 24 );
+    flush_scene_under_baton( 0 );
+    CHECK( count_of_kind( drain_frames( *wire ), mp_msg_kind::scene ) == 0 );
+}
+
+TEST_CASE( "mp_scene_stream_scene_reconnect_starts_at_frame_one", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+    install_session( 0 );
+    mp_session *const retained = mp_session_of_slot( 0 );
+    REQUIRE( retained != nullptr );
+    retained->card_save_id = "seat-card";
+    retained->scene_caps = 0;
+    retained->scene_seq = 7;
+    retained->scene_hash = 42;
+    retained->scene_mask_hash = 42;
+    retained->scene_sent_once = true;
+    retained->scene_terrain_dirty = false;
+    mp_set_disconnected( 0, true );
+
+    // A 3D client takes a seat that was text-only: it now gets the depth it
+    // asked for, and the stream restarts rather than inheriting the old
+    // seat's sequence or send state.
+    const std::shared_ptr<mp_transport> wire = admit_with_card( "seat-card", 1, 3 );
+    CHECK( retained->scene_caps == 1 );
+    CHECK( retained->scene_z_levels == 3 );
+    CHECK( retained->scene_seq == 0 );
+    CHECK( retained->scene_hash == 0 );
+    CHECK( retained->scene_mask_hash == 0 );
+    CHECK_FALSE( retained->scene_sent_once );
+    CHECK( retained->scene_terrain_dirty );
+
+    mp_set_active_context( &stream_ctx0 );
+    mp_server_set_terminal_size( 80, 24 );
+    flush_scene_under_baton( 0 );
+    const mp_scene scene = decode_only_scene( drain_frames( *wire ) );
+    CHECK( scene.frame_seq == 1 );
+    REQUIRE( scene.levels.size() == 3 );
+    CHECK( scene.levels[0].z_rel == 0 );
+    CHECK( scene.levels[2].z_rel == -2 );
 }
 
 #endif // MP_SERVER

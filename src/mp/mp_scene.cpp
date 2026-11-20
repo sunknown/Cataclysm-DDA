@@ -430,8 +430,10 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
                     continue;
                 }
                 // The move faces the player's level; an open-air tile between
-                // is passable, a floor is not.
-                if( !here.valid_move( p, p + tripoint_rel_ms( 0, 0, -dz ) ) ) {
+                // is passable, a floor is not. Match the renderer's flying
+                // check (draw_critter), or a stairs/hatch tile over an ordinary
+                // floor would draw a `v` in text but no marker in the scene.
+                if( !here.valid_move( p, p + tripoint_rel_ms( 0, 0, -dz ), false, true ) ) {
                     continue;
                 }
                 flags = creature_marker_only;

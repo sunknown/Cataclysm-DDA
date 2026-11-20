@@ -1,9 +1,11 @@
 #include "mp/mp_scene_codec.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <utility>
 
+#include "debug.h"
 #include "mp/mp_scene.h"
 
 namespace
@@ -226,13 +228,27 @@ std::vector<uint8_t> mp_scene_encode( const mp_scene &scene )
     put_u16( out, scene.ui_w );
     put_u16( out, scene.ui_h );
 
-    put_u8( out, static_cast<uint8_t>( scene.masks.size() ) );
-    for( const mp_scene_rect &mask : scene.masks ) {
+    const size_t mask_count = std::min( scene.masks.size(),
+                                        static_cast<size_t>( MP_SCENE_MAX_MASKS ) );
+    put_u8( out, static_cast<uint8_t>( mask_count ) );
+    for( size_t i = 0; i < mask_count; ++i ) {
+        const mp_scene_rect &mask = scene.masks[i];
         put_u16( out, mask.x );
         put_u16( out, mask.y );
         put_u16( out, mask.w );
         put_u16( out, mask.h );
         put_u8( out, mask.role );
+    }
+    if( scene.masks.size() > mask_count ) {
+        static bool warned = false;
+        if( !warned ) {
+            warned = true;
+            DebugLog( D_WARNING, D_MAIN ) << "mp scene: dropping "
+                                          << scene.masks.size() - mask_count
+                                          << " masks past the "
+                                          << static_cast<int>( MP_SCENE_MAX_MASKS )
+                                          << "-mask wire limit";
+        }
     }
 
     put_u16( out, static_cast<uint16_t>( scene.vehicles.size() ) );
@@ -364,6 +380,9 @@ bool mp_scene_apply( mp_scene &target, const std::vector<uint8_t> &body )
         !r.u16( scene.ui_w ) || !r.u16( scene.ui_h ) ) {
         return false;
     }
+    if( scene.tiles_w == 0 || scene.tiles_h == 0 ) {
+        return false;
+    }
 
     uint8_t mask_count = 0;
     if( !r.u8( mask_count ) || r.remaining() < static_cast<size_t>( mask_count ) * 9 ) {
@@ -403,13 +422,19 @@ bool mp_scene_apply( mp_scene &target, const std::vector<uint8_t> &body )
     }
 
     uint16_t id_count = 0;
-    if( !r.u16( id_count ) || r.remaining() < static_cast<size_t>( id_count ) * 2 ) {
+    if( !r.u16( id_count ) || id_count == 0 ||
+        r.remaining() < static_cast<size_t>( id_count ) * 2 ) {
         return false;
     }
     for( uint16_t i = 0; i < id_count; ++i ) {
         uint16_t len = 0;
         std::string id;
         if( !r.u16( len ) || !r.str( len, id ) ) {
+            return false;
+        }
+        // Index 0 is the empty id by contract; a body that names it otherwise
+        // cannot be one this encoder produced.
+        if( i == 0 && !id.empty() ) {
             return false;
         }
         scene.ids.push_back( std::move( id ) );
@@ -458,6 +483,11 @@ bool mp_scene_apply( mp_scene &target, const std::vector<uint8_t> &body )
                 return false;
             }
             level.terrain.push_back( run );
+        }
+        // Every cell of the level must be covered exactly once; a short cover
+        // would leave the client's tile layer undefined.
+        if( covered != cells ) {
+            return false;
         }
 
         if( !read_point_ids( r, level.furniture, tiles_w, tiles_h, ids ) ||

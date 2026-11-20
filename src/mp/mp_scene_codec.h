@@ -15,11 +15,15 @@ struct mp_scene;
 //   i16 view_dx, view_dy, avatar_dx, avatar_dy
 //   u16 ui_x, ui_y, ui_w, ui_h
 //   u8  mask_count, per mask: u16 x, y, w, h; u8 role
+//       (an over-fragmented list is truncated to the first 255 masks in
+//        compressed order)
 //   u16 veh_count, per vehicle: u16 veh_id, u16 heading
-//   u16 id_count, per id: u16 len, len bytes of UTF-8
+//   u16 id_count (at least 1), per id: u16 len, len bytes of UTF-8; entry 0
+//       must be the empty id
 //   u8  z_count (1..10), per level:
 //     i8  z_rel
 //     u16 run_count, per run: u16 repeat, u16 terrain_idx, u8 flags, u8 lit
+//         (the runs must cover exactly tiles_w * tiles_h cells)
 //     u16 furniture_count, per entry: u16 x, y, id_idx
 //     u16 item_count, per entry: u16 x, y, id_idx; u8 stack_size
 //     u16 field_count, per entry: u16 x, y, id_idx; u8 intensity
@@ -45,9 +49,11 @@ std::vector<uint8_t> mp_scene_encode( const mp_scene &scene );
 
 // Replaces `target` with the decoded frame. Returns false and leaves `target`
 // byte-for-byte untouched when the body is malformed: truncated, longer than
-// declared, an unknown version, a bad count, an out-of-range coordinate or
-// dictionary index, or an invalid mask. This is the trust boundary for data
-// coming off the wire from a peer.
+// declared, an unknown version, a zero-sized view or empty dictionary, a bad
+// count, an out-of-range coordinate or dictionary index, an invalid mask, or a
+// level whose terrain runs do not cover every cell. This is the trust boundary
+// for data coming off the wire from a peer, and the strict reference for the
+// client's decoder.
 bool mp_scene_apply( mp_scene &target, const std::vector<uint8_t> &body );
 
 // FNV-1a over the body from offset 5 (past body_version and frame_seq) to the

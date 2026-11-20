@@ -15,6 +15,10 @@ constexpr uint8_t MP_SCENE_BODY_VERSION = 1;
 // The protocol carries at most ten encoded z-levels.
 constexpr int MP_SCENE_MAX_LEVELS = 10;
 
+// The mask count is one byte on the wire; a more fragmented list is truncated
+// by the encoder to its first entries in compressed order.
+constexpr uint8_t MP_SCENE_MAX_MASKS = 255;
+
 // One text-over-3D region, in absolute terminal cells. `role` 0 draws text
 // glyphs over a dimmed 3D view; 1 is the native log.
 struct mp_scene_rect {
@@ -123,8 +127,8 @@ struct mp_scene {
 // Extracts one scene frame around `view_centre` from the map and the active
 // avatar. The rectangle holds `tiles_w` by `tiles_h` cells; its origin sits
 // `view_dx`/`view_dy` cells from the centre. Levels start at the avatar's own
-// z and step downward, in the order the wire requires. Overlay layers and
-// masks are left for later passes to fill.
+// z and step downward, in the order the wire requires. The builder fills the
+// overlay layers; masks are filled from the flush's text-over-3D regions.
 mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
                          uint8_t z_levels );
 
