@@ -33,6 +33,20 @@ struct viewport_params {
     int font_units_v = 1, tile_units_v = 1;
 };
 
+// The overmap view: where the map is centred and where the cursor sits. Per
+// player for the same reason as the overmap ui_adaptor below -- one
+// process-wide view meant one seat's movement keys moved the other seat's
+// cursor and re-centred its map. Access through mp_active_overmap_view().
+struct overmap_view_state {
+    // Center of the UI view; usually the player's OMT position.
+    tripoint_abs_omt origin_pos = tripoint_abs_omt( -1, -1, -1 );
+    // Remainder for a smooth toggle between the map and look_around. SEEX ==
+    // SEEY is half an OMT, so this is the middle of a tile.
+    point_omt_ms origin_remainder = point_omt_ms( SEEX, SEEY );
+    // UI view cursor position.
+    tripoint_abs_omt cursor_pos = tripoint_abs_omt( -1, -1, -1 );
+};
+
 struct player_context {
     size_t slot_index = 0;
     viewport_params viewport;
@@ -73,6 +87,10 @@ struct player_context {
     // null the pointer the other seat's retained redraw asserts on. Access
     // through mp_active_overmap_ui() below.
     std::shared_ptr<ui_adaptor> overmap_ui; // NOLINT(cata-serialize)
+    // This player's overmap view (centre, origin remainder and cursor). One
+    // process-wide view let one seat's movement keys move the other seat's
+    // cursor and map. Access through mp_active_overmap_view() below.
+    overmap_view_state overmap_view; // NOLINT(cata-serialize)
 
     // This player's character-creator menu state (newcharacter.cpp's
     // cc_uistate). It is per player for the same reason everything else here
@@ -155,6 +173,11 @@ live_view &mp_active_live_view();
 // every in-tree caller installs a context (single-player too, as contexts[0]),
 // so the fallback is currently unreached.
 std::shared_ptr<ui_adaptor> &mp_active_overmap_ui();
+// The active player's overmap view. Falls back to g->overmap_data.overmap_view
+// when no context is installed -- a defensive branch, like the ui fallback
+// above: every in-tree caller installs a context (single-player too, as
+// contexts[0]), so it is currently unreached.
+overmap_view_state &mp_active_overmap_view();
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
 void mp_apply_viewport_params( const player_context &ctx );

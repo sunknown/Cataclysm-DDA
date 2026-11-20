@@ -16,6 +16,7 @@
 #include "color.h"
 #include "coordinates.h"
 #include "map_scale_constants.h"
+#include "mp/mp_context.h"
 #include "point.h"
 #include "string_id.h"
 
@@ -146,15 +147,9 @@ struct overmap_draw_data_t {
     tripoint_abs_omt select = tripoint_abs_omt( -1, -1, -1 );
     int iZoneIndex = -1;
     std::vector<tripoint_abs_omt> display_path;
-    //center of UI view; usually player OMT position
-    tripoint_abs_omt origin_pos = tripoint_abs_omt( -1, -1, -1 );
-    /**
-     * remainder for smooth toggle between map and look_around
-     * SEEX = SEEY is half of OMT, so point_rel_ms( SEEX, SEEY ) is middle of a tile
-     */
-    point_omt_ms origin_remainder = point_omt_ms( SEEX, SEEY );
-    //UI view cursor position
-    tripoint_abs_omt cursor_pos = tripoint_abs_omt( -1, -1, -1 );
+    // Fallback overmap view: mp_active_overmap_view() owns the per-player view
+    // and uses this field only when no context is installed.
+    overmap_view_state overmap_view;
     // Fallback overmap ui_adaptor: mp_active_overmap_ui() owns the adaptor per
     // player context and uses this field only when no context is installed.
     std::shared_ptr<ui_adaptor> ui;

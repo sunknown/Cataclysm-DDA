@@ -196,6 +196,15 @@ std::shared_ptr<ui_adaptor> &mp_active_overmap_ui()
     return g->overmap_data.ui;
 }
 
+overmap_view_state &mp_active_overmap_view()
+{
+    if( player_context *ctx = mp_active_context_ptr() ) {
+        return ctx->overmap_view;
+    }
+    // No context installed: the same defensive branch as the ui accessor.
+    return g->overmap_data.overmap_view;
+}
+
 void mp_set_active_context( player_context *ctx )
 {
     // nullptr is a legal reset (needed by tests and, in Phase 3, by leaving a player);
