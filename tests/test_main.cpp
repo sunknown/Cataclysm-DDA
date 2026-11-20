@@ -292,6 +292,26 @@ struct CataListener : Catch::TestEventListenerBase {
         if( !game_initialized ) {
             return;
         }
+        // Player slots and their contexts are process-wide and outlive a test.
+        // A case that adds a seat must not hand it to the next one: slots and
+        // contexts are parallel, and do_turn(), game::save() (autosave runs
+        // from world_turn_pre(), inside whatever test happens to be driving
+        // turns) and the other activation loops walk player_slot_count() slots
+        // and assert that a context exists for each. A leftover slot with no
+        // context therefore aborts an unrelated later test in
+        // mp_activate_player() -- order-only, and invisible until a shard plan
+        // puts the two next to each other. Co-op tests reset their own slots;
+        // this is the backstop for the ones that do not, and the only place
+        // that also repairs the contexts deque. The [mp] session harness ends
+        // with the same repair. Skipped when the state is already the
+        // single-player one, so the rest of the suite is untouched.
+        if( g->player_slot_count() != 1 || g->contexts.size() != 1 ) {
+            // remove_extra_player_slots() is the production teardown: it undoes
+            // an in-progress swap before freeing, so it does not depend on
+            // slot 0 being the active one the way reset_player_slots() does.
+            g->remove_extra_player_slots();
+            mp_sync_context_count();
+        }
         // Reset lightweight global state that tests commonly modify without
         // restoring.  Expensive operations like clear_map() stay manual.
         calendar::turn = calendar::turn_zero;

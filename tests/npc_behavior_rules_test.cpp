@@ -45,9 +45,26 @@ static shared_ptr_fast<npc> setup_generic_rules_test( ally_rule rule_to_test,
     clear_vehicles();
     clear_avatar();
     Character &player = get_player_character();
+    // The reality bubble is wherever the previous test left it: the co-op tests
+    // in this suite shift it to the midpoint of their players, and how far their
+    // turn loop gets before it is torn down depends on thread timing. Pin the
+    // avatar to the middle of the main map so the update_mapgen below always
+    // lands inside it -- from a shifted centre the generated room falls on a
+    // non-main map, its chair is then unreachable, and the rule under test
+    // never fires (100 turns of walking into a wall).
+    player.setpos( here, tripoint_bub_ms( here.getmapsize() * SEEX / 2,
+                                         here.getmapsize() * SEEY / 2, 0 ) );
     tripoint_bub_ms next_to = player.pos_bub() + point::north;
     REQUIRE( next_to != player.pos_bub() );
     shared_ptr_fast<npc> guy = make_shared_fast<npc>();
+    // Position the NPC before the overmap files it: insert_npc() records it
+    // under pos_abs_omt(), a bare npc has no valid position, and load_npcs()
+    // then fails to place it and logs an ERROR for a z the map does not have.
+    // The test runner treats any logged ERROR as a failed shard, so that noise
+    // made otherwise-green shards red. spawn_at_precise(), not setpos(): the
+    // latter runs on_move()'s overmap bookkeeping, which complains about an NPC
+    // the buffer does not hold yet ("could not find npc on its old overmap").
+    guy->spawn_at_precise( here.get_abs( next_to ) );
     overmap_buffer.insert_npc( guy );
     g->load_npcs();
     clear_character( *guy );
@@ -62,6 +79,17 @@ static shared_ptr_fast<npc> setup_generic_rules_test( ally_rule rule_to_test,
     REQUIRE( tester_rules.has_flag( rule_to_test ) );
     const tripoint_abs_omt test_omt_pos = guy->pos_abs_omt() + point::north;
     manual_mapgen( test_omt_pos, manual_update_mapgen, update_mapgen_id_to_apply );
+    // Stand the NPC on the arena's southern approach, in line with the door
+    // frame the arena opens with (arena_maps.json, column 11 of its last row).
+    // The arenas are a straight column of doors from there to the chair; from
+    // an off-axis start the route to the chair can cut the concrete perimeter
+    // instead -- the NPC is allowed to bash, so pathfinding takes the wall and
+    // the NPC then spends the whole turn budget hammering it (concrete walls
+    // outlast 100 turns of it). Where the NPC starts used to depend on the
+    // reality bubble the previous test left behind; this makes it the arena's
+    // own geometry.
+    const tripoint_abs_ms arena_south = project_to<coords::ms>( test_omt_pos ) + point( 11, 22 );
+    guy->setpos( here, here.get_bub( arena_south ) );
     return guy;
 }
 
