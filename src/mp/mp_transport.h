@@ -36,12 +36,13 @@ class mp_transport
             return 0;
         }
 
-        // Drops every queued message that carries a screen update, leaving
-        // control messages untouched. Screen state is idempotent, so a client
-        // that fell behind is better served by one full redraw than by
-        // replaying the whole stale history; dropping here is what lets the
-        // server send that redraw instead. The default does nothing because
-        // the abstract transport cannot know how a subclass buffers.
+        // Drops every queued message that carries a screen or scene update,
+        // leaving control messages untouched. Both frame kinds are idempotent
+        // full states, so a client that fell behind is better served by one
+        // newest frame than by replaying the whole stale history; dropping
+        // here is what lets the server send that newest frame instead. The
+        // default does nothing because the abstract transport cannot know how
+        // a subclass buffers.
         virtual void drop_pending_screen_messages() {}
 
         // How the peer should be named in the server's log. The default suits

@@ -19,6 +19,7 @@
 #include "map.h"
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
+#include "mp/mp_cell.h"
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
@@ -166,6 +167,28 @@ void send_hello_json( mp_transport &transport, const std::string &json )
                              std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
+// One row of 80 distinct printable ASCII glyphs, incompressible to the screen
+// codec, so each flush queues roughly 11 KB. The backlog test needs that bulk
+// to cross MP_SCREEN_BACKLOG_BYTES in a few dozen flushes.
+std::vector<mp_cell> pattern_row( const int row, const int seed )
+{
+    std::vector<mp_cell> cells;
+    cells.reserve( 80 );
+    for( int x = 0; x < 80; ++x ) {
+        mp_cell cell;
+        cell.ch = std::string( 1, static_cast<char>( '!' + ( x + 3 * row + seed ) % 94 ) );
+        cells.push_back( cell );
+    }
+    return cells;
+}
+
+void blit_full_screen( const int seed )
+{
+    for( int y = 0; y < 24; ++y ) {
+        mp_server_blit_row( 0, y, pattern_row( y, seed ) );
+    }
+}
+
 } // namespace
 
 TEST_CASE( "mp_scene_stream_hello_without_caps_still_connects", "[mp]" )
@@ -258,6 +281,7 @@ TEST_CASE( "mp_scene_stream_scene_frame_follows_the_screen_frame", "[mp]" )
 
     mp_scene scene0;
     REQUIRE( mp_scene_apply( scene0, first_frames[first_scene].body ) );
+    CHECK( scene0.frame_seq == 1 );
     CHECK( scene0.tiles_w == 40 );
     CHECK( scene0.tiles_h == 10 );
     CHECK( scene0.ui_x == 10 );
@@ -274,6 +298,7 @@ TEST_CASE( "mp_scene_stream_scene_frame_follows_the_screen_frame", "[mp]" )
 
     mp_scene scene1;
     REQUIRE( mp_scene_apply( scene1, second_frames[second_scene].body ) );
+    CHECK( scene1.frame_seq == 1 );
     CHECK( scene1.tiles_w == 20 );
     CHECK( scene1.tiles_h == 12 );
     CHECK( scene1.ui_x == 0 );
@@ -381,6 +406,77 @@ TEST_CASE( "mp_scene_stream_scene_is_not_sent_to_a_text_only_client", "[mp]" )
     CHECK( count_of_kind( frames, mp_msg_kind::scene ) == 0 );
     // The screen still went out: a text client is a full client.
     CHECK( count_of_kind( frames, mp_msg_kind::screen ) == 1 );
+}
+
+TEST_CASE( "mp_scene_stream_blank_avatar_sends_no_scene", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+    std::shared_ptr<mp_transport> wire = install_session( 0 );
+    mp_session *const session = mp_session_of_slot( 0 );
+    REQUIRE( session != nullptr );
+    session->scene_caps = 1;
+    mp_server_set_terminal_size( 80, 24 );
+
+    // The join phase hands the baton to a seat whose avatar is still the blank
+    // sentinel at (20, 10, -500). The builder anchors at that z, immediately
+    // runs out of map, and returns no levels; that body would encode z_count 0,
+    // which the project's decoder rejects. set_pos_abs_only moves the avatar
+    // without the cache rebuild setpos() would run for such a z.
+    avatar &you = get_avatar_legacy();
+    const tripoint_abs_ms saved_pos = you.pos_abs();
+    you.set_pos_abs_only( get_map().get_abs( tripoint_bub_ms( 0, 0, -500 ) ) );
+    REQUIRE( you.posz() == -500 );
+
+    flush_scene_under_baton( 0 );
+    const std::vector<wire_frame> blank = drain_frames( *wire );
+    CHECK( count_of_kind( blank, mp_msg_kind::scene ) == 0 );
+    CHECK_FALSE( session->scene_sent_once );
+
+    // Once placed on the map the seat gets its first real frame, so the skipped
+    // build left the send state intact.
+    you.set_pos_abs_only( saved_pos );
+    flush_scene_under_baton( 0 );
+    const mp_scene scene = decode_only_scene( drain_frames( *wire ) );
+    CHECK( scene.frame_seq == 1 );
+    REQUIRE_FALSE( scene.levels.empty() );
+}
+
+TEST_CASE( "mp_scene_stream_backlog_keeps_one_newest_scene_frame", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
+    std::shared_ptr<mp_transport> wire = install_session( 0 );
+    mp_session *const session = mp_session_of_slot( 0 );
+    REQUIRE( session != nullptr );
+    session->scene_caps = 1;
+    mp_server_set_terminal_size( 80, 24 );
+
+    // First frame, sequence 1. The peer never reads, so it stays queued.
+    flush_scene_under_baton( 0 );
+    CHECK( session->scene_seq == 1 );
+
+    // Fill the undelivered history with screen frames until the backlog policy
+    // must engage. These flushes run without a baton, so they only queue grid
+    // history; the scene frame above is still in the same queue.
+    int fills = 0;
+    while( session->transport->pending_bytes() <= MP_SCREEN_BACKLOG_BYTES ) {
+        REQUIRE( fills < 1000 );
+        blit_full_screen( fills );
+        mp_server_flush_screen();
+        ++fills;
+    }
+    REQUIRE( session->transport->pending_bytes() > 0 );
+
+    // The next flush sees the over-limit backlog: it must drop the queued
+    // screen AND scene history, then rebuild exactly one newest scene frame.
+    flush_scene_under_baton( 0 );
+
+    const std::vector<wire_frame> frames = drain_frames( *wire );
+    const mp_scene scene = decode_only_scene( frames );
+    CHECK( scene.frame_seq == 2 );
+    CHECK( session->scene_seq == 2 );
+    CHECK( session->scene_sent_once );
 }
 
 TEST_CASE( "mp_scene_stream_terrain_blit_marks_the_scene_dirty", "[mp]" )

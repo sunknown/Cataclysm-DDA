@@ -121,11 +121,15 @@ void mp_server_flush_screen()
         return;
     }
     if( t->pending_bytes() > MP_SCREEN_BACKLOG_BYTES ) {
-        // The peer is not keeping up. Throw away the queued screen history
-        // and mark the whole grid dirty so the send below becomes a single
-        // full redraw; control messages survive the drop untouched.
+        // The peer is not keeping up. Throw away the queued screen and scene
+        // history and mark the whole grid dirty so the send below becomes a
+        // single full redraw; control messages survive the drop untouched.
+        // The scene flush later in this call rebuilds one newest frame: a
+        // dropped queued scene may have been the only one the client would
+        // otherwise ever receive.
         t->drop_pending_screen_messages();
         s->grid.mark_all_dirty();
+        s->scene_sent_once = false;
     }
     if( s->grid.any_dirty() ) {
         t->send( mp_wrap( mp_msg_kind::screen, mp_screen_encode( s->grid ) ) );
@@ -194,6 +198,15 @@ void mp_server_flush_scene()
 
     mp_scene scene = mp_scene_build( ctx->ter_view_p, rect.w, rect.h,
                                      s->scene_z_levels );
+    if( scene.levels.empty() ) {
+        // The join phase hands the baton to a seat whose avatar is still the
+        // blank sentinel at (20, 10, -500). The builder anchors there and runs
+        // out of map at once, returning no levels; encoding that would put a
+        // z_count == 0 body on the wire, which the project's decoder rejects.
+        // Leave the send state untouched so the first real frame still goes out
+        // after the character is placed.
+        return;
+    }
     scene.ui_x = rect.x;
     scene.ui_y = rect.y;
     scene.ui_w = rect.w;

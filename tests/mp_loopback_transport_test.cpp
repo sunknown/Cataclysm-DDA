@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "mp/mp_loopback_transport.h"
+#include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
 #include "mp/mp_transport.h"
 
 TEST_CASE( "loopback_transport_delivers_messages_both_ways", "[mp]" )
@@ -56,5 +58,31 @@ TEST_CASE( "loopback_transport_honours_simulated_latency", "[mp]" )
     const std::optional<std::vector<uint8_t>> got = pair.b->recv( 200 );
     REQUIRE( got.has_value() );
     CHECK( *got == std::vector<uint8_t> { 42 } );
+}
+
+TEST_CASE( "loopback_transport_drop_pending_screen_messages_drops_scene_frames", "[mp]" )
+{
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    pair.a->send( mp_wrap( mp_msg_kind::control, { 'k' } ) );
+    pair.a->send( mp_wrap( mp_msg_kind::screen, { 1, 2, 3 } ) );
+    pair.a->send( mp_wrap( mp_msg_kind::scene, { MP_SCENE_BODY_VERSION, 0, 0, 0, 1 } ) );
+    pair.a->send( mp_wrap( mp_msg_kind::control, { 'k' } ) );
+
+    pair.a->drop_pending_screen_messages();
+
+    int controls = 0;
+    int screens = 0;
+    int scenes = 0;
+    while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+        mp_msg_kind kind = mp_msg_kind::control;
+        std::vector<uint8_t> body;
+        REQUIRE( mp_unwrap( *msg, kind, body ) );
+        controls += kind == mp_msg_kind::control ? 1 : 0;
+        screens += kind == mp_msg_kind::screen ? 1 : 0;
+        scenes += kind == mp_msg_kind::scene ? 1 : 0;
+    }
+    CHECK( controls == 2 );
+    CHECK( screens == 0 );
+    CHECK( scenes == 0 );
 }
 #endif // MULTIPLAYER

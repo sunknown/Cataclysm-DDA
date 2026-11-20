@@ -188,8 +188,7 @@ TEST_CASE( "accept_times_out_when_nobody_connects", "[mp]" )
     CHECK_FALSE( listener->accept( 50 ) );
 }
 
-TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_frames_without_corrupting_the_stream",
-           "[mp]" )
+TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_and_scene_frames", "[mp]" )
 {
     std::string err;
     std::optional<mp_listener> listener = mp_listener::bind( 0, err );
@@ -212,10 +211,14 @@ TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_frames_without_corrupt
     const auto control = []() {
         return mp_wrap( mp_msg_kind::control, std::vector<uint8_t> { 'c' } );
     };
+    const auto scene = []() {
+        return mp_wrap( mp_msg_kind::scene, std::vector<uint8_t> { 1, 2, 3 } );
+    };
 
     server_side->send( screen() );   // head: partially sent, must survive
     server_side->send( control() );
     server_side->send( screen() );   // fully queued: must be dropped
+    server_side->send( scene() );    // fully queued: must be dropped
     server_side->send( control() );
     server_side->send( screen() );   // fully queued: must be dropped
 
@@ -233,6 +236,7 @@ TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_frames_without_corrupt
     server_side->send( control() );
 
     int screens = 0;
+    int scenes = 0;
     int controls = 0;
     bool framing_ok = true;
     auto count = [&]( const std::vector<uint8_t> &msg ) {
@@ -244,6 +248,8 @@ TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_frames_without_corrupt
         }
         if( kind == mp_msg_kind::screen ) {
             ++screens;
+        } else if( kind == mp_msg_kind::scene ) {
+            ++scenes;
         } else {
             ++controls;
         }
@@ -271,9 +277,11 @@ TEST_CASE( "tcp_drop_pending_screen_messages_drops_screen_frames_without_corrupt
 
     CHECK( framing_ok );
     // The head screen frame survives (it was already partly on the wire); the
-    // two fully-queued screen frames were dropped. All control frames arrived.
+    // two fully-queued screen frames and the queued scene frame were dropped.
+    // All control frames arrived.
     CHECK( screens >= 1 );
     CHECK( screens < 3 );
+    CHECK( scenes == 0 );
     CHECK( controls == 3 );
     // A corrupted stream would trip the client's frame reader, which drops the
     // connection -- so both ends staying connected is the framing guarantee.
