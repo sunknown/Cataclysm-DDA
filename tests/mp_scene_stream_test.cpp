@@ -292,15 +292,28 @@ TEST_CASE( "mp_scene_stream_unchanged_scene_does_not_advance_frame_seq", "[mp]" 
     session->scene_caps = 1;
     mp_server_set_terminal_size( 80, 24 );
 
+    // The first scene is built because the seat's map was just blitted.
+    catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
+    catacurses::wrefresh( stream_ctx0.w_terrain );
+    CHECK( session->scene_terrain_dirty );
+
     flush_scene_under_baton( 0 );
     const std::vector<wire_frame> first = drain_frames( *wire );
     const mp_scene sent = decode_only_scene( first );
     CHECK( sent.frame_seq == 1 );
     CHECK_FALSE( session->scene_terrain_dirty );
 
+    // A second blit of the same map marks the seat dirty again, but the built
+    // body hashes the same, so no frame goes out; the completed build still
+    // consumes the blit and the idle flushes after it must not rebuild.
+    catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
+    catacurses::wrefresh( stream_ctx0.w_terrain );
+    CHECK( session->scene_terrain_dirty );
+
     flush_scene_under_baton( 0 );
     const std::vector<wire_frame> second = drain_frames( *wire );
     CHECK( count_of_kind( second, mp_msg_kind::scene ) == 0 );
+    CHECK_FALSE( session->scene_terrain_dirty );
 }
 
 TEST_CASE( "mp_scene_stream_scene_is_not_sent_without_the_baton", "[mp]" )

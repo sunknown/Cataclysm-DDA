@@ -204,9 +204,12 @@ void mp_server_flush_scene()
     const std::vector<uint8_t> body = mp_scene_encode( scene );
     const uint64_t hash = mp_scene_body_hash( body );
     if( s->scene_sent_once && hash == s->scene_hash ) {
-        // Nothing the client would see changed. The sequence stays put, and
-        // the dirty flag is deliberately left alone: the next flush re-tests
-        // the same frame rather than losing a change that arrives after it.
+        // Nothing the client would see changed, so no frame is sent and the
+        // sequence stays put. The blit that forced this build has still been
+        // accounted for by it: leaving the dirty flag set would rebuild the
+        // whole scene on every idle flush for a frame the hash already proved
+        // unchanged.
+        s->scene_terrain_dirty = false;
         return;
     }
 
@@ -215,6 +218,7 @@ void mp_server_flush_scene()
     s->scene_hash = hash;
     s->scene_mask_hash = mask_hash;
     s->scene_sent_once = true;
+    // A completed build consumes the blit, sent or skipped.
     s->scene_terrain_dirty = false;
 }
 
