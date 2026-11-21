@@ -4744,6 +4744,11 @@ avatar &game::player_at( size_t index )
 avatar &game::add_player_slot()
 {
     owned_extra_players.push_back( std::make_unique<avatar>() );
+    // A slot avatar is drawn before its character exists (the join and
+    // replacement menus redraw the sidebar around it), and the sidebar's
+    // data-driven widgets read body parts. A blank avatar has none until
+    // create() calls set_body(), so build the default body here.
+    owned_extra_players.back()->set_body();
     player_slots.push_back( owned_extra_players.back().get() );
     return *player_slots.back();
 }

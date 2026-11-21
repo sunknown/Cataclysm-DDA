@@ -594,6 +594,33 @@ TEST_CASE( "widgets_showing_body_temperature_and_delta", "[widget]" )
     CHECK( w_dsym.layout( ava ) == "Temp change: <color_c_blue>↓↓↓</color>" );
 }
 
+// A character under construction is a real state: Character's constructor sets an
+// anatomy but builds no body parts until create() calls set_body(). The co-op
+// replacement path draws the sidebar for exactly such an avatar (mp_run_join_menu
+// resets the seat to a blank one before the creator runs), and the body-temp
+// widgets then reached temp_delta(), which read front() of the empty part list.
+TEST_CASE( "body_temperature_widgets_survive_a_character_without_body_parts", "[widget]" )
+{
+    // The co-op join menu resets the seat's avatar with `ava = avatar()` and lets
+    // the creator draw the sidebar for it. Character's constructor sets an anatomy
+    // but builds no parts until create() calls set_body(), and u_val('body_temp')
+    // reads this very avatar.
+    avatar &u = get_avatar();
+    avatar saved = std::move( u );
+    // Restored on every exit path: a failing check here must not leave the binary
+    // with a body-less global avatar for the rest of the suite.
+    on_out_of_scope restore_avatar( [&u, &saved]() {
+        u = std::move( saved );
+    } );
+    u = avatar();
+    REQUIRE( u.get_all_body_parts().empty() );
+
+    widget w_temp = widget_id( "body_temp_desc_label" ).obj();
+    widget w_delta = widget_id( "body_temp_delta_desc_label" ).obj();
+    CHECK( w_temp.layout( u ) == "Heat: <color_c_green>Comfortable</color>" );
+    CHECK( w_delta.layout( u ) == "Temp change: " );
+}
+
 TEST_CASE( "widgets_showing_avatar_stamina", "[widget][avatar][stamina]" )
 {
     avatar &ava = get_avatar();

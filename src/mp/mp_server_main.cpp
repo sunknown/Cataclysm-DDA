@@ -977,8 +977,11 @@ bool mp_server_open_world( const std::string &world_name, std::string &err )
     // Slots come after setup(), which clears them. An empty avatar is exactly
     // what character creation fills, and it is what gives the join menu a
     // context to draw into -- contexts are parallel to slots, and the menu runs
-    // before any character exists.
+    // before any character exists. It carries a body from the start: the
+    // constructor sets only the anatomy, and the sidebar's data-driven widgets
+    // read body parts whenever the menu redraws.
     g->player_at( 0 ) = avatar();
+    g->player_at( 0 ).set_body();
     while( g->player_slot_count() < mp_sessions().size() ) {
         g->add_player_slot();
     }

@@ -464,6 +464,11 @@ void Character::randomize( const bool random_scenario, bool play_now )
         const tripoint_abs_ms old_pos = pos_abs();
         *this->as_avatar() = avatar();
         set_pos_abs_only( old_pos );
+        // The fresh avatar has an anatomy but no parts; create() builds them only
+        // after the background is applied. Nothing may query or draw this body in
+        // between (the body-temperature widgets read parts unconditionally), so
+        // give it the default body here.
+        set_body();
     }
 
     bool gender_selection = one_in( 2 );
