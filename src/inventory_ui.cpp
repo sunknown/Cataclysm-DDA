@@ -962,6 +962,7 @@ void inventory_column::highlight( size_t new_index, scroll_direction dir )
         }
 
         highlighted_index = new_index;
+        highlight_cleared = false;
         page_offset = ( new_index == static_cast<size_t>( -1 ) ) ?
                       0 : highlighted_index - highlighted_index % entries_per_page;
     }
@@ -995,9 +996,19 @@ void inventory_column::move_selection( scroll_direction dir )
 {
     size_t index = highlighted_index;
 
-    do {
-        index = next_highlightable_index( index, dir );
-    } while( index != highlighted_index && is_selected_by_category( entries[index] ) );
+    while( true ) {
+        const size_t next_index = next_highlightable_index( index, dir );
+        // A walk that lands back on the row it started from has no other
+        // highlightable row to offer in this direction.
+        if( next_index == static_cast<size_t>( -1 ) || next_index == index ) {
+            index = next_index;
+            break;
+        }
+        index = next_index;
+        if( index == highlighted_index || !is_selected_by_category( entries[index] ) ) {
+            break;
+        }
+    }
 
     highlight( index, dir );
 }
@@ -1008,8 +1019,10 @@ void inventory_column::move_selection_page( scroll_direction dir )
 
     do {
         const size_t next_index = next_highlightable_index( index, dir );
-        const bool flipped = next_index == highlighted_index ||
-                             ( next_index > highlighted_index ) != ( static_cast<int>( dir ) > 0 );
+        // Two ways the walk has come full circle: onto the row it is on now
+        // (the only highlightable row) or onto the row it started from.
+        const bool flipped = next_index == index || next_index == highlighted_index ||
+                             ( next_index > index ) != ( static_cast<int>( dir ) > 0 );
 
         if( flipped && page_of( next_index ) == page_index() ) {
             break; // If flipped and still on the same page - no need to flip
@@ -1024,11 +1037,21 @@ void inventory_column::move_selection_page( scroll_direction dir )
 void inventory_column::scroll_selection_page( scroll_direction dir )
 {
     size_t index = highlighted_index;
-
-    while( page_of( index = next_highlightable_index( index, dir ) ) == page_index() ) {
-
-        if( index == highlighted_index && page_of( index ) == page_index() ) {
-            break; // If flipped and still on the same page - no need to flip
+    // One full walk of the page is enough: if the scroll has not landed on
+    // another page by then, every row on this one has been visited.
+    for( size_t steps = 0; steps <= entries.size(); ++steps ) {
+        const size_t next_index = next_highlightable_index( index, dir );
+        if( next_index == static_cast<size_t>( -1 ) ||
+            page_of( next_index ) != page_index() ) {
+            index = next_index;
+            break;
+        }
+        if( next_index == index ) {
+            break; // Only one highlightable row on this page.
+        }
+        index = next_index;
+        if( index == highlighted_index ) {
+            break; // Wrapped onto the row the scroll started from.
         }
     }
 
@@ -1230,7 +1253,8 @@ bool inventory_column::is_selected_by_category( const inventory_entry &entry ) c
 
 const inventory_entry &inventory_column::get_highlighted() const
 {
-    if( highlighted_index >= entries.size() || !entries[highlighted_index].is_item() ) {
+    if( highlight_cleared || highlighted_index >= entries.size() ||
+        !entries[highlighted_index].is_item() ) {
         // clang complains if we use the default constructor here
         static const inventory_entry dummy( nullptr );
         return dummy;
@@ -1333,10 +1357,14 @@ void inventory_column::on_input( const inventory_input &input )
             highlight( entries.size() - 1, scroll_direction::BACKWARD );
         } else if( input.action == "TOGGLE_FAVORITE" ) {
             inventory_entry &selected = get_highlighted();
-            set_stack_favorite( selected, !selected.any_item()->is_favorite );
+            if( selected.is_item() ) {
+                set_stack_favorite( selected, !selected.any_item()->is_favorite );
+            }
         } else if( input.action == "SHOW_HIDE_CONTENTS" ) {
             inventory_entry &selected = get_highlighted();
-            selected.collapsed ? set_collapsed( selected, false ) : set_collapsed( selected, true );
+            if( selected.is_item() ) {
+                selected.collapsed ? set_collapsed( selected, false ) : set_collapsed( selected, true );
+            }
         }
     }
 
@@ -1620,9 +1648,13 @@ void inventory_column::prepare_paging( const std::string &filter )
         }
     }
     paging_is_valid = true;
-    // Select the uppermost possible entry
-    const size_t ind = highlighted_index >= entries.size() ? 0 : highlighted_index;
-    highlight( ind, ind ? scroll_direction::BACKWARD : scroll_direction::FORWARD );
+    // Select the uppermost possible entry, unless the highlight was deliberately
+    // cleared: then the row the player chose is gone and a clamp here would point
+    // the pending key at whatever moved into its index.
+    if( !highlight_cleared ) {
+        const size_t ind = highlighted_index >= entries.size() ? 0 : highlighted_index;
+        highlight( ind, ind ? scroll_direction::BACKWARD : scroll_direction::FORWARD );
+    }
 }
 
 void inventory_column::clear()
@@ -1630,6 +1662,74 @@ void inventory_column::clear()
     entries.clear();
     entries_hidden.clear();
     paging_is_valid = false;
+}
+
+bool inventory_column::drop_dead_entries()
+{
+    bool dropped = false;
+    // An entry stacks the locations of identical items: one may expire while the
+    // others stay alive (a wielded item travels with the avatar swap, an item in an
+    // inventory list does not), so only the dead locations go.
+    const auto prune = [&dropped]( entries_t &ents ) {
+        for( auto iter = ents.begin(); iter != ents.end(); ) {
+            if( !iter->is_item() ) {
+                ++iter;
+                continue;
+            }
+            std::vector<item_location> &locations = iter->locations;
+            const size_t chosen = iter->chosen_count;
+            size_t chosen_alive = 0;
+            bool lost = false;
+            for( size_t i = 0; i < locations.size(); ++i ) {
+                if( locations[i] ) {
+                    if( i < chosen ) {
+                        ++chosen_alive;
+                    }
+                } else {
+                    lost = true;
+                }
+            }
+            if( !lost ) {
+                ++iter;
+                continue;
+            }
+            dropped = true;
+            locations.erase( std::remove_if( locations.begin(), locations.end(),
+            []( const item_location &loc ) {
+                return !loc;
+            } ), locations.end() );
+            if( locations.empty() ) {
+                iter = ents.erase( iter );
+                continue;
+            }
+            // Some of the chosen locations may have been among the dead ones.
+            iter->chosen_count = std::min( iter->chosen_count, chosen_alive );
+            // The row text, its denial and its cached name were built from the old list.
+            iter->reset_entry_cell_cache();
+            iter->denial.reset();
+            iter->cached_denial_space = 0;
+            iter->update_cache();
+            ++iter;
+        }
+    };
+    prune( entries );
+    prune( entries_hidden );
+    if( !dropped ) {
+        return false;
+    }
+    // A collated group sorts by its tip, which may be one of the dropped locations;
+    // un-collating turns the surviving rows back into independent entries.
+    const auto has_dead_tip = []( const entries_t & ents ) {
+        return std::any_of( ents.begin(), ents.end(), []( const inventory_entry &ent ) {
+            return ent.is_collated() && !ent.collation_meta->tip;
+        } );
+    };
+    if( _collated && ( has_dead_tip( entries ) || has_dead_tip( entries_hidden ) ) ) {
+        uncollate();
+    }
+    // Paging counted the dropped rows, so its indices and page offsets are stale.
+    paging_is_valid = false;
+    return true;
 }
 
 bool inventory_column::highlight( const item_location &loc, bool front_only )
@@ -1645,6 +1745,17 @@ bool inventory_column::highlight( const item_location &loc, bool front_only )
         }
     }
     return false;
+}
+
+void inventory_column::clear_highlight()
+{
+    // Keep the index on a real page: paging and scrolling walk from it, and the
+    // old SIZE_MAX sentinel made their wrap checks degenerate into an endless
+    // loop whenever every row sat on the first page. The flag is what refuses
+    // the highlight until the player moves; get_highlighted() answers the dummy.
+    highlighted_index = 0;
+    highlight_cleared = true;
+    page_offset = 0;
 }
 
 size_t inventory_column::get_entry_indent( const inventory_entry &entry ) const
@@ -1904,6 +2015,10 @@ void selection_column::prepare_paging( const std::string & )
     }
 
     if( !last_changed.is_null() ) {
+        // This copy is not in entries, so drop_dead_entries() does not touch it; it may
+        // still hold a location that expired under an open menu. The search is safe
+        // because entries here carry selected_cat as their custom category (never
+        // dereferenced) and item_location comparison only reads the target pointers.
         const auto iter = std::find( entries.begin(), entries.end(), last_changed );
         if( iter != entries.end() ) {
             highlight( std::distance( entries.begin(), iter ), scroll_direction::FORWARD );
@@ -2485,7 +2600,8 @@ void inventory_selector::rearrange_columns( size_t client_width )
 void inventory_selector::prepare_layout( size_t client_width, size_t client_height )
 {
     // This block adds categories and should go before any width evaluations
-    const bool initial = get_active_column().get_highlighted_index() == static_cast<size_t>( -1 );
+    const bool initial = get_active_column().get_highlighted_index() == static_cast<size_t>( -1 ) &&
+                         !get_active_column().has_cleared_highlight();
     for( inventory_column *&elem : columns ) {
         elem->set_height( client_height );
         elem->prepare_paging( filter );
@@ -2504,7 +2620,11 @@ void inventory_selector::prepare_layout( size_t client_width, size_t client_heig
         visible_columns.front()->set_width( client_width );
     }
 
-    reassign_custom_invlets();
+    // While the input that ended a wait is still unresolved, the rows must keep the
+    // letters the player pressed against; see drop_dead_entries( true ).
+    if( !defer_invlet_reassign ) {
+        reassign_custom_invlets();
+    }
 
     refresh_active_column();
 }
@@ -2577,7 +2697,28 @@ shared_ptr_fast<ui_adaptor> inventory_selector::create_or_get_ui_adaptor()
     if( !current_ui ) {
         ui = current_ui = make_shared_fast<ui_adaptor>();
         current_ui->on_screen_resize( [this]( ui_adaptor & ) {
+            if( !context_locations_are_live() ) {
+                // The menu closes on this predicate as soon as the wait returns;
+                // laying out now would dereference the dead context for its stats.
+                return;
+            }
+            // A terminal resize is handled after the redraw that noticed it, and the
+            // world may have taken another player's turn between the two: the layout
+            // reads every row's invlet. Only a prune here -- prepare_layout() is the
+            // layout path the full drop_dead_entries() must not re-enter from.
+            prune_dead_entries();
+            // The backend applies a pending resize on its way into the input wait,
+            // before the key that woke it is resolved. That key was read against the
+            // rows' current letters, so a resize landing at a boundary must not
+            // re-letter them: it is the same class of shift the post-wait drop
+            // defers. A resize anywhere else has no pending key and re-letters.
+            const bool was_deferred = defer_invlet_reassign;
+            defer_invlet_reassign = was_deferred || in_input_wait;
             prepare_layout();
+            // Restore rather than clear: a deferral that outlives this callback
+            // (the post-wait drop) owns the flag, one this resize borrowed from
+            // in_input_wait does not.
+            defer_invlet_reassign = was_deferred;
         } );
         current_ui->mark_resize();
 
@@ -3193,6 +3334,16 @@ void inventory_selector::resize_window( int width, int height )
 void inventory_selector::refresh_window()
 {
     cata_assert( w_inv );
+    // Every draw reads invlets and names through the rows, and the world can take
+    // another player's turn between two draws (including between the filter prompt's
+    // redraws). Only a prune here -- the draw path must not re-enter prepare_layout().
+    prune_dead_entries();
+    if( !context_locations_are_live() ) {
+        // The header stats and the presets' cells read the selector's own context,
+        // which can expire in the same wait. get_input() closes the menu on this
+        // predicate; drawing first would dereference the dead location.
+        return;
+    }
 
     if( get_option<std::string>( "INVENTORY_HIGHLIGHT" ) != "disable" ) {
         highlight();
@@ -3241,6 +3392,11 @@ std::pair< bool, std::string > inventory_selector::query_string( const std::stri
     }
 
     spopup.reset();
+    // The prompt's input waits let the world take another player's turn, which expires
+    // the locations the rows were built from. The caller then reads the highlighted row
+    // and to_use (the count path) or marks the layout for a rebuild (the filter path)
+    // before the next draw, so the dead rows must go now.
+    prune_dead_entries();
     return std::make_pair( confirmed, rval );
 }
 
@@ -3493,9 +3649,99 @@ drop_location inventory_selector::get_only_choice() const
 
 inventory_input inventory_selector::get_input()
 {
-    std::string const &action = ctxt.handle_input();
+    std::string const &action = read_action( ctxt );
     int const ch = ctxt.get_raw_input().get_first_input();
-    return process_input( action, ch );
+    // The menu may have been blocked here while the world took another player's
+    // turn. The coop design (§7.3) accepts that the choice goes stale that way and
+    // promises an ordinary refusal, not a crash. The menu's own subject is checked
+    // first: the header stats and the presets' cells dereference it, and a layout
+    // would too, so a menu that lost it cannot answer anything and closes with the
+    // same empty result Escape gives.
+    if( !context_locations_are_live() ) {
+        return inventory_input{ "QUIT", 0, nullptr };
+    }
+    // The rows are snapshots too: the avatar swap that ends the turn expires the
+    // item_location of a direct member such as the wielded item. Drop the dead
+    // rows right here, before process_input() resolves the key against them, but
+    // keep the letters the key was read against.
+    bool const dropped = drop_dead_entries( true );
+    inventory_input res = process_input( action, ch );
+    if( dropped ) {
+        // The key is resolved; give the next draw a compact set of letters again.
+        reassign_custom_invlets();
+    }
+    return res;
+}
+
+const std::string &inventory_selector::read_action( input_context &context )
+{
+    in_input_wait = true;
+    const std::string &action = context.handle_input();
+    in_input_wait = false;
+    return action;
+}
+
+bool inventory_selector::drop_dead_entries( bool keep_invlets )
+{
+    if( !prune_dead_entries() ) {
+        return false;
+    }
+    defer_invlet_reassign = keep_invlets;
+    prepare_layout();
+    defer_invlet_reassign = false;
+    return true;
+}
+
+bool inventory_selector::prune_dead_entries()
+{
+    // Rows are addressed by position but the player's choice is an item: erasing a
+    // row above the highlight, or the highlighted row itself, leaves the index
+    // pointing at a neighbour. Hold the chosen location across the drop; while it
+    // lives it is a stable identity.
+    inventory_column &active = get_active_column();
+    const inventory_entry &previous = active.get_highlighted();
+    const bool had_choice = previous.is_item();
+    item_location const chosen = had_choice ? previous.any_item() : item_location::nowhere;
+
+    bool dropped = false;
+    for( inventory_column *column : columns ) {
+        dropped |= column->drop_dead_entries();
+    }
+    if( !dropped ) {
+        return false;
+    }
+    on_dead_entries_dropped();
+    // Entries of the previous draw are gone; a mouse action must not resolve to them.
+    rect_entry_map.clear();
+
+    // This path is also the draw and resize one and must not relayout, so the
+    // columns have to be paged here or the next draw uses a page offset that counts
+    // the erased rows.
+    for( inventory_column *column : columns ) {
+        column->prepare_paging( filter );
+    }
+
+    is_empty = true;
+    for( inventory_column *column : columns ) {
+        const std::vector<inventory_entry *> remaining = column->get_entries(
+        []( const inventory_entry & entry ) {
+            return entry.is_item();
+        }, true );
+        if( !remaining.empty() ) {
+            is_empty = false;
+            break;
+        }
+    }
+
+    if( had_choice && !highlight( chosen ) ) {
+        // The player's row died. Every column must answer with the dummy: no
+        // layout, resize or paging may put a neighbour under the key that ended
+        // the wait. The next navigation key sets a highlight again.
+        for( inventory_column *column : columns ) {
+            column->clear_highlight();
+        }
+    }
+    return true;
 }
 
 inventory_input inventory_selector::process_input( const std::string &action, int ch )
@@ -3965,6 +4211,13 @@ inventory_selector::header_stats container_inventory_selector::get_raw_stats() c
            );
 }
 
+bool container_inventory_selector::context_locations_are_live() const
+{
+    // The container whose contents this menu lists. The world can tick under the
+    // open menu and carry it off; every row is about it, so the menu closes.
+    return static_cast<bool>( loc );
+}
+
 ammo_inventory_selector::ammo_inventory_selector( Character &you,
         const item_location &reload_loc, const inventory_selector_preset &preset ) :
     inventory_selector( you, preset ), reload_loc( reload_loc )
@@ -3973,6 +4226,14 @@ ammo_inventory_selector::ammo_inventory_selector( Character &you,
     ctxt.register_action( "DECREASE_COUNT" );
 
     force_single_column = true;
+}
+
+bool ammo_inventory_selector::context_locations_are_live() const
+{
+    // The gun or magazine being reloaded. get_possible_reload_targets() dereferences
+    // it for the count change and for the presets' cells, and a dead one cannot be
+    // reloaded with any ammo the menu could still return.
+    return static_cast<bool>( reload_loc );
 }
 
 std::vector<reload_target> get_possible_reload_targets( const item_location &target )
@@ -4193,6 +4454,10 @@ void ammo_inventory_selector::set_all_entries_chosen_count()
 
 void ammo_inventory_selector::mod_chosen_count( inventory_entry &entry, int value )
 {
+    // Nothing highlighted: the row the count belonged to died under the open menu.
+    if( !entry.is_item() ) {
+        return;
+    }
     if( !entry.any_item()->is_ammo() ) {
         return;
     }
@@ -4343,6 +4608,16 @@ inventory_multiselector::inventory_multiselector( Character &p,
         elem->set_multiselect( true );
     }
     append_column( *selection_col );
+}
+
+void inventory_multiselector::on_dead_entries_dropped()
+{
+    // to_use is the authoritative selection the menu hands to its caller, and the
+    // header stats dereference it; a pair whose location expired cannot be acted on.
+    to_use.erase( std::remove_if( to_use.begin(), to_use.end(),
+    []( const std::pair<item_location, int> &drop ) {
+        return !drop.first;
+    } ), to_use.end() );
 }
 
 void inventory_multiselector::toggle_entry( inventory_entry &entry, size_t count )
@@ -4587,8 +4862,16 @@ std::pair<const item *, const item *> inventory_compare_selector::execute()
             inventory_selector::on_input( input );
         }
 
+        // The selection is held as locations, so one that died during the wait is
+        // dropped by the prune in get_input() before the key is resolved. Both are
+        // live here; the guard keeps a dead location from ever reaching the caller.
+        compared.erase( std::remove_if( compared.begin(), compared.end(),
+        []( const item_location &loc ) {
+            return !loc;
+        } ), compared.end() );
+
         if( compared.size() == 2 ) {
-            const auto res = std::make_pair( compared[0], compared[1] );
+            const auto res = std::make_pair( &*compared[0], &*compared[1] );
             // Clear second selected entry to prevent comparison reopening too
             // soon
             if( just_selected ) {
@@ -4601,7 +4884,7 @@ std::pair<const item *, const item *> inventory_compare_selector::execute()
 
 void inventory_compare_selector::toggle_entry( inventory_entry *entry )
 {
-    const item *it = &*entry->any_item();
+    const item_location &it = entry->any_item();
     const auto iter = std::find( compared.begin(), compared.end(), it );
 
     entry->chosen_count = iter == compared.end() ? 1 : 0;
@@ -4613,6 +4896,20 @@ void inventory_compare_selector::toggle_entry( inventory_entry *entry )
     }
 
     on_change( *entry );
+}
+
+void inventory_compare_selector::on_dead_entries_dropped()
+{
+    // The column prune already erased the dead rows and clamped their chosen_count;
+    // only the selector's own copy of the selection is left to discard. A location
+    // that expired while the menu waited must never be handed to the caller.
+    compared.erase( std::remove_if( compared.begin(), compared.end(),
+    []( const item_location &loc ) {
+        return !loc;
+    } ), compared.end() );
+    // Still meaningful for the base class's state, even though this selector does
+    // not use to_use.
+    inventory_multiselector::on_dead_entries_dropped();
 }
 
 inventory_selector::header_stats inventory_multiselector::get_raw_stats() const
@@ -4937,6 +5234,14 @@ inventory_selector::header_stats inventory_insert_selector::get_raw_stats() cons
     stats.push_back( build_selection_stats_line( volume, weight ) );
     return stats;
 
+}
+
+bool inventory_insert_selector::context_locations_are_live() const
+{
+    // The holster being filled. Its stats and the preset's denials dereference it,
+    // and nothing can be inserted into it any more, so the menu closes.
+    return static_cast<bool>(
+               static_cast<const inventory_holster_preset &>( preset ).get_holster() );
 }
 
 pickup_selector::pickup_selector( Character &p, const inventory_selector_preset &preset,
@@ -5345,8 +5650,12 @@ trade_selector::trade_selector( trade_ui *parent, Character &u,
     _ui = create_or_get_ui_adaptor();
 }
 
-trade_selector::select_t trade_selector::to_trade() const
+trade_selector::select_t trade_selector::to_trade()
 {
+    // Every consumer of a pane's offer dereferences its pairs (the trade values, the
+    // fit check, the return of perform_trade()), and a pane that was not active while
+    // the world took another player's turn never ran the post-wait drop itself.
+    prune_dead_entries();
     return to_use;
 }
 
@@ -5358,9 +5667,19 @@ void trade_selector::execute()
     get_active_column().on_activate();
 
     while( !exit ) {
+        // perform_trade() re-runs execute() on the pane that stayed inactive while the
+        // other pane held the input; its rows can be dead before this activation's
+        // first draw, which happens before any input wait of our own.
+        drop_dead_entries();
         _ui->invalidate_ui();
         ui_manager::redraw_invalidated();
-        std::string const &action = _ctxt_trade.handle_input();
+        std::string const &action = read_action( _ctxt_trade );
+        // The trade loop reads keys itself instead of going through get_input(), but it
+        // waits in the same way: the world can take another player's turn while this
+        // menu is open and expire the item locations its rows and selection were built
+        // from. Drop them before any branch, including OK, which recomputes trade values
+        // from the selection, but keep the letters the key was read against.
+        bool const dropped = drop_dead_entries( true );
         if( action == ACTION_SWITCH_PANES ) {
             _parent->pushevent( trade_ui::event::SWITCH );
             get_active_column().on_deactivate();
@@ -5383,6 +5702,10 @@ void trade_selector::execute()
             if( input.action == "HELP_KEYBINDINGS" ) {
                 ctxt.display_menu();
             }
+        }
+        if( dropped ) {
+            // The action is dispatched; give the next draw compact letters again.
+            reassign_custom_invlets();
         }
     }
 }

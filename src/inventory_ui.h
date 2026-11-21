@@ -426,6 +426,12 @@ class inventory_column
         inventory_entry *add_entry( const inventory_entry &entry );
         void move_entries_to( inventory_column &dest );
         void clear();
+        /**
+         * Drop locations that expired while the menu waited for input, and any entry
+         * left without a live location.
+         * @return Whether anything was dropped.
+         */
+        bool drop_dead_entries();
         void set_stack_favorite( inventory_entry &entry, bool favorite );
 
         void set_collapsed( inventory_entry &entry, bool collapse );
@@ -439,6 +445,20 @@ class inventory_column
          * @param dir If the entry is not highlightable, move in the specified direction.
          */
         void highlight( size_t new_index, scroll_direction dir );
+
+        /**
+         * Drop the highlight so get_highlighted() answers with the dummy entry until
+         * the player moves. Used when the highlighted row died under an open menu:
+         * the key that ended the wait must not fall through to the row that took
+         * its place. The index stays on the first page so paging has a finite walk
+         * to start from.
+         */
+        void clear_highlight();
+
+        /** Whether the highlight was cleared and not set again since. */
+        bool has_cleared_highlight() const {
+            return highlight_cleared;
+        }
 
         size_t get_highlighted_index() const {
             return highlighted_index;
@@ -567,6 +587,9 @@ class inventory_column
         bool visibility = true;
 
         size_t highlighted_index = std::numeric_limits<size_t>::max();
+        /// The highlight was dropped because the row died; prepare_paging() must
+        /// not clamp the pending key back onto a neighbouring row.
+        bool highlight_cleared = false;
         size_t page_offset = 0;
         size_t entries_per_page = std::numeric_limits<size_t>::max();
         size_t height = std::numeric_limits<size_t>::max();
@@ -753,6 +776,45 @@ class inventory_selector
 
         inventory_input get_input();
         inventory_input process_input( const std::string &action, int ch );
+
+        /**
+         * Read one action, recording the window in which the server backend applies a
+         * pending terminal resize -- and runs the layout callback -- before the key
+         * that woke the wait is resolved.
+         */
+        const std::string &read_action( input_context &context );
+
+        /**
+         * Drop rows whose item locations died while the menu was waiting for input.
+         * A no-op, with no layout recomputation, when nothing was dropped.
+         * @param keep_invlets Keep the letters the rows were displayed with. The input
+         *        that ended the wait is resolved against them right after the call, and
+         *        reassigning positionally here would shift rows up past a dropped one.
+         * @return Whether anything was dropped.
+         */
+        bool drop_dead_entries( bool keep_invlets = false );
+        /**
+         * Drop dead rows and the expired copies derived selectors keep (the hook), but
+         * do not recompute the layout. Safe to call from the layout and draw paths,
+         * which the full drop_dead_entries() must not be used from: its layout
+         * recomputation re-enters those paths.
+         * @return Whether anything was dropped.
+         */
+        bool prune_dead_entries();
+        /**
+         * Whether the locations the selector itself holds -- not its rows -- are still
+         * live: the container whose contents are shown, the holster being filled, the
+         * gun being reloaded. These are dereferenced by the header stats, the presets'
+         * cells and the count change, so a dead one closes the menu instead.
+         */
+        virtual bool context_locations_are_live() const {
+            return true;
+        }
+        /**
+         * Called after dead rows were dropped so derived selectors can discard their
+         * own copies of the expired locations (e.g. inventory_multiselector::to_use).
+         */
+        virtual void on_dead_entries_dropped() {}
 
         /**
          * Act according to an action from the input_context.
@@ -995,6 +1057,12 @@ class inventory_selector
         bool is_empty = true;
         bool display_stats = true;
         bool use_invlet = true;
+        /// Set while a post-wait layout rebuild must keep the letters the rows were
+        /// displayed with; the key that ended the wait is resolved against them after.
+        bool defer_invlet_reassign = false;
+        /// True while this thread is blocked reading a key. The server backend applies
+        /// a pending resize there, before the key is resolved.
+        bool in_input_wait = false;
         selector_invlet_type invlet_type_ = SELECTOR_INVLET_DEFAULT;
         size_t entry_generation_number = 0;
 
@@ -1038,6 +1106,7 @@ class container_inventory_selector : public inventory_pick_selector
 
     protected:
         header_stats get_raw_stats() const override;
+        bool context_locations_are_live() const override;
 
     private:
         item_location loc;
@@ -1085,6 +1154,8 @@ class ammo_inventory_selector : public inventory_selector
         bool last_choice_count_player_adjusted() const {
             return last_player_adjusted;
         }
+    protected:
+        bool context_locations_are_live() const override;
     private:
         void mod_chosen_count( inventory_entry &entry, int val );
         const item_location reload_loc;
@@ -1122,6 +1193,7 @@ class inventory_multiselector : public inventory_selector
         bool allow_select_contained;
         virtual void on_toggle() {};
         void on_input( const inventory_input &input );
+        void on_dead_entries_dropped() override;
         int count = 0;
         header_stats get_raw_stats() const override;
         void toggle_categorize_contained();
@@ -1151,9 +1223,13 @@ class inventory_compare_selector : public inventory_multiselector
         std::pair<const item *, const item *> execute();
 
     protected:
-        /// The (up to 2) items to be compared.
-        std::vector<const item *> compared;
+        /// The (up to 2) items to be compared. Locations rather than raw pointers:
+        /// an item can die while the menu waits for input. The prune in get_input()
+        /// drops a stale one before the key is resolved, so execute() only ever
+        /// returns live locations.
+        std::vector<item_location> compared;
         void toggle_entry( inventory_entry *entry );
+        void on_dead_entries_dropped() override;
 };
 
 class inventory_drop_selector : public inventory_multiselector
@@ -1182,6 +1258,7 @@ class inventory_insert_selector : public inventory_drop_selector
             bool warn_liquid = true );
     protected:
         header_stats get_raw_stats() const override;
+        bool context_locations_are_live() const override;
 };
 
 class pickup_selector : public inventory_multiselector

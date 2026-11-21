@@ -1863,4 +1863,418 @@ TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
     CHECK( grants_to_disconnected == 0 );
 }
 
+// The field sequence that killed the server: open the inventory, press the
+// first stack's hotkey, close, and repeat. The crash was
+// inventory_entry::get_invlet() reached from find_by_invlet() while
+// process_input() looked the pressed key up: a selector held open across
+// another seat's turn boundary, whose entries still held the item_location they
+// were built from, because the avatar swap that ends the turn move-assigns a
+// direct member such as the wielded item and expires its anchor. No keypress is
+// needed for the expiry; the next return from the input wait is what resolves
+// the key against the dead row.
+// Both seats are driven so the turn barrier and the per-turn context switches
+// run exactly as they do on a live server.
+TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Both seats can act. A player with moves who opens a free menu holds the
+    // barrier, so the partner's hurry is what lets the world move under them.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    // A wielded item lives directly in the avatar, so it travels with the
+    // avatar when the server swaps the active context between turns. The
+    // inventory entry built for it holds an item_location into that avatar.
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+
+    for( int cycle = 0; cycle < 4; ++cycle ) {
+        CAPTURE( cycle );
+        harness.press( 0, mp_menu_inventory.key );
+        REQUIRE( harness.run_until( inventory_is_open ) );
+        // Seat 1 hurries. When the countdown expires seat 0 is dropped from
+        // the barrier for this turn, and the world takes seat 1's action while
+        // seat 0's menu stays open -- the spec's accepted "your choice may
+        // have gone stale" case. The turn boundary swaps the active avatar
+        // out and back; the entries built above are not rebuilt by any of it.
+        harness.press( 1, '`' );
+        REQUIRE( harness.run_until( []() {
+            return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+        } ) );
+        mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+        const int turn_before = to_turn<int>( calendar::turn );
+        harness.press( 1, '.' );
+        REQUIRE( harness.run_until( [turn_before]() {
+            return to_turn<int>( calendar::turn ) > turn_before;
+        } ) );
+        // The calendar moving only proves the barrier let seat 1 act. The pin is
+        // only real if seat 0 is still parked in the pick selector when the
+        // hotkey is delivered: otherwise the press lands on the map screen and
+        // the test goes green while reproducing nothing.
+        CHECK( inventory_is_open() );
+        // The hotkey lookup is the frame that dereferenced the stale location.
+        harness.press( 0, 'a' );
+        harness.run_until( []() {
+            return false;
+        }, 1 );
+        harness.press( 0, KEY_ESCAPE );
+        REQUIRE( harness.run_until( [&]() {
+            return !inventory_is_open();
+        }, 20 ) );
+    }
+    SUCCEED( "four inventory reopen cycles did not crash the server" );
+}
+
+// The multiselector branch of the same crash. Marking the wielded item fills
+// to_use with an item_location the turn boundary then kills; the drop menu's
+// header stats and selection pane dereference to_use, so the post-wait drop has
+// to discard the dead pair before it rebuilds the layout. Without that, the
+// keypress that ends the wait dies in inventory_drop_selector::get_raw_stats().
+TEST_CASE( "a_dead_drop_selection_is_discarded_without_a_crash", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    // Direct item member of the avatar: the turn boundary's avatar swap is what
+    // expires its item_location.
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+
+    const auto drop_menu_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "Multidrop" );
+    };
+    const auto screen_text = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        std::string text;
+        for( int y = 0; y < grid.height(); ++y ) {
+            for( int x = 0; x < grid.width(); ++x ) {
+                text += grid.at( x, y ).ch;
+            }
+            text += '\n';
+        }
+        return text;
+    };
+    // The item row and the selection pane both render the marked item's name, on
+    // the same screen row when the columns fit side by side, so count occurrences.
+    const auto rock_cells = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        int hits = 0;
+        for( int y = 0; y < grid.height(); ++y ) {
+            std::string row;
+            for( int x = 0; x < grid.width(); ++x ) {
+                row += grid.at( x, y ).ch;
+            }
+            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
+                 pos = row.find( "rock", pos + 1 ) ) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    // 'd' opens the multidrop menu with the cleared avatar's one item. The
+    // wielded item lives in the gear column, which is not the initially active
+    // (empty) inventory column, so step to it first; TOGGLE_ENTRY then marks the
+    // highlighted rock and fills to_use.
+    harness.press( 0, 'd' );
+    REQUIRE( harness.run_until( drop_menu_is_open ) );
+    harness.press( 0, 'h' );
+    harness.press( 0, 'l' );
+    const bool marked = harness.run_until( [&]() {
+        return rock_cells() == 2;
+    } );
+    INFO( screen_text() );
+    REQUIRE( marked );
+
+    harness.press( 1, '`' );
+    REQUIRE( harness.run_until( []() {
+        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+    } ) );
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 1, '.' );
+    REQUIRE( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+    // The world moved under the open menu and the marked row's location died.
+    CHECK( drop_menu_is_open() );
+    CHECK( g->player_at( 0 ).get_wielded_item() );
+
+    // This keypress is the one that used to dereference the dead to_use pair.
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return rock_cells() == 0;
+    }, 20 ) );
+    CHECK( drop_menu_is_open() );
+
+    // Cancel: the dead selection is discarded rather than reaching the drop.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !drop_menu_is_open();
+    }, 20 ) );
+    CHECK( g->player_at( 0 ).get_wielded_item() );
+}
+
+namespace
+{
+// Makes seat 1 hurry, lets the countdown expire and takes its turn, so the world
+// ticks while seat 0's menu is open: the spec's accepted "your choice may have
+// gone stale" case. The turn boundary is what expires the wielded item's
+// item_location (a direct avatar member is move-assigned by the avatar swap, and
+// a move-assigned item installs a fresh safe_reference anchor).
+bool take_a_partner_turn( mp_session_harness &harness )
+{
+    harness.press( 1, '`' );
+    if( !harness.run_until( []() {
+    return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+    } ) ) {
+        return false;
+    }
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 1, '.' );
+    return harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } );
+}
+} // namespace
+
+// The corpse is a row in a column that still has a live row below it: a wielded
+// item (direct avatar member, dies at the boundary) above a worn one (list node,
+// survives). Before the choice was held by location the erased rock's index was
+// left pointing at the shirt, and CONFIRM returned an item the player never
+// chose. §7.3 promises the ordinary refusal instead: the menu stays open and
+// nothing is returned.
+TEST_CASE( "a_prune_does_not_move_the_confirmed_row", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Non-interactive: wearing through the API otherwise drains the moves the
+    // seat needs to be actionable this turn.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+
+    // The gear column sorts the held weapon before the worn items, so the default
+    // highlight is the rock: index 1, right above the shirt.
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( inventory_is_open ) );
+    REQUIRE( take_a_partner_turn( harness ) );
+    CHECK( inventory_is_open() );
+
+    // The rock's row is gone and the shirt is still selectable. With CONFIRM
+    // answered by position this opens the shirt's item menu and leaves the
+    // inventory; the refusal leaves both where they were.
+    harness.press( 0, KEY_ENTER );
+    harness.run_until( []() {
+        return false;
+    }, 2 );
+    CHECK( inventory_is_open() );
+
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !inventory_is_open();
+    }, 20 ) );
+}
+
+// Paging walks from the highlight, and the walk used to have no way to notice
+// that it had come full circle: PageDown landed on the only highlightable row
+// and stayed there, PageUp spun on the SIZE_MAX sentinel, and either way the
+// seat never came back to an input wait. The menu must keep answering.
+TEST_CASE( "paging_survives_a_cleared_highlight", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Non-interactive: wearing through the API otherwise drains the moves the
+    // seat needs to be actionable this turn.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( inventory_is_open ) );
+
+    // The rock dies at the boundary; the prune clears the highlight when the
+    // next key arrives. The gear column then has a category row in front of the
+    // only highlightable row left (the worn shirt), which is the shape that
+    // made the forward page walk repeat on the spot.
+    REQUIRE( take_a_partner_turn( harness ) );
+    REQUIRE( inventory_is_open() );
+
+    // Paging must not close the menu or stop answering; the wait also gives the
+    // walk a turn boundary to be stuck on if it is broken.
+    harness.press( 0, KEY_NPAGE );
+    REQUIRE_FALSE( harness.run_until( [&]() {
+        return !inventory_is_open();
+    }, 20 ) );
+
+    // PageUp used to loop here. Bounded, like the close below: a reintroduced
+    // loop shows up as a failed case rather than a silent hang.
+    harness.press( 0, KEY_PPAGE );
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !inventory_is_open();
+    }, 20 ) );
+}
+
+// The filter prompt is a second input wait inside the same menu, and
+// query_string() prunes on its way out. The world can take seat 1's turn while
+// the prompt is open, so the row that dies is only discovered when the prompt
+// closes; the CONFIRM that follows must still refuse rather than take the row
+// that moved up.
+TEST_CASE( "a_dead_row_is_not_replaced_under_the_filter_prompt", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Non-interactive: wearing through the API otherwise drains the moves the
+    // seat needs to be actionable this turn.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( inventory_is_open ) );
+
+    // '/' opens the item-filter prompt; the screen changes when the popup draws,
+    // which is the only marker it has. Nothing is typed: the empty filter is
+    // confirmed with Enter below.
+    const mp_screen_grid before_prompt = harness.screen( 0 );
+    harness.press( 0, '/' );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grids_equal( harness.screen( 0 ), before_prompt );
+    }, 20 ) );
+
+    // The boundary lands while the prompt is the active wait.
+    REQUIRE( take_a_partner_turn( harness ) );
+
+    // Confirm the filter, then CONFIRM the row: the rock died under the prompt,
+    // the shirt is alive, and the highlight must not have moved onto it.
+    harness.press( 0, KEY_ENTER );
+    harness.run_until( []() {
+        return false;
+    }, 1 );
+    harness.press( 0, KEY_ENTER );
+    harness.run_until( []() {
+        return false;
+    }, 2 );
+    CHECK( inventory_is_open() );
+
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !inventory_is_open();
+    }, 20 ) );
+}
+
+// The compare selector kept its selection as raw item pointers. An item on the
+// map is not an avatar member, so a partner's turn that removes it frees the
+// object instead of leaving a moved-from copy behind: the pointer really
+// dangles, and it used to be handed straight to compare_item_menu once a second
+// item was marked. The selection has to be held as item_location and the dead
+// one dropped by the post-wait prune.
+TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Both live items are worn: inventory list nodes survive the avatar swap that
+    // ends the partner's turn, unlike the wielded item's direct member. The map
+    // rock is then the only selection that can expire under the menu.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "socks" ) ), false ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    // The rock sits on the partner's tile: adjacent to seat 0, so the compare
+    // menu's nearby-items pass lists it, and on the tile the partner's turn can
+    // remove it from.
+    g->player_at( 1 ).setpos( get_map(),
+                              g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 1, 0, 0 ) );
+    const tripoint_bub_ms rock_pos = g->player_at( 1 ).pos_bub();
+    get_map().add_item_or_charges( rock_pos, item( itype_id( "rock" ) ) );
+
+    const auto compare_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "ITEMS TO COMPARE" );
+    };
+    // The item row and the selection pane both render the marked item's name, on
+    // the same screen row when the columns fit side by side, so count occurrences.
+    const auto rock_cells = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        int hits = 0;
+        for( int y = 0; y < grid.height(); ++y ) {
+            std::string row;
+            for( int x = 0; x < grid.width(); ++x ) {
+                row += grid.at( x, y ).ch;
+            }
+            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
+                 pos = row.find( "rock", pos + 1 ) ) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    harness.press( 0, 'I' );
+    REQUIRE( harness.run_until( compare_is_open ) );
+
+    // At this terminal width the columns are merged into one, and the map item
+    // is added after the character's gear, so it is the last row. Mark it.
+    harness.press( 0, KEY_END );
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return rock_cells() == 2;
+    }, 20 ) );
+
+    // A pickup would move the rock into an inventory and destroy it at the old
+    // address just the same, so clearing the tile is the partner's turn as far
+    // as the saved location is concerned: it expires while the menu waits.
+    get_map().i_clear( rock_pos );
+    REQUIRE( take_a_partner_turn( harness ) );
+    CHECK( compare_is_open() );
+
+    // Mark one of the live items. The dead rock must already be gone from the
+    // selection; a raw pointer kept across the wait would complete the pair
+    // here and open the comparison window instead. The first key after the
+    // wait is also the one that runs the prune, so it only sets the highlight.
+    harness.press( 0, KEY_HOME );
+    harness.press( 0, 'l' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( compare_is_open() );
+
+    // A second live item completes a live pair, which does open the comparison.
+    harness.press( 0, KEY_END );
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return !compare_is_open();
+    }, 20 ) );
+
+    // Close the comparison; the compare selector reopens, so Escape twice returns
+    // to the main screen. Reaching it proves the pair was usable and the server
+    // survived the case.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( compare_is_open, 20 ) );
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !compare_is_open();
+    }, 20 ) );
+}
+
 #endif // MP_SERVER
