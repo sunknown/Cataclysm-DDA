@@ -2070,11 +2070,14 @@ TEST_CASE( "a_left_behind_player_paces_the_world_after_the_partner_disconnects",
 
     // The world may keep moving, but a turn nobody plays in lasts the countdown
     // it was dropped by: two turns must not flash past in milliseconds.
+    // run_until's turns are polls, not calendar turns: a paced turn stays open
+    // and returns from do_turn on every poll until the floor expires, so the
+    // budget covers 1000 ms of floor at MP_POLL_MS (50 ms) per turn with slack.
     const int before = to_turn<int>( calendar::turn );
     const auto started = std::chrono::steady_clock::now();
     REQUIRE( harness.run_until( [before]() {
         return to_turn<int>( calendar::turn ) >= before + 2;
-    }, 20 ) );
+    }, 100 ) );
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - started );
     CHECK( elapsed >= std::chrono::milliseconds( 1500 ) );

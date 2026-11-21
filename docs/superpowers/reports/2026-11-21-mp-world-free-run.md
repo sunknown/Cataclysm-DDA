@@ -75,3 +75,9 @@ to seat 0 only and the defect shows.
 keyboard, so it cannot be the player whose actions pace the world. The header
 contract is updated with the same sentence. Barrier semantics, countdown lengths
 and the away rule are unchanged.
+
+One test detail follows from the fix: a paced turn stays open, and `do_turn()`
+returns after each `MP_POLL_MS` (50 ms) poll, so `run_until`'s "turns" are polls.
+A 1000 ms floor costs more than 20 polls per turn, which is why the measurement
+budget is 100 polls rather than the plan's 20. The unfixed code closes turns
+without polling, so the RED still fails.

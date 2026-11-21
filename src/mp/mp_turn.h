@@ -82,12 +82,15 @@ bool mp_player_is_away_at_input_wait( size_t slot );
 // the turn lasts at least as long as the countdown that would have dropped
 // them: the configured combat length (by default MP_HURRY_COMBAT_MS) while a
 // hostile can see a player, and the configured manual length (by default
-// MP_HURRY_MS) while a left-behind player is still reading. An away player is
-// checked before the left-behind rule and skipped: they asked not to be waited
-// for, so a drop left over from before they went away cannot become a countdown
-// aimed at an empty chair, and their partner's activity pace is not held back
-// by it. With nobody playing by hand and no hostile in sight it ends too: that
-// is the free run the phase exists for.
+// MP_HURRY_MS) while a left-behind player is still reading. An away or
+// disconnected seat is checked before the left-behind rule and skipped: there is
+// nobody at that keyboard. An away player asked not to be waited for, so a drop
+// left over from before they went away cannot become a countdown aimed at an
+// empty chair; a lost client is the same absence from the other side, and
+// counting it as a player at the keyboard switched the floor off for a partner
+// who was still reading after a hurry drop -- the world free-run. Neither holds
+// back their partner's activity pace. With nobody playing by hand and no hostile
+// in sight it ends too: that is the free run the phase exists for.
 bool mp_turn_paced();
 
 // Marks `slot` as sitting at an input wait, or no longer sitting at one. Called

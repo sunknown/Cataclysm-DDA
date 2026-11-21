@@ -374,8 +374,11 @@ bool mp_turn_paced()
         // Away first, before the left-behind rule: an away player asked not to
         // be waited on, and a drop they collected before leaving would
         // otherwise floor every turn at MP_HURRY_MS for a partner who is busy
-        // -- the wait this phase exists to remove.
-        if( mp_player_is_away( i ) ) {
+        // -- the wait this phase exists to remove. A disconnected seat is the
+        // same absence from the other side: nobody is at that keyboard, and
+        // counting it as a player at the keyboard switched the floor off for a
+        // partner who was still reading after a hurry drop -- the free run.
+        if( mp_player_is_away( i ) || mp_player_is_disconnected( i ) ) {
             continue;
         }
         if( mp_player_left_behind( i ) ) {
