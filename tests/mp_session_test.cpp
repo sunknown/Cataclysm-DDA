@@ -2085,6 +2085,51 @@ TEST_CASE( "a_prune_does_not_move_the_confirmed_row", "[mp]" )
     }, 20 ) );
 }
 
+// Paging walks from the highlight, and the walk used to have no way to notice
+// that it had come full circle: PageDown landed on the only highlightable row
+// and stayed there, PageUp spun on the SIZE_MAX sentinel, and either way the
+// seat never came back to an input wait. The menu must keep answering.
+TEST_CASE( "paging_survives_a_cleared_highlight", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Non-interactive: wearing through the API otherwise drains the moves the
+    // seat needs to be actionable this turn.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( inventory_is_open ) );
+
+    // The rock dies at the boundary; the prune clears the highlight when the
+    // next key arrives. The gear column then has a category row in front of the
+    // only highlightable row left (the worn shirt), which is the shape that
+    // made the forward page walk repeat on the spot.
+    REQUIRE( take_a_partner_turn( harness ) );
+    REQUIRE( inventory_is_open() );
+
+    // Paging must not close the menu or stop answering; the wait also gives the
+    // walk a turn boundary to be stuck on if it is broken.
+    harness.press( 0, KEY_NPAGE );
+    REQUIRE_FALSE( harness.run_until( [&]() {
+        return !inventory_is_open();
+    }, 20 ) );
+
+    // PageUp used to loop here. Bounded, like the close below: a reintroduced
+    // loop shows up as a failed case rather than a silent hang.
+    harness.press( 0, KEY_PPAGE );
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !inventory_is_open();
+    }, 20 ) );
+}
+
 // The filter prompt is a second input wait inside the same menu, and
 // query_string() prunes on its way out. The world can take seat 1's turn while
 // the prompt is open, so the row that dies is only discovered when the prompt
