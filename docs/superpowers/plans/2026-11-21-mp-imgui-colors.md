@@ -42,17 +42,19 @@ colour conversion (`src/cata_imgui.cpp`), server build `MP_SERVER=1`.
 
 ---
 
-### Task 1: Feed the imgui pair table from the in-memory curses port
+### Task 1: Carry the pair index and feed the imgui pair table
 
 **Files:**
-- Modify: `src/cursesport.cpp:402-407` (`catacurses::init_pair`)
+- Modify: `src/cursesport.cpp:537-542` (`nc_color::from_color_pair_index`) and
+  `src/cursesport.cpp:404-415` (`catacurses::init_pair`)
 - Test: `tests/mp_imgui_color_test.cpp` (new; the test wildcard picks it up)
 
 **Interfaces:**
 - Consumes: `void cataimgui::init_pair( int p, int f, int b )` (declared under
   `TUI || MP_SERVER` in `src/cata_imgui.h:217`) and
   `ImVec4 cataimgui::imvec4_from_color( const nc_color & )` (`src/cata_imgui.h`).
-- Produces: no new symbol; `catacurses::init_pair` now updates both pair tables on the server.
+- Produces: no new symbol; an `nc_color` built by the in-memory port carries its pair
+  index, and `catacurses::init_pair` updates both pair tables on the server.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -73,10 +75,14 @@ TEST_CASE( "the_in_memory_curses_port_feeds_the_imgui_colour_table", "[mp]" )
     // test has no client, so load them explicitly before asking for a colour.
     cataimgui::load_colors();
     catacurses::init_pair( 90, catacurses::white, catacurses::black );
-    const ImVec4 colour = cataimgui::imvec4_from_color( nc_color::from_color_pair_index( 90 ) );
-    CHECK( colour.x > 0.5f );
-    CHECK( colour.y > 0.5f );
-    CHECK( colour.z > 0.5f );
+    const nc_color colour = nc_color::from_color_pair_index( 90 );
+    // The imgui conversion reads the pair index off the colour; the in-memory
+    // curses port must carry it, not just the attribute bits.
+    CHECK( colour.get_index() == 90 );
+    const ImVec4 rgba = cataimgui::imvec4_from_color( colour );
+    CHECK( rgba.x > 0.5f );
+    CHECK( rgba.y > 0.5f );
+    CHECK( rgba.z > 0.5f );
 }
 
 #endif
@@ -94,12 +100,23 @@ tests/mpserver-cata_test "the_in_memory_curses_port_feeds_the_imgui_colour_table
   --rng-seed 1 --user-dir=.data/colors-t1/
 ```
 
-Expected: **FAIL** on all three checks — the conversion is `(0,0,0)`, because the imgui pair
-table still holds `{0,0}` for pair 90.
+Expected: **FAIL** on all four checks — `get_index()` is 0 (the factory drops it) and the
+conversion is `(0,0,0)` (the imgui pair table still holds `{0,0}` for pair 90).
 
-- [ ] **Step 3: Implement the bridge**
+- [ ] **Step 3: Implement both halves**
 
-In `src/cursesport.cpp`, add the include:
+In `src/cursesport.cpp`, carry the index in `nc_color::from_color_pair_index`:
+
+```cpp
+nc_color nc_color::from_color_pair_index( const int index )
+{
+    // The index is what the imgui colour conversion reads; keep it in step with
+    // the attribute bits, exactly as the ncurses build does.
+    return nc_color( index << 17 & A_COLOR, index );
+}
+```
+
+add the include:
 
 ```cpp
 #include "cata_imgui.h"
@@ -125,13 +142,15 @@ void catacurses::init_pair( const short pair, const base_color f, const base_col
 - [ ] **Step 4: Run it and record the GREEN**
 
 Run the Step 2 command again.
-Expected: **PASS**, one case, all three checks.
+Expected: **PASS**, one case, all four checks.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/cursesport.cpp tests/mp_imgui_color_test.cpp
-git commit -m "fix(mp): feed the imgui colour table from the in-memory curses port"
+git add src/cursesport.cpp tests/mp_imgui_color_test.cpp \
+  docs/superpowers/specs/2026-11-21-mp-text-client-colors-and-shift-design.md \
+  docs/superpowers/plans/2026-11-21-mp-imgui-colors.md
+git commit -m "fix(mp): give imgui text its pair index and colour table"
 ```
 
 ---
