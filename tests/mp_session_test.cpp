@@ -2018,6 +2018,71 @@ TEST_CASE( "a_dead_drop_selection_is_discarded_without_a_crash", "[mp]" )
     CHECK( g->player_at( 0 ).get_wielded_item() );
 }
 
+// After a hurry drop and a partner's disconnect the only player left reads a
+// menu, so the world has nobody at the keyboard to pace it. The countdown that
+// dropped the reader is what has to pace it instead; without that floor the
+// turn loop closes turns as fast as the CPU can run them (observed live: eight
+// minutes of game time in nineteen seconds).
+TEST_CASE( "a_left_behind_player_paces_the_world_after_the_partner_disconnects", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // The harness constructor calls mp_turn_reset_all(), which puts the shipped
+    // countdown lengths back: shorten them after it, not before.
+    REQUIRE( mp_set_hurry_lengths( 1000, 1000 ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    const auto inventory_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
+    };
+    harness.press( 0, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( inventory_is_open ) );
+
+    // Seat 1 hurries; the expiry drops seat 0 from the barrier for as long as it
+    // sits in the menu it was dropped in.
+    harness.press( 1, '`' );
+    REQUIRE( harness.run_until( []() {
+        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
+    } ) );
+    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+    // Seat 1 takes the turn it hurried through. That is what releases its own
+    // drop at the turn boundary: unlike seat 0 it is not sitting in a menu, so
+    // it is holding again when the partner's client leaves. Without this step
+    // the countdown drops both seats and the left-behind floor is armed by
+    // seat 1 too, which hides the defect under test.
+    const int turn_before = to_turn<int>( calendar::turn );
+    harness.press( 1, '.' );
+    REQUIRE( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_state_of( 0 ) == mp_player_state::not_waited;
+    } ) );
+    REQUIRE_FALSE( mp_player_left_behind( 1 ) );
+    CHECK( inventory_is_open() );
+
+    // The partner's client leaves; the session continues by design.
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_disconnected( 1 );
+    } ) );
+
+    // The world may keep moving, but a turn nobody plays in lasts the countdown
+    // it was dropped by: two turns must not flash past in milliseconds.
+    // run_until's turns are polls, not calendar turns: a paced turn stays open
+    // and returns from do_turn on every poll until the floor expires, so the
+    // budget covers 1000 ms of floor at MP_POLL_MS (50 ms) per turn with slack.
+    const int before = to_turn<int>( calendar::turn );
+    const auto started = std::chrono::steady_clock::now();
+    REQUIRE( harness.run_until( [before]() {
+        return to_turn<int>( calendar::turn ) >= before + 2;
+    }, 100 ) );
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started );
+    CHECK( elapsed >= std::chrono::milliseconds( 1500 ) );
+}
+
 namespace
 {
 // Makes seat 1 hurry, lets the countdown expire and takes its turn, so the world
