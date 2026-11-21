@@ -155,11 +155,17 @@ mp_join_choice mp_run_join_menu( const std::string &card_save_id )
                 // the empty slot survives into the character.
                 ava = avatar();
                 ava.set_pos_abs_only( last_pos );
+                // A blank avatar carries an anatomy but no parts until create()
+                // builds them. The menu can redraw the sidebar for it before that
+                // (u_val('body_temp') in data/json/ui/body_temp.json), so give it
+                // the default body now.
+                ava.set_body();
                 if( !ava.create( type, tmpl ) || !settle_name( ava ) ) {
                     // Backed out. Back to the menu, not into the session with a
                     // half-built character.
                     ava = avatar();
                     ava.set_pos_abs_only( last_pos );
+                    ava.set_body();
                     continue;
                 }
                 choice.decision = mp_join_choice::kind::created;

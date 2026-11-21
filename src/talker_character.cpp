@@ -1169,9 +1169,18 @@ int talker_character_const::get_health() const
 
 static std::pair<bodypart_id, bodypart_id> temp_delta( const Character *u )
 {
-    bodypart_id current_bp_extreme = u->get_all_body_parts().front();
+    // A character under construction has an anatomy but no parts yet: Character's
+    // constructor sets the anatomy and only create() calls set_body(). The co-op
+    // join menu resets the seat to such an avatar and the body-temperature widgets
+    // are data-driven conditions that can be evaluated for it.
+    const std::vector<bodypart_id> parts = u->get_all_body_parts();
+    if( parts.empty() ) {
+        const bodypart_id no_part = bodypart_str_id::NULL_ID().id();
+        return std::make_pair( no_part, no_part );
+    }
+    bodypart_id current_bp_extreme = parts.front();
     bodypart_id conv_bp_extreme = current_bp_extreme;
-    for( const bodypart_id &bp : u->get_all_body_parts() ) {
+    for( const bodypart_id &bp : parts ) {
         if( units::abs( u->get_part_temp_cur( bp ) - BODYTEMP_NORM ) >
             units::abs( u->get_part_temp_cur( current_bp_extreme ) - BODYTEMP_NORM ) ) {
             current_bp_extreme = bp;
@@ -1186,13 +1195,23 @@ static std::pair<bodypart_id, bodypart_id> temp_delta( const Character *u )
 
 units::temperature talker_character_const::get_body_temp() const
 {
-    return me_chr_const->get_part_temp_cur( temp_delta( me_chr_const ).first );
+    const bodypart_id extreme = temp_delta( me_chr_const ).first;
+    // A body still being built has no part to read; it reads as its normal
+    // temperature rather than sending the widgets through a null part.
+    if( extreme == bodypart_str_id::NULL_ID().id() ) {
+        return BODYTEMP_NORM;
+    }
+    return me_chr_const->get_part_temp_cur( extreme );
 }
 
 units::temperature_delta talker_character_const::get_body_temp_delta() const
 {
-    return me_chr_const->get_part_temp_conv( temp_delta( me_chr_const ).second ) -
-           me_chr_const->get_part_temp_cur( temp_delta( me_chr_const ).first );
+    const std::pair<bodypart_id, bodypart_id> extremes = temp_delta( me_chr_const );
+    if( extremes.first == bodypart_str_id::NULL_ID().id() ) {
+        return units::temperature_delta();
+    }
+    return me_chr_const->get_part_temp_conv( extremes.second ) -
+           me_chr_const->get_part_temp_cur( extremes.first );
 }
 
 bool talker_character_const::knows_martial_art( const matype_id &id ) const
