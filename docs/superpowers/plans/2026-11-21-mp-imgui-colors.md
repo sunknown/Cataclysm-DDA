@@ -45,8 +45,8 @@ colour conversion (`src/cata_imgui.cpp`), server build `MP_SERVER=1`.
 ### Task 1: Carry the pair index and feed the imgui pair table
 
 **Files:**
-- Modify: `src/cursesport.cpp:537-542` (`nc_color::from_color_pair_index`) and
-  `src/cursesport.cpp:404-415` (`catacurses::init_pair`)
+- Modify: `src/cursesport.cpp:537-566` (`nc_color::from_color_pair_index`, `bold`, `blink`)
+  and `src/cursesport.cpp:404-415` (`catacurses::init_pair`)
 - Test: `tests/mp_imgui_color_test.cpp` (new; the test wildcard picks it up)
 
 **Interfaces:**
@@ -83,6 +83,11 @@ TEST_CASE( "the_in_memory_curses_port_feeds_the_imgui_colour_table", "[mp]" )
     CHECK( rgba.x > 0.5f );
     CHECK( rgba.y > 0.5f );
     CHECK( rgba.z > 0.5f );
+    // Bold and blink rebuild the attribute; they must carry the pair index too,
+    // or a highlighted row loses its colour again.
+    CHECK( colour.bold().get_index() == 90 );
+    CHECK( colour.blink().get_index() == 90 );
+    CHECK( cataimgui::imvec4_from_color( colour.bold() ).x > 0.5f );
 }
 
 #endif
@@ -100,12 +105,14 @@ tests/mpserver-cata_test "the_in_memory_curses_port_feeds_the_imgui_colour_table
   --rng-seed 1 --user-dir=.data/colors-t1/
 ```
 
-Expected: **FAIL** on all four checks — `get_index()` is 0 (the factory drops it) and the
-conversion is `(0,0,0)` (the imgui pair table still holds `{0,0}` for pair 90).
+Expected: **FAIL** on five of seven checks — `get_index()` is 0 (the factory and the bold/blink
+rebuilds drop it) and the conversions are `(0,0,0)` (the imgui pair table still holds `{0,0}` for
+pair 90).
 
 - [ ] **Step 3: Implement both halves**
 
-In `src/cursesport.cpp`, carry the index in `nc_color::from_color_pair_index`:
+In `src/cursesport.cpp`, carry the index in every operation that rebuilds the attribute —
+`nc_color::from_color_pair_index`, `bold()` and `blink()`:
 
 ```cpp
 nc_color nc_color::from_color_pair_index( const int index )
@@ -115,6 +122,9 @@ nc_color nc_color::from_color_pair_index( const int index )
     return nc_color( index << 17 & A_COLOR, index );
 }
 ```
+
+`bold()` and `blink()` pass `index` to the two-argument constructor exactly as the ncurses build
+does; without that a highlighted row's colour reads pair 0 again.
 
 add the include:
 
@@ -142,7 +152,7 @@ void catacurses::init_pair( const short pair, const base_color f, const base_col
 - [ ] **Step 4: Run it and record the GREEN**
 
 Run the Step 2 command again.
-Expected: **PASS**, one case, all four checks.
+Expected: **PASS**, one case, all seven checks.
 
 - [ ] **Step 5: Commit**
 

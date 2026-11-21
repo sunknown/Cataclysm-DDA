@@ -16,10 +16,11 @@ The manual pass found two defects that keep the phase-2 plan's Task 7 Step 4 red
 
 On `MP_SERVER` two gaps in the in-memory curses port line up:
 
-1. `nc_color::from_color_pair_index` in `src/cursesport.cpp` builds the colour from the attribute
-   bits only and drops the pair index, while the ncurses build passes it to the two-argument
-   constructor. `cataimgui::imvec4_from_color()` reads the index off the colour
-   (`color.get_index()`), so every colour on the server looked up pair 0.
+1. The in-memory curses port drops the pair index whenever it rebuilds an `nc_color`:
+   `from_color_pair_index`, `bold()` and `blink()` all use the one-argument constructor, which
+   resets the index to 0, while the ncurses build passes it through. `cataimgui::imvec4_from_color()`
+   reads the index off the colour (`color.get_index()`), so every colour on the server looked up
+   pair 0 — and a highlighted row (bold) looked up pair 0 with `+8`.
 2. `catacurses::init_pair` fills only `cata_cursesport::colorpairs`, not the private table in
    `src/cata_imgui.cpp` that `imvec4_from_color()` reads. Even with the index carried, pair 0's
    entry stays `{0,0}`.
@@ -30,9 +31,9 @@ exactly.
 
 ### Approaches
 
-- **A (chosen).** Restore both halves at the source: the in-memory curses port's
-  `from_color_pair_index` carries the index, and `catacurses::init_pair` under `MP_SERVER` also
-  calls `cataimgui::init_pair( pair, f, b )`. No dependency on `imclient`; covers startup and
+- **A (chosen).** Restore both halves at the source: every in-memory `nc_color` operation that
+  rebuilds the attribute (`from_color_pair_index`, `bold`, `blink`) carries the index, and
+  `catacurses::init_pair` under `MP_SERVER` also calls `cataimgui::init_pair( pair, f, b )`. No dependency on `imclient`; covers startup and
   every dynamically allocated pair; callable from a unit test. Server-only.
 - B. Make `imvec4_from_color` read `cata_cursesport::colorpairs` on `MP_SERVER`. Fewer calls,
   but the two tables stay divergent and the server grows a special case.

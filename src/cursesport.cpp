@@ -548,7 +548,7 @@ int nc_color::to_color_pair_index() const
 
 nc_color nc_color::bold() const
 {
-    return nc_color( attribute_value | A_BOLD );
+    return nc_color( attribute_value | A_BOLD, index );
 }
 
 bool nc_color::is_bold() const
@@ -558,7 +558,7 @@ bool nc_color::is_bold() const
 
 nc_color nc_color::blink() const
 {
-    return nc_color( attribute_value | A_BLINK );
+    return nc_color( attribute_value | A_BLINK, index );
 }
 
 bool nc_color::is_blink() const
