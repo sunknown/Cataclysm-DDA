@@ -4,12 +4,22 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <filesystem>
+#include <map>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
+#include "get_version.h"
+#include "mp/mp_cell.h"
 #include "mp/mp_scene.h"
 #include "mp/mp_scene_codec.h"
+#include "mp/mp_screen_codec.h"
+
+#include "mp_fixture_io.h"
 
 namespace
 {
@@ -88,7 +98,7 @@ bool same( const mp_scene_level &a, const mp_scene_level &b )
 }
 
 // A scene that exercises every block of the wire format at least once.
-mp_scene full_scene()
+mp_scene fixture_full_scene()
 {
     mp_scene s;
     s.body_version = MP_SCENE_BODY_VERSION;
@@ -135,6 +145,21 @@ mp_scene full_scene()
     below.creatures = { { 4, 2, -1, 4, 0, 0x0A } };
 
     s.levels = { ground, below };
+    return s;
+}
+
+// The smallest scene the decoder accepts: one cell, the mandatory empty
+// dictionary entry, one terrain run, and no masks, vehicles, or overlay
+// entries. Encoded it is 58 bytes on the wire.
+mp_scene fixture_minimal_scene()
+{
+    mp_scene s;
+    s.tiles_w = 1;
+    s.tiles_h = 1;
+    s.ids = { "" };
+    mp_scene_level level;
+    level.terrain = { { 1, 0, 0, 0 } };
+    s.levels = { level };
     return s;
 }
 
@@ -329,11 +354,67 @@ mp_scene populated_destination()
     return s;
 }
 
+// Every body the decoder must reject, paired with the fixture file name the
+// client can use to reproduce the rejection. The names are part of the wire
+// fixture contract, so they are stable and never derived from the message.
+std::vector<std::pair<std::string, std::vector<uint8_t>>> fixture_bad_bodies()
+{
+    const minimal_body fixture = make_minimal_body();
+    const std::vector<uint8_t> &valid = fixture.bytes;
+
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> bad;
+    bad.emplace_back( "bad_empty.bin", std::vector<uint8_t> {} );
+    for( size_t n = 0; n < valid.size(); ++n ) {
+        bad.emplace_back( "bad_trunc_" + std::to_string( n ) + ".bin",
+                          std::vector<uint8_t>( valid.begin(), valid.begin() + n ) );
+    }
+    bad.emplace_back( "bad_body_version_0.bin", with_u8( valid, 0, 0 ) );
+    bad.emplace_back( "bad_body_version_2.bin", with_u8( valid, 0, 2 ) );
+    bad.emplace_back( "bad_tiles_w_0.bin", with_u16( valid, fixture.tiles_w, 0 ) );
+    bad.emplace_back( "bad_tiles_h_0.bin", with_u16( valid, fixture.tiles_h, 0 ) );
+    bad.emplace_back( "bad_id_count_0.bin", with_u16( valid, fixture.id_count, 0 ) );
+    // Index 0 carrying a name, not the empty id the contract requires.
+    std::vector<uint8_t> named_first_id(
+        valid.begin(), valid.begin() + fixture.first_id_len );
+    put_u16( named_first_id, 1 );
+    named_first_id.push_back( 'x' );
+    named_first_id.insert( named_first_id.end(),
+                           valid.begin() + fixture.first_id_len + 2, valid.end() );
+    bad.emplace_back( "bad_id0_nonempty.bin", named_first_id );
+    bad.emplace_back( "bad_z_count_11.bin", with_u8( valid, fixture.z_count, 11 ) );
+    bad.emplace_back( "bad_coverage_short.bin",
+                      with_u16( valid, fixture.terrain_repeat, 3 ) );
+    bad.emplace_back( "bad_repeat_0.bin", with_u16( valid, fixture.terrain_repeat, 0 ) );
+    bad.emplace_back( "bad_mask_role_2.bin", with_u8( valid, fixture.mask_role, 2 ) );
+    bad.emplace_back( "bad_level_z_rel_m1.bin",
+                      with_u8( valid, fixture.level_z_rel, 0xFF ) );
+    std::vector<uint8_t> trailing = valid;
+    trailing.push_back( 0 );
+    bad.emplace_back( "bad_trailing.bin", trailing );
+    // Out-of-range coordinates and indices, asserted by
+    // mp_scene_decoder_rejects_out_of_range_indices.
+    bad.emplace_back( "bad_id_idx_oob.bin",
+                      with_u16( valid, fixture.furniture_id_idx, 2 ) );
+    bad.emplace_back( "bad_tile_x_oob.bin", with_u16( valid, fixture.furniture_x, 2 ) );
+    bad.emplace_back( "bad_creature_z_rel.bin",
+                      with_u16( valid, fixture.creature_z_rel, 0xFFF5 ) );
+    return bad;
+}
+
+mp_cell fixture_cell( const std::string &ch, const uint8_t fg, const uint8_t bg )
+{
+    mp_cell c;
+    c.ch = ch;
+    c.fg = fg;
+    c.bg = bg;
+    return c;
+}
+
 } // namespace
 
 TEST_CASE( "mp_scene_codec_round_trips_every_block", "[mp]" )
 {
-    const mp_scene scene = full_scene();
+    const mp_scene scene = fixture_full_scene();
 
     mp_scene decoded;
     REQUIRE( mp_scene_apply( decoded, mp_scene_encode( scene ) ) );
@@ -369,7 +450,7 @@ TEST_CASE( "mp_scene_codec_round_trips_every_block", "[mp]" )
     // The encoder, not the decoder, is what turns equal neighbouring cells
     // into one run. A scene whose terrain vector still holds two adjacent
     // repeat-1 runs of the same cell must come back as one repeat-2 run.
-    mp_scene split = full_scene();
+    mp_scene split = fixture_full_scene();
     split.levels[0].terrain = { { 1, 1, 3, 4 }, { 1, 1, 3, 4 }, { 30, 2, 2, 2 } };
     mp_scene merged;
     REQUIRE( mp_scene_apply( merged, mp_scene_encode( split ) ) );
@@ -380,12 +461,7 @@ TEST_CASE( "mp_scene_codec_round_trips_every_block", "[mp]" )
 
     // A scene that never interned anything still has to encode dictionary
     // entry 0, or the first id_idx on the wire would have nothing to name.
-    mp_scene bare;
-    bare.tiles_w = 1;
-    bare.tiles_h = 1;
-    mp_scene_level bare_level;
-    bare_level.terrain = { { 1, 0, 0, 0 } };
-    bare.levels = { bare_level };
+    mp_scene bare = fixture_minimal_scene();
     mp_scene bare_decoded;
     REQUIRE( mp_scene_apply( bare_decoded, mp_scene_encode( bare ) ) );
     REQUIRE( bare_decoded.ids.size() == 1 );
@@ -395,46 +471,16 @@ TEST_CASE( "mp_scene_codec_round_trips_every_block", "[mp]" )
 TEST_CASE( "mp_scene_decoder_rejects_malformed_bodies", "[mp]" )
 {
     const minimal_body fixture = make_minimal_body();
-    const std::vector<uint8_t> &valid = fixture.bytes;
 
     // The hand-written fixture must be a body the decoder accepts before any
     // of the corruptions below can mean anything.
     mp_scene accepted;
-    REQUIRE( mp_scene_apply( accepted, valid ) );
-
-    std::vector<std::pair<std::string, std::vector<uint8_t>>> bad;
-    bad.emplace_back( "empty body", std::vector<uint8_t> {} );
-    for( size_t n = 0; n < valid.size(); ++n ) {
-        bad.emplace_back( "truncated at byte " + std::to_string( n ),
-                          std::vector<uint8_t>( valid.begin(), valid.begin() + n ) );
-    }
-    bad.emplace_back( "body_version 0", with_u8( valid, 0, 0 ) );
-    bad.emplace_back( "body_version 2", with_u8( valid, 0, 2 ) );
-    bad.emplace_back( "tiles_w 0", with_u16( valid, fixture.tiles_w, 0 ) );
-    bad.emplace_back( "tiles_h 0", with_u16( valid, fixture.tiles_h, 0 ) );
-    bad.emplace_back( "id_count 0", with_u16( valid, fixture.id_count, 0 ) );
-    // Index 0 carrying a name, not the empty id the contract requires.
-    std::vector<uint8_t> named_first_id(
-        valid.begin(), valid.begin() + fixture.first_id_len );
-    put_u16( named_first_id, 1 );
-    named_first_id.push_back( 'x' );
-    named_first_id.insert( named_first_id.end(),
-                           valid.begin() + fixture.first_id_len + 2, valid.end() );
-    bad.emplace_back( "first id not empty", named_first_id );
-    bad.emplace_back( "z_count 11", with_u8( valid, fixture.z_count, 11 ) );
-    bad.emplace_back( "terrain covers too few cells",
-                      with_u16( valid, fixture.terrain_repeat, 3 ) );
-    bad.emplace_back( "repeat 0", with_u16( valid, fixture.terrain_repeat, 0 ) );
-    bad.emplace_back( "mask role 2", with_u8( valid, fixture.mask_role, 2 ) );
-    bad.emplace_back( "level 0 with z_rel -1",
-                      with_u8( valid, fixture.level_z_rel, 0xFF ) );
-    std::vector<uint8_t> trailing = valid;
-    trailing.push_back( 0 );
-    bad.emplace_back( "trailing byte", trailing );
+    REQUIRE( mp_scene_apply( accepted, fixture.bytes ) );
 
     mp_scene dest = populated_destination();
     const std::vector<uint8_t> before = mp_scene_encode( dest );
-    for( const std::pair<std::string, std::vector<uint8_t>> &entry : bad ) {
+    for( const std::pair<std::string, std::vector<uint8_t>> &entry :
+         fixture_bad_bodies() ) {
         INFO( entry.first );
         CHECK_FALSE( mp_scene_apply( dest, entry.second ) );
         CHECK( mp_scene_encode( dest ) == before );
@@ -460,6 +506,90 @@ TEST_CASE( "mp_scene_decoder_rejects_out_of_range_indices", "[mp]" )
     CHECK_FALSE( mp_scene_apply( dest, bad_x ) );
     CHECK_FALSE( mp_scene_apply( dest, bad_z ) );
     CHECK( mp_scene_encode( dest ) == before );
+}
+
+TEST_CASE( "mp_codec_fixtures_export_when_requested", "[mp]" )
+{
+    const std::optional<std::filesystem::path> dir = mp_fixture_dir();
+    if( !dir ) {
+        return; // opt-in generator: a normal run stays silent
+    }
+    std::filesystem::create_directories( *dir );
+
+    // Sorted by name so manifest.json is byte-identical across runs.
+    std::map<std::string, size_t> sizes;
+    const auto write = [&]( const std::string & name,
+                            const std::vector<uint8_t> & bytes ) {
+        mp_fixture_write( *dir, name, bytes );
+        sizes[name] = bytes.size();
+    };
+
+    const std::vector<uint8_t> full_body = mp_scene_encode( fixture_full_scene() );
+    mp_scene full_decoded;
+    REQUIRE( mp_scene_apply( full_decoded, full_body ) );
+    CHECK( full_decoded.levels.size() == 2 );
+    write( "scene_full.bin", full_body );
+
+    const std::vector<uint8_t> minimal = mp_scene_encode( fixture_minimal_scene() );
+    // The minimal fixture must be the smallest body the decoder accepts, not
+    // the richer corpus the corruption fixtures are derived from.
+    REQUIRE( minimal.size() < make_minimal_body().bytes.size() );
+    mp_scene minimal_decoded;
+    REQUIRE( mp_scene_apply( minimal_decoded, minimal ) );
+    CHECK( minimal_decoded.ids.size() == 1 );
+    CHECK( minimal_decoded.masks.empty() );
+    CHECK( minimal_decoded.vehicles.empty() );
+    REQUIRE( minimal_decoded.levels.size() == 1 );
+    REQUIRE( minimal_decoded.levels[0].terrain.size() == 1 );
+    CHECK( minimal_decoded.levels[0].terrain[0].repeat == 1 );
+    write( "scene_minimal.bin", minimal );
+
+    for( const std::pair<std::string, std::vector<uint8_t>> &entry :
+         fixture_bad_bodies() ) {
+        mp_scene rejected;
+        INFO( entry.first );
+        CHECK_FALSE( mp_scene_apply( rejected, entry.second ) );
+        write( entry.first, entry.second );
+    }
+
+    // An 80x24 screen resized to the same size, which marks every row dirty:
+    // mp_screen_encode then puts the whole screen on the wire as one update.
+    mp_screen_grid screen( 80, 24 );
+    screen.resize( 80, 24 );
+    screen.set( 0, 0, fixture_cell( "A", 7, 0 ) );
+    screen.set( 1, 0, fixture_cell( "B", 4, 0 ) );
+    screen.set( 2, 0, fixture_cell( "\u0416", 2, 1 ) );
+    screen.set( 4, 0, fixture_cell( "\u6f22", 6, 0 ) );
+    // The second column of the wide glyph above, as curses records it.
+    screen.set( 5, 0, fixture_cell( "", 6, 0 ) );
+    screen.set( 0, 1, fixture_cell( "X", 237, 0 ) );
+    screen.set( 79, 23, fixture_cell( "Z", 15, 0 ) );
+
+    const std::vector<uint8_t> screen_body = mp_screen_encode( screen );
+    mp_screen_grid screen_decoded( 80, 24 );
+    REQUIRE( mp_screen_apply( screen_decoded, screen_body ) );
+    CHECK( screen_decoded.at( 2, 0 ) == fixture_cell( "\u0416", 2, 1 ) );
+    CHECK( screen_decoded.at( 4, 0 ) == fixture_cell( "\u6f22", 6, 0 ) );
+    CHECK( screen_decoded.at( 5, 0 ) == fixture_cell( "", 6, 0 ) );
+    CHECK( screen_decoded.at( 79, 23 ) == fixture_cell( "Z", 15, 0 ) );
+    write( "screen_full.bin", screen_body );
+
+    std::ostringstream manifest;
+    manifest << "{\n";
+    manifest << "  \"game_commit\": \"" << getVersionString() << "\",\n";
+    manifest << "  \"body_version\": "
+             << static_cast<int>( MP_SCENE_BODY_VERSION ) << ",\n";
+    manifest << "  \"files\": {";
+    bool first = true;
+    for( const std::pair<const std::string, size_t> &entry : sizes ) {
+        manifest << ( first ? "\n" : ",\n" );
+        first = false;
+        manifest << "    \"" << entry.first << "\": " << entry.second;
+    }
+    manifest << "\n  }\n}\n";
+    const std::string text = manifest.str();
+    mp_fixture_write( *dir, "manifest.json",
+                      std::vector<uint8_t>( text.begin(), text.end() ) );
 }
 
 TEST_CASE( "mp_scene_encoder_truncates_masks_to_the_wire_limit", "[mp]" )
@@ -491,7 +621,7 @@ TEST_CASE( "mp_scene_encoder_truncates_masks_to_the_wire_limit", "[mp]" )
 
 TEST_CASE( "mp_scene_body_hash_ignores_the_frame_prefix", "[mp]" )
 {
-    const mp_scene scene = full_scene();
+    const mp_scene scene = fixture_full_scene();
     const std::vector<uint8_t> body = mp_scene_encode( scene );
 
     // Independent FNV-1a over the body from offset 5, so the test pins the

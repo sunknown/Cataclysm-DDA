@@ -104,6 +104,10 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     // countdown on its own (mp_tick_hurry), and a session whose turns can close
     // without anyone hurrying cannot show what a hurry does.
     clear_creatures();
+    // clear_creatures() only removes monsters. A scene test that spawns an NPC
+    // leaves it in the world; the next harness's world turns then reach that
+    // NPC and open a dialogue the server backend was never asked to draw.
+    clear_npcs();
     g->ensure_gamemode_for_test();
     // The first do_turn() of a session is the one-time "new_game" pass
     // (weather.on_game_start), which does not advance the calendar. Pin it here
