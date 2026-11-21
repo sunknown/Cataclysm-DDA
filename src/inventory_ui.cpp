@@ -996,9 +996,19 @@ void inventory_column::move_selection( scroll_direction dir )
 {
     size_t index = highlighted_index;
 
-    do {
-        index = next_highlightable_index( index, dir );
-    } while( index != highlighted_index && is_selected_by_category( entries[index] ) );
+    while( true ) {
+        const size_t next_index = next_highlightable_index( index, dir );
+        // A walk that lands back on the row it started from has no other
+        // highlightable row to offer in this direction.
+        if( next_index == static_cast<size_t>( -1 ) || next_index == index ) {
+            index = next_index;
+            break;
+        }
+        index = next_index;
+        if( index == highlighted_index || !is_selected_by_category( entries[index] ) ) {
+            break;
+        }
+    }
 
     highlight( index, dir );
 }
@@ -1009,8 +1019,10 @@ void inventory_column::move_selection_page( scroll_direction dir )
 
     do {
         const size_t next_index = next_highlightable_index( index, dir );
-        const bool flipped = next_index == highlighted_index ||
-                             ( next_index > highlighted_index ) != ( static_cast<int>( dir ) > 0 );
+        // Two ways the walk has come full circle: onto the row it is on now
+        // (the only highlightable row) or onto the row it started from.
+        const bool flipped = next_index == index || next_index == highlighted_index ||
+                             ( next_index > index ) != ( static_cast<int>( dir ) > 0 );
 
         if( flipped && page_of( next_index ) == page_index() ) {
             break; // If flipped and still on the same page - no need to flip
@@ -1025,11 +1037,21 @@ void inventory_column::move_selection_page( scroll_direction dir )
 void inventory_column::scroll_selection_page( scroll_direction dir )
 {
     size_t index = highlighted_index;
-
-    while( page_of( index = next_highlightable_index( index, dir ) ) == page_index() ) {
-
-        if( index == highlighted_index && page_of( index ) == page_index() ) {
-            break; // If flipped and still on the same page - no need to flip
+    // One full walk of the page is enough: if the scroll has not landed on
+    // another page by then, every row on this one has been visited.
+    for( size_t steps = 0; steps <= entries.size(); ++steps ) {
+        const size_t next_index = next_highlightable_index( index, dir );
+        if( next_index == static_cast<size_t>( -1 ) ||
+            page_of( next_index ) != page_index() ) {
+            index = next_index;
+            break;
+        }
+        if( next_index == index ) {
+            break; // Only one highlightable row on this page.
+        }
+        index = next_index;
+        if( index == highlighted_index ) {
+            break; // Wrapped onto the row the scroll started from.
         }
     }
 
@@ -1231,7 +1253,8 @@ bool inventory_column::is_selected_by_category( const inventory_entry &entry ) c
 
 const inventory_entry &inventory_column::get_highlighted() const
 {
-    if( highlighted_index >= entries.size() || !entries[highlighted_index].is_item() ) {
+    if( highlight_cleared || highlighted_index >= entries.size() ||
+        !entries[highlighted_index].is_item() ) {
         // clang complains if we use the default constructor here
         static const inventory_entry dummy( nullptr );
         return dummy;
@@ -1726,7 +1749,11 @@ bool inventory_column::highlight( const item_location &loc, bool front_only )
 
 void inventory_column::clear_highlight()
 {
-    highlighted_index = std::numeric_limits<size_t>::max();
+    // Keep the index on a real page: paging and scrolling walk from it, and the
+    // old SIZE_MAX sentinel made their wrap checks degenerate into an endless
+    // loop whenever every row sat on the first page. The flag is what refuses
+    // the highlight until the player moves; get_highlighted() answers the dummy.
+    highlighted_index = 0;
     highlight_cleared = true;
     page_offset = 0;
 }
@@ -2685,12 +2712,13 @@ shared_ptr_fast<ui_adaptor> inventory_selector::create_or_get_ui_adaptor()
             // rows' current letters, so a resize landing at a boundary must not
             // re-letter them: it is the same class of shift the post-wait drop
             // defers. A resize anywhere else has no pending key and re-letters.
-            const bool keep_letters = defer_invlet_reassign || in_input_wait;
-            defer_invlet_reassign = keep_letters;
+            const bool was_deferred = defer_invlet_reassign;
+            defer_invlet_reassign = was_deferred || in_input_wait;
             prepare_layout();
-            if( !keep_letters ) {
-                defer_invlet_reassign = false;
-            }
+            // Restore rather than clear: a deferral that outlives this callback
+            // (the post-wait drop) owns the flag, one this resize borrowed from
+            // in_input_wait does not.
+            defer_invlet_reassign = was_deferred;
         } );
         current_ui->mark_resize();
 

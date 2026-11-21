@@ -450,7 +450,8 @@ class inventory_column
          * Drop the highlight so get_highlighted() answers with the dummy entry until
          * the player moves. Used when the highlighted row died under an open menu:
          * the key that ended the wait must not fall through to the row that took
-         * its place.
+         * its place. The index stays on the first page so paging has a finite walk
+         * to start from.
          */
         void clear_highlight();
 
