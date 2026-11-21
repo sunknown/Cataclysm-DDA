@@ -26,6 +26,12 @@ mp_screen_grid &mp_server_grid();
 
 void mp_server_set_terminal_size( int width, int height );
 
+// Blanks every connected session's screen and marks it fully dirty. The join
+// menu paints into the session grid without a window that survives the join
+// phase, so those cells would otherwise ghost over the running game until some
+// later window happened to repaint them. Called once when the party starts.
+void mp_server_blank_screens();
+
 // True while the connected client is still present. False when no transport
 // was ever attached or the peer closed it; the curses backend uses this to end
 // the session instead of feeding the game an endless stream of timeout events.

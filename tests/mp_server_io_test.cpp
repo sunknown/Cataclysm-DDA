@@ -165,6 +165,49 @@ TEST_CASE( "a_client_can_reconstruct_the_server_screen_from_the_wire", "[mp]" )
     }
 }
 
+TEST_CASE( "the_join_menu_is_blanked_from_every_screen_at_game_start", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+
+    // The join menu writes into the session grid; once the menu window is
+    // gone, no later window owns those cells. The game-start reset must make
+    // the next flush carry a blank full screen instead of leaving the text
+    // ghosted over the map.
+    mp_server_blit_row( 0, 3, text_row( "Continue as Stephan Kim" ) );
+    mp_server_flush_screen();
+
+    mp_screen_grid client( 40, 10 );
+    auto apply_pending = [&]() {
+        while( const std::optional<std::vector<uint8_t>> msg = pair.b->recv( 0 ) ) {
+            mp_msg_kind kind = mp_msg_kind::control;
+            std::vector<uint8_t> body;
+            REQUIRE( mp_unwrap( *msg, kind, body ) );
+            if( kind == mp_msg_kind::screen ) {
+                REQUIRE( mp_screen_apply( client, body ) );
+            }
+        }
+    };
+    apply_pending();
+    REQUIRE( client.at( 0, 3 ).ch == "C" );
+
+    mp_server_blank_screens();
+    mp_server_flush_screen();
+    apply_pending();
+
+    CHECK( client.at( 0, 3 ).ch == " " );
+    CHECK( client.at( 9, 3 ).ch == " " );
+    for( int y = 0; y < 10; ++y ) {
+        for( int x = 0; x < 40; ++x ) {
+            CHECK( client.at( x, y ) == mp_server_grid().at( x, y ) );
+        }
+    }
+}
+
 TEST_CASE( "server_returns_a_queued_keystroke", "[mp]" )
 {
     mp_set_active_context( &test_input_ctx );

@@ -495,6 +495,10 @@ mp_join_progress mp_join_poll( mp_sched &sched, std::string &err )
         g_join_phase = false;
         return mp_join_progress::failed;
     }
+    // The join menu painted into each session grid, but its windows do not
+    // survive into the game; blank every screen now so the next flush sends a
+    // full redraw instead of leaving the menu ghosted over the map.
+    mp_server_blank_screens();
     // The party starts here: from this point a client dropping ends the
     // session, as it always has (Phase 5 makes it survivable).
     g_join_phase = false;

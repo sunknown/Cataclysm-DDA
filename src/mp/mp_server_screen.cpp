@@ -52,6 +52,25 @@ void mp_server_set_terminal_size( const int width, const int height )
     mp_server_grid().resize( width, height );
 }
 
+void mp_server_blank_screens()
+{
+    for( const std::unique_ptr<mp_session> &session : mp_sessions() ) {
+        if( !session || !session->transport || !session->transport->connected() ) {
+            continue;
+        }
+        // resize() discards the join menu's cells and marks every row dirty,
+        // so the next flush carries a full blank redraw; the game's own draw
+        // then fills the grid from the windows that outlive the menu.
+        session->grid.resize( session->grid.width(), session->grid.height() );
+        // The join menu may have left a cached cursor under text that is about
+        // to disappear; hide it until the game sets its own.
+        if( session->cursor_visible ) {
+            session->cursor_visible = false;
+            session->cursor_changed = true;
+        }
+    }
+}
+
 bool mp_server_peer_connected()
 {
     if( mp_sessions().empty() ) {
