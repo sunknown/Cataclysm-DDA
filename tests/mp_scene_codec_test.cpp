@@ -148,6 +148,21 @@ mp_scene fixture_full_scene()
     return s;
 }
 
+// The smallest scene the decoder accepts: one cell, the mandatory empty
+// dictionary entry, one terrain run, and no masks, vehicles, or overlay
+// entries. Encoded it is 58 bytes on the wire.
+mp_scene fixture_minimal_scene()
+{
+    mp_scene s;
+    s.tiles_w = 1;
+    s.tiles_h = 1;
+    s.ids = { "" };
+    mp_scene_level level;
+    level.terrain = { { 1, 0, 0, 0 } };
+    s.levels = { level };
+    return s;
+}
+
 // Wire-building helpers for the hand-written minimal body below. Keeping the
 // malformed-body fixtures independent of mp_scene_encode means an encoder bug
 // cannot hide behind them.
@@ -446,12 +461,7 @@ TEST_CASE( "mp_scene_codec_round_trips_every_block", "[mp]" )
 
     // A scene that never interned anything still has to encode dictionary
     // entry 0, or the first id_idx on the wire would have nothing to name.
-    mp_scene bare;
-    bare.tiles_w = 1;
-    bare.tiles_h = 1;
-    mp_scene_level bare_level;
-    bare_level.terrain = { { 1, 0, 0, 0 } };
-    bare.levels = { bare_level };
+    mp_scene bare = fixture_minimal_scene();
     mp_scene bare_decoded;
     REQUIRE( mp_scene_apply( bare_decoded, mp_scene_encode( bare ) ) );
     REQUIRE( bare_decoded.ids.size() == 1 );
@@ -520,9 +530,18 @@ TEST_CASE( "mp_codec_fixtures_export_when_requested", "[mp]" )
     CHECK( full_decoded.levels.size() == 2 );
     write( "scene_full.bin", full_body );
 
-    const std::vector<uint8_t> minimal = make_minimal_body().bytes;
+    const std::vector<uint8_t> minimal = mp_scene_encode( fixture_minimal_scene() );
+    // The minimal fixture must be the smallest body the decoder accepts, not
+    // the richer corpus the corruption fixtures are derived from.
+    REQUIRE( minimal.size() < make_minimal_body().bytes.size() );
     mp_scene minimal_decoded;
     REQUIRE( mp_scene_apply( minimal_decoded, minimal ) );
+    CHECK( minimal_decoded.ids.size() == 1 );
+    CHECK( minimal_decoded.masks.empty() );
+    CHECK( minimal_decoded.vehicles.empty() );
+    REQUIRE( minimal_decoded.levels.size() == 1 );
+    REQUIRE( minimal_decoded.levels[0].terrain.size() == 1 );
+    CHECK( minimal_decoded.levels[0].terrain[0].repeat == 1 );
     write( "scene_minimal.bin", minimal );
 
     for( const std::pair<std::string, std::vector<uint8_t>> &entry :
