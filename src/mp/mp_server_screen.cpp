@@ -7,10 +7,15 @@
 #include <utility>
 #include <vector>
 
+#include "mp/mp_context.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
+#include "mp/mp_scene_codec.h"
+#include "mp/mp_sched.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_session.h"
 #include "mp/mp_server_log.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_transport.h"
 
 // Defined in mp_server_input.cpp; the screen reset drops the input state too.
@@ -116,11 +121,15 @@ void mp_server_flush_screen()
         return;
     }
     if( t->pending_bytes() > MP_SCREEN_BACKLOG_BYTES ) {
-        // The peer is not keeping up. Throw away the queued screen history
-        // and mark the whole grid dirty so the send below becomes a single
-        // full redraw; control messages survive the drop untouched.
+        // The peer is not keeping up. Throw away the queued screen and scene
+        // history and mark the whole grid dirty so the send below becomes a
+        // single full redraw; control messages survive the drop untouched.
+        // The scene flush later in this call rebuilds one newest frame: a
+        // dropped queued scene may have been the only one the client would
+        // otherwise ever receive.
         t->drop_pending_screen_messages();
         s->grid.mark_all_dirty();
+        s->scene_sent_once = false;
     }
     if( s->grid.any_dirty() ) {
         t->send( mp_wrap( mp_msg_kind::screen, mp_screen_encode( s->grid ) ) );
@@ -137,6 +146,93 @@ void mp_server_flush_screen()
                           std::vector<uint8_t>( json.begin(), json.end() ) ) );
         s->cursor_changed = false;
     }
+
+    // After the grid, so a client can paint the scene under the text it just
+    // received. The gates live in the scene flush: the world phase, the join
+    // loop (which flushes under the world's baton) and the legacy path all
+    // reach here and must leave without building.
+    mp_server_flush_scene();
+}
+
+void mp_server_flush_scene()
+{
+    mp_session *const s = mp_active_session();
+    if( s == nullptr || !s->transport ) {
+        return;
+    }
+    if( ( s->scene_caps & 1u ) == 0 ) {
+        // A text client. Nothing below this point may run for it.
+        return;
+    }
+    mp_sched *const sched = mp_active_sched();
+    if( sched == nullptr ) {
+        // No baton exists in single player or in a legacy session.
+        return;
+    }
+    if( !sched->holds( s->context_index ) ) {
+        // The join loop draws for a player while the world still holds the
+        // baton; only the acting seat may send a scene.
+        return;
+    }
+
+    const player_context *const ctx = mp_active_context_ptr();
+    if( ctx == nullptr ) {
+        return;
+    }
+    // The viewport and the map size are the active context's terrain window,
+    // read fresh on every flush and never cached on the session.
+    mp_scene_rect rect;
+    if( !mp_scene_mask_map_rect( rect ) ) {
+        return;
+    }
+    if( rect.w == 0 || rect.h == 0 ) {
+        return;
+    }
+
+    const uint64_t mask_hash = mp_scene_mask_hash();
+    const bool need = s->scene_terrain_dirty || s->scene_mask_hash != mask_hash ||
+                      !s->scene_sent_once;
+    if( !need ) {
+        return;
+    }
+
+    mp_scene scene = mp_scene_build( ctx->ter_view_p, rect.w, rect.h,
+                                     s->scene_z_levels );
+    if( scene.levels.empty() ) {
+        // The join phase hands the baton to a seat whose avatar is still the
+        // blank sentinel at (20, 10, -500). The builder anchors there and runs
+        // out of map at once, returning no levels; encoding that would put a
+        // z_count == 0 body on the wire, which the project's decoder rejects.
+        // Leave the send state untouched so the first real frame still goes out
+        // after the character is placed.
+        return;
+    }
+    scene.ui_x = rect.x;
+    scene.ui_y = rect.y;
+    scene.ui_w = rect.w;
+    scene.ui_h = rect.h;
+    scene.masks = mp_scene_mask_rects();
+    scene.frame_seq = s->scene_seq + 1;
+
+    const std::vector<uint8_t> body = mp_scene_encode( scene );
+    const uint64_t hash = mp_scene_body_hash( body );
+    if( s->scene_sent_once && hash == s->scene_hash ) {
+        // Nothing the client would see changed, so no frame is sent and the
+        // sequence stays put. The blit that forced this build has still been
+        // accounted for by it: leaving the dirty flag set would rebuild the
+        // whole scene on every idle flush for a frame the hash already proved
+        // unchanged.
+        s->scene_terrain_dirty = false;
+        return;
+    }
+
+    s->scene_seq = scene.frame_seq;
+    s->transport->send( mp_wrap( mp_msg_kind::scene, body ) );
+    s->scene_hash = hash;
+    s->scene_mask_hash = mask_hash;
+    s->scene_sent_once = true;
+    // A completed build consumes the blit, sent or skipped.
+    s->scene_terrain_dirty = false;
 }
 
 void mp_server_reset_for_test()

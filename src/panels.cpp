@@ -30,6 +30,7 @@
 #include "json.h"
 #include "map.h"
 #include "messages.h"
+#include "mp/mp_server_mask.h"
 #include "omdata.h"
 #include "options.h"
 #include "output.h"
@@ -342,6 +343,10 @@ static void decorate_panel( std::string_view name, const catacurses::window &w )
 static void draw_messages( const draw_args &args )
 {
     const catacurses::window &w = args._win;
+
+    // Panel windows are recreated for every draw, so the live window is
+    // registered here: the scene stream sends it as a native-log mask.
+    mp_scene_mask_register_role( w, 1 );
 
     werase( w );
     int line = getmaxy( w ) - 1;

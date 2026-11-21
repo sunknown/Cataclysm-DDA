@@ -8,6 +8,7 @@
 
 #include "catacharset.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include <imtui/imtui.h>
 
@@ -82,6 +83,11 @@ void mp_imgui_draw_screen()
             out.fg = cell.fg;
             out.bg = cell.bg;
             row.push_back( out );
+            // ImGui draws after the terrain, so its glyphs are text over the
+            // 3D view. Cells the renderer left at zero are carried through
+            // above and must not become a mask.
+            mp_scene_mask_note( static_cast<uint16_t>( x ), static_cast<uint16_t>( y ),
+                                1, 1, 0 );
             if( cell.chwidth > 1 ) {
                 // A double-width glyph claims the next column as an empty
                 // continuation cell, exactly how cursesport lays them out. The
@@ -93,6 +99,8 @@ void mp_imgui_draw_screen()
                     continuation.fg = cell.fg;
                     continuation.bg = cell.bg;
                     row.push_back( continuation );
+                    mp_scene_mask_note( static_cast<uint16_t>( x + 1 ),
+                                        static_cast<uint16_t>( y ), 1, 1, 0 );
                 }
                 x += cell.chwidth - 1;
             }

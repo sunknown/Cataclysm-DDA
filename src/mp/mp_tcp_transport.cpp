@@ -137,16 +137,18 @@ void mp_tcp_transport::drop_pending_screen_messages()
     // outbound_ holds whole frames, so dropping one cannot corrupt framing:
     // the head frame may be partially sent -- its length header and the start
     // of its body are already on the wire, so it must always survive, even a
-    // screen frame. Every frame after it is a whole frame: screen updates are
-    // dropped, control messages are kept, and the survivors stay whole.
+    // screen or scene frame. Every frame after it is a whole frame: screen and
+    // scene updates are dropped, control messages are kept, and the survivors
+    // stay whole.
     size_t i = ( !outbound_.empty() && outbound_head_sent_ > 0 ) ? 1 : 0;
     while( i < outbound_.size() ) {
         const std::vector<uint8_t> &frame = outbound_[i];
         // body[0] is the mp_msg_kind (see mp_wrap); a frame with no body
-        // cannot be a screen update.
-        const bool is_screen = frame.size() > 4 &&
-                               frame[4] == static_cast<uint8_t>( mp_msg_kind::screen );
-        if( is_screen ) {
+        // cannot be a screen or scene update.
+        const uint8_t kind = frame.size() > 4 ? frame[4] : 0;
+        const bool replaceable = kind == static_cast<uint8_t>( mp_msg_kind::screen ) ||
+                                 kind == static_cast<uint8_t>( mp_msg_kind::scene );
+        if( replaceable ) {
             outbound_.erase( outbound_.begin() + i );
         } else {
             ++i;

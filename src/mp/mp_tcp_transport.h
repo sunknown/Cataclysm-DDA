@@ -66,8 +66,8 @@ class mp_tcp_transport : public mp_transport
         // Complete framed messages waiting to be written, in send order. Each
         // element is one whole [4-byte big-endian length][body] frame; a frame
         // is never split across elements. Keeping whole frames is what lets
-        // drop_pending_screen_messages discard a single screen update without
-        // any chance of corrupting the stream.
+        // drop_pending_screen_messages discard queued screen and scene updates
+        // without any chance of corrupting the stream.
         std::deque<std::vector<uint8_t>> outbound_;
         // How many bytes of the front frame have already been handed to the
         // socket. The front frame is popped only once this reaches its size,

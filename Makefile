@@ -1126,6 +1126,9 @@ SOURCES += $(SRC_DIR)/mp/mp_placement.cpp
 SOURCES += $(SRC_DIR)/mp/mp_character_card.cpp
 SOURCES += $(SRC_DIR)/mp/mp_sched.cpp
 SOURCES += $(SRC_DIR)/mp/mp_turn.cpp
+SOURCES += $(SRC_DIR)/mp/mp_server_mask.cpp
+SOURCES += $(SRC_DIR)/mp/mp_scene_codec.cpp
+SOURCES += $(SRC_DIR)/mp/mp_scene.cpp
 ifeq ($(MULTIPLAYER), 1)
   DEFINES += -DMULTIPLAYER
   SOURCES += $(wildcard $(SRC_DIR)/mp/*.cpp)

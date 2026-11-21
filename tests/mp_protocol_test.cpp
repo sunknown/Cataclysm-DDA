@@ -7,6 +7,7 @@
 #include "debug.h"
 #include "input_enums.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
 
 TEST_CASE( "mp_wrap_tags_a_body_with_its_kind", "[mp]" )
 {
@@ -31,6 +32,20 @@ TEST_CASE( "mp_unwrap_rejects_an_unknown_kind_byte", "[mp]" )
 {
     mp_msg_kind kind = mp_msg_kind::control;
     std::vector<uint8_t> got;
+    CHECK_FALSE( mp_unwrap( { 99, 1, 2 }, kind, got ) );
+}
+
+TEST_CASE( "mp_unwrap_accepts_scene_and_rejects_other_kinds", "[mp]" )
+{
+    const std::vector<uint8_t> body = { MP_SCENE_BODY_VERSION, 0, 0, 0, 1 };
+    const std::vector<uint8_t> wrapped = mp_wrap( mp_msg_kind::scene, body );
+
+    mp_msg_kind kind = mp_msg_kind::control;
+    std::vector<uint8_t> got;
+    REQUIRE( mp_unwrap( wrapped, kind, got ) );
+    CHECK( kind == mp_msg_kind::scene );
+    CHECK( got == body );
+
     CHECK_FALSE( mp_unwrap( { 99, 1, 2 }, kind, got ) );
 }
 

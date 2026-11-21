@@ -766,6 +766,16 @@ static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session
     seat.name = std::move( fresh->name );
     seat.card_save_id = std::move( fresh->card_save_id );
     seat.card_world = std::move( fresh->card_world );
+    // The new client negotiated its own scene stream: keep its capability and
+    // depth, and start the stream from scratch so a frame the previous client
+    // already received cannot be suppressed by its send state.
+    seat.scene_caps = fresh->scene_caps;
+    seat.scene_z_levels = fresh->scene_z_levels;
+    seat.scene_seq = 0;
+    seat.scene_hash = 0;
+    seat.scene_mask_hash = 0;
+    seat.scene_sent_once = false;
+    seat.scene_terrain_dirty = true;
 }
 
 bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::string &err )

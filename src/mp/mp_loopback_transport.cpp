@@ -77,14 +77,18 @@ class loopback_transport : public mp_transport
         void drop_pending_screen_messages() override {
             std::lock_guard<std::mutex> lock( outgoing_->mutex );
             // A queued payload's first byte is its mp_msg_kind (see mp_wrap);
-            // screen updates are dropped, everything else survives. Order
-            // among the survivors is preserved.
+            // screen and scene updates are replaceable, everything else
+            // survives. Order among the survivors is preserved.
             outgoing_->queue.erase(
                 std::remove_if(
                     outgoing_->queue.begin(), outgoing_->queue.end(),
                     []( const std::pair<clock::time_point, std::vector<uint8_t>> &queued ) {
-                        return !queued.second.empty() &&
-                               queued.second[0] == static_cast<uint8_t>( mp_msg_kind::screen );
+                        if( queued.second.empty() ) {
+                            return false;
+                        }
+                        const uint8_t kind = queued.second[0];
+                        return kind == static_cast<uint8_t>( mp_msg_kind::screen ) ||
+                               kind == static_cast<uint8_t>( mp_msg_kind::scene );
                     } ),
                 outgoing_->queue.end() );
         }
