@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "cata_imgui.h"
 #include "catacharset.h"
 #include "color.h"
 #include "cursesdef.h"
@@ -404,6 +405,13 @@ void catacurses::init_pair( const short pair, const base_color f, const base_col
 {
     cata_cursesport::colorpairs[pair].FG = f;
     cata_cursesport::colorpairs[pair].BG = b;
+#if defined( MP_SERVER )
+    // This is the server's only catacurses::init_pair: the real ncurses one in
+    // ncurses_def.cpp never compiles here. ImGui colours read their own pair
+    // table, so mirror the registration or every nc_color reaches the client
+    // as palette 0 (black) -- the join menu's unselected labels.
+    cataimgui::init_pair( pair, static_cast<int>( f ), static_cast<int>( b ) );
+#endif
 }
 
 //moves the cursor in a window
@@ -528,7 +536,9 @@ static constexpr int A_COLOR = 0x03fe0000; /* Color bits */
 
 nc_color nc_color::from_color_pair_index( const int index )
 {
-    return nc_color( index << 17 & A_COLOR );
+    // The index is what the imgui colour conversion reads; keep it in step with
+    // the attribute bits, exactly as the ncurses build does.
+    return nc_color( index << 17 & A_COLOR, index );
 }
 
 int nc_color::to_color_pair_index() const

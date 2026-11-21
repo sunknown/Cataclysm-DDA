@@ -14,19 +14,26 @@ The manual pass found two defects that keep the phase-2 plan's Task 7 Step 4 red
 
 ## Defect 1 — root cause
 
-On `MP_SERVER` the linked `catacurses::init_pair` is the in-memory one in `src/cursesport.cpp`;
-it fills only `cata_cursesport::colorpairs`. `cataimgui::imvec4_from_color()` reads the private
-table in `src/cata_imgui.cpp`, which only the real-ncurses path (`src/ncurses_def.cpp`) fills via
-`client::upload_color_pair()`. The table stays zero: `palette_index = 0`, so an unmodified
-`c_light_gray` becomes palette 0 (black → ansi 16) and a bold colour becomes palette 8
-(dark gray → ansi 241, which is why selected text is gray).
+On `MP_SERVER` two gaps in the in-memory curses port line up:
+
+1. `nc_color::from_color_pair_index` in `src/cursesport.cpp` builds the colour from the attribute
+   bits only and drops the pair index, while the ncurses build passes it to the two-argument
+   constructor. `cataimgui::imvec4_from_color()` reads the index off the colour
+   (`color.get_index()`), so every colour on the server looked up pair 0.
+2. `catacurses::init_pair` fills only `cata_cursesport::colorpairs`, not the private table in
+   `src/cata_imgui.cpp` that `imvec4_from_color()` reads. Even with the index carried, pair 0's
+   entry stays `{0,0}`.
+
+Together: `palette_index = 0` for an unmodified colour (ansi 16, black) and `8` for a bold one
+(dark gray, ansi 241, which is why selected text is gray). The wire dump in the report matches
+exactly.
 
 ### Approaches
 
-- **A (chosen).** Feed the imgui table at the source: `catacurses::init_pair` in
-  `cursesport.cpp`, under `MP_SERVER`, also calls `cataimgui::init_pair( pair, f, b )`.
-  No dependency on `imclient`; covers startup and every dynamically allocated pair; callable
-  from a unit test. Server-only.
+- **A (chosen).** Restore both halves at the source: the in-memory curses port's
+  `from_color_pair_index` carries the index, and `catacurses::init_pair` under `MP_SERVER` also
+  calls `cataimgui::init_pair( pair, f, b )`. No dependency on `imclient`; covers startup and
+  every dynamically allocated pair; callable from a unit test. Server-only.
 - B. Make `imvec4_from_color` read `cata_cursesport::colorpairs` on `MP_SERVER`. Fewer calls,
   but the two tables stay divergent and the server grows a special case.
 - C. Treat `fg == bg` as "default colours" in the client. Hides the defect, changes protocol
