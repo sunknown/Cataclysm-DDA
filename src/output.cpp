@@ -237,6 +237,36 @@ color_tag_parse_result::tag_type update_color_stack(
     return tag.type;
 }
 
+std::vector<colored_text_run> split_colored_text( std::string_view text,
+        const nc_color initial, const nc_color base_color,
+        const report_color_error color_error )
+{
+    std::vector<colored_text_run> runs;
+    const auto color_segments = split_by_color( text );
+    std::stack<nc_color> color_stack;
+    color_stack.push( initial );
+
+    for( std::string_view seg : color_segments ) {
+        if( seg.empty() ) {
+            continue;
+        }
+
+        std::string out( seg );
+        if( seg[0] == '<' ) {
+            const color_tag_parse_result::tag_type type = update_color_stack(
+                        color_stack, seg, color_error );
+            if( type != color_tag_parse_result::non_color_tag ) {
+                out = rm_prefix( std::move( out ) );
+            }
+        }
+
+        runs.push_back( { std::move( out ),
+                          color_stack.empty() ? base_color : color_stack.top() } );
+    }
+
+    return runs;
+}
+
 void print_colored_text( const catacurses::window &w, const point &p, nc_color &color,
                          const nc_color &base_color, std::string_view text,
                          const report_color_error color_error )
@@ -244,25 +274,11 @@ void print_colored_text( const catacurses::window &w, const point &p, nc_color &
     if( p.y > -1 && p.x > -1 ) {
         wmove( w, p );
     }
-    const auto color_segments = split_by_color( text );
-    std::stack<nc_color> color_stack;
-    color_stack.push( color );
 
-    for( auto seg : color_segments ) {
-        if( seg.empty() ) {
-            continue;
-        }
-
-        if( seg[0] == '<' ) {
-            const color_tag_parse_result::tag_type type = update_color_stack(
-                        color_stack, seg, color_error );
-            if( type != color_tag_parse_result::non_color_tag ) {
-                seg = rm_prefix( seg );
-            }
-        }
-
-        color = color_stack.empty() ? base_color : color_stack.top();
-        wprintz( w, color, seg );
+    for( const colored_text_run &run : split_colored_text( text, color, base_color,
+            color_error ) ) {
+        color = run.color;
+        wprintz( w, color, run.text );
     }
 }
 

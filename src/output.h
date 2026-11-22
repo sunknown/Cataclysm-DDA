@@ -209,6 +209,23 @@ color_tag_parse_result::tag_type update_color_stack(
 std::string remove_color_tags( std::string_view s );
 /*@}*/
 
+// One resolved segment of a @ref color_tags string: the text to draw and the
+// colour in force for it. A tag segment yields an entry even when its text is
+// empty, so the colour at the end of the string is not lost.
+struct colored_text_run {
+    std::string text;
+    nc_color color;
+};
+
+/**
+ * Split text with @ref color_tags into drawable runs, resolving the tags with
+ * the same rules print_colored_text uses. `initial` is the colour in force
+ * before the text; `base_color` applies once a close tag empties the stack.
+ * Concatenating the runs is exactly what print_colored_text would print.
+ */
+std::vector<colored_text_run> split_colored_text( std::string_view text, nc_color initial,
+        nc_color base_color, report_color_error color_error = report_color_error::yes );
+
 /**
  * Split the input text into separate lines and wrap long lines. Each resulting line is at most
  * `width` console cells long.
