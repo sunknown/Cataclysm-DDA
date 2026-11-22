@@ -204,12 +204,12 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
     scene.tiles_h = static_cast<uint16_t>( std::max( 0, tiles_h ) );
     const int width = scene.tiles_w;
     const int height = scene.tiles_h;
-    scene.view_dx = static_cast<int16_t>( -( width / 2 ) );
-    scene.view_dy = static_cast<int16_t>( -( height / 2 ) );
+    const tripoint_bub_ms origin = scene_origin( view_centre, width, height );
+    scene.view_dx = static_cast<int16_t>( origin.x() - view_centre.x() );
+    scene.view_dy = static_cast<int16_t>( origin.y() - view_centre.y() );
 
     map &here = get_map();
     avatar &you = get_avatar_legacy();
-    const tripoint_bub_ms origin = scene_origin( view_centre, width, height );
     scene.avatar_dx = static_cast<int16_t>( you.pos_bub().x() - origin.x() );
     scene.avatar_dy = static_cast<int16_t>( you.pos_bub().y() - origin.y() );
 
