@@ -160,6 +160,7 @@
 #include "mongroup.h"
 #include "monster.h"
 #if defined(MULTIPLAYER)
+#include "mp/mp_log.h"
 #include "mp/mp_mode.h"
 #endif
 #include "mp/mp_context.h"
@@ -3492,6 +3493,9 @@ void game::draw( ui_adaptor &ui )
 
 void game::draw_panels( bool force_draw )
 {
+    // An in-game screen is up even when the Log panel is toggled off, so a
+    // console-style client keeps its widget.
+    mp_native_log_note_ui();
     static int previous_turn = -1;
     const int current_turn = to_turns<int>( calendar::turn - calendar::turn_zero );
     const bool draw_this_turn = current_turn > previous_turn || force_draw;

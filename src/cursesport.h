@@ -12,11 +12,14 @@
 
 #ifndef TUI
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <utility>
 
 #include "point.h"
+
+class nc_color;
 
 namespace catacurses
 {
@@ -90,6 +93,11 @@ void bump_curses_render_epoch();
 void curses_drawwindow( const catacurses::window &win );
 
 } // namespace cata_cursesport
+
+// The palette byte a colour prints as: the pair table's foreground, plus 8 for
+// bold. wattron() and the native log snapshot share this conversion, so the
+// grid and the log cannot disagree.
+uint8_t nc_color_foreground_index( const nc_color &color );
 
 // TODO: move into cata_cursesport
 // Used only in SDL mode for clearing windows using rendering

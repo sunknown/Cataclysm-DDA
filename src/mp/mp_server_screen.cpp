@@ -14,6 +14,7 @@
 #include "mp/mp_sched.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_session.h"
+#include "mp/mp_log.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_mask.h"
 #include "mp/mp_transport.h"
@@ -54,6 +55,8 @@ void mp_server_set_terminal_size( const int width, const int height )
 
 void mp_server_blank_screens()
 {
+    // No game screen is up, and the old sidebar rect is not a hint to keep.
+    mp_native_log_clear_rect();
     for( const std::unique_ptr<mp_session> &session : mp_sessions() ) {
         if( !session || !session->transport || !session->transport->connected() ) {
             continue;

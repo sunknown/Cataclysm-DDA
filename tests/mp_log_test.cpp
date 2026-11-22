@@ -6,8 +6,11 @@
 #include <vector>
 
 #include "color.h"
+#include "cursesdef.h"
+#include "cursesport.h"
 #include "log_snapshot.h"
 #include "messages.h"
+#include "mp/mp_log.h"
 #include "output.h"
 
 // Phase 4b-1: the wire and the glyph path must resolve inline colour tags with
@@ -182,6 +185,48 @@ TEST_CASE( "mp_log_snapshot_build", "[mp]" )
         const std::vector<log_source_entry> entries = { { "x", c_white, true } };
         CHECK( log_snapshot_build( entries, 0, false ).empty() );
     }
+}
+
+TEST_CASE( "mp_log_palette_index", "[mp]" )
+{
+    // A spare pair: other tests own the low indices.
+    const cata_cursesport::pairs saved = cata_cursesport::colorpairs[99];
+    cata_cursesport::colorpairs[99].FG = catacurses::cyan;
+
+    const nc_color color = nc_color::from_color_pair_index( 99 );
+    CHECK( nc_color_foreground_index( color ) ==
+           static_cast<uint8_t>( catacurses::cyan ) );
+    CHECK( nc_color_foreground_index( color.bold() ) ==
+           static_cast<uint8_t>( catacurses::cyan ) + 8 );
+
+    cata_cursesport::colorpairs[99] = saved;
+}
+
+TEST_CASE( "mp_log_source_rect", "[mp]" )
+{
+    mp_native_log_clear_rect();
+    CHECK_FALSE( mp_native_log_ui_active() );
+
+    mp_scene_rect rect;
+    CHECK_FALSE( mp_native_log_source_rect( rect ) );
+
+    mp_native_log_note_ui();
+    CHECK( mp_native_log_ui_active() );
+
+    mp_native_log_note_rect( 134, 2, 26, 33 );
+    REQUIRE( mp_native_log_source_rect( rect ) );
+    CHECK( rect.x == 134 );
+    CHECK( rect.y == 2 );
+    CHECK( rect.w == 26 );
+    CHECK( rect.h == 33 );
+
+    // A zero area is "no source panel", not a rect at the origin.
+    mp_native_log_note_rect( 1, 2, 0, 5 );
+    CHECK_FALSE( mp_native_log_source_rect( rect ) );
+
+    mp_native_log_clear_rect();
+    CHECK_FALSE( mp_native_log_ui_active() );
+    CHECK_FALSE( mp_native_log_source_rect( rect ) );
 }
 
 #endif // MP_SERVER

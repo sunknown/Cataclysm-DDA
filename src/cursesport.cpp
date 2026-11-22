@@ -494,6 +494,13 @@ void catacurses::curs_set( int )
 {
 }
 
+uint8_t nc_color_foreground_index( const nc_color &color )
+{
+    const int pair = color.to_color_pair_index();
+    const int fg = static_cast<int>( cata_cursesport::colorpairs[pair].FG );
+    return static_cast<uint8_t>( fg + ( color.is_bold() ? 8 : 0 ) );
+}
+
 void catacurses::wattron( const window &win_, const nc_color &attrs )
 {
     cata_cursesport::WINDOW *const win = win_.get<cata_cursesport::WINDOW>();
@@ -502,12 +509,9 @@ void catacurses::wattron( const window &win_, const nc_color &attrs )
         return;
     }
 
-    int pairNumber = attrs.to_color_pair_index();
-    win->FG = cata_cursesport::colorpairs[pairNumber].FG;
+    const int pairNumber = attrs.to_color_pair_index();
+    win->FG = static_cast<base_color>( nc_color_foreground_index( attrs ) );
     win->BG = cata_cursesport::colorpairs[pairNumber].BG;
-    if( attrs.is_bold() ) {
-        win->FG = static_cast<base_color>( win->FG + 8 );
-    }
     if( attrs.is_blink() ) {
         win->BG = static_cast<base_color>( win->BG + 8 );
     }

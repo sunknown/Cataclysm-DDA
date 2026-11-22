@@ -29,6 +29,7 @@
 #include "mp/mp_context.h"
 #include "mp/mp_character_card.h"
 #include "mp/mp_join_menu.h"
+#include "mp/mp_log.h"
 #include "mp/mp_placement.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_sched.h"
@@ -760,6 +761,8 @@ void mp_server_reconnected( const size_t slot )
 static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session> fresh )
 {
     cata_assert( fresh != nullptr );
+    // A new terminal's geometry and screen state are not the old client's.
+    mp_native_log_clear_rect();
     seat.transport = std::move( fresh->transport );
     seat.grid = std::move( fresh->grid );
     seat.cursor_x = fresh->cursor_x;

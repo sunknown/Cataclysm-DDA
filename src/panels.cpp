@@ -30,6 +30,7 @@
 #include "json.h"
 #include "map.h"
 #include "messages.h"
+#include "mp/mp_log.h"
 #include "mp/mp_server_mask.h"
 #include "omdata.h"
 #include "options.h"
@@ -349,6 +350,9 @@ static void draw_messages( const draw_args &args )
     mp_scene_mask_register_role( w, 1 );
 
     werase( w );
+    // The client suppresses these cells once it has a snapshot; the server keeps
+    // painting the text underneath as every other client's fallback.
+    mp_native_log_note_rect( getbegx( w ), getbegy( w ), getmaxx( w ), getmaxy( w ) );
     int line = getmaxy( w ) - 1;
     int maxlength = getmaxx( w );
     Messages::display_messages( w, 1, 0 /*topline*/, maxlength - 1, line );

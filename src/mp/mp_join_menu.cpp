@@ -1,4 +1,5 @@
 #include "mp/mp_join_menu.h"
+#include "mp/mp_log.h"
 
 #include <algorithm>
 
@@ -100,6 +101,8 @@ static bool settle_name( avatar &ava )
 
 mp_join_choice mp_run_join_menu( const std::string &card_save_id )
 {
+    // Character creation has no game UI: drop the previous screen's log hint.
+    mp_native_log_clear_rect();
     avatar &ava = get_avatar();
     // A replacement seat enters this menu standing where its character fell.
     // Every reset below builds a blank avatar, whose Creature constructor puts
