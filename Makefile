@@ -1118,6 +1118,8 @@ ifeq ($(HEADERPOPULARITY), 1)
 else
   SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
 endif
+# The 4b-1 log snapshot rules are pure and shared with the tests.
+SOURCES += $(SRC_DIR)/log_snapshot.cpp
 # The modules that are pure multi-avatar logic with no transport dependency
 # ship in every build; the rest of src/mp/ is MULTIPLAYER-only.
 SOURCES += $(SRC_DIR)/mp/mp_context.cpp

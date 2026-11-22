@@ -22,6 +22,7 @@
 #include "game.h"
 #include "input_context.h"
 #include "json.h"
+#include "log_snapshot.h"
 #include "map.h"
 #include "mp/mp_server_mask.h"
 #include "options.h"
@@ -426,11 +427,40 @@ messages_impl player_messages;
 
 bool message_exceeds_ttl( const game_message &message )
 {
-    return message_ttl > 0 &&
-           message.timestamp_in_user_actions + message_ttl <= g->get_user_action_counter();
+    return Messages::log_exceeds_ttl( message.timestamp_in_user_actions, message_ttl,
+                                      g->get_user_action_counter() );
 }
 
 } //namespace
+
+namespace Messages
+{
+
+std::vector<log_message> sidebar_snapshot_at( const size_t max_messages,
+        const time_point curmes, const int user_actions, const bool from_top )
+{
+    // Resolve the store first, then hand the rules to the pure builder so the
+    // test binary (which links fake_messages.cpp, not this file) can pin them.
+    std::vector<log_source_entry> entries;
+    entries.reserve( player_messages.messages.size() );
+    for( auto it = player_messages.messages.rbegin();
+         it != player_messages.messages.rend(); ++it ) {
+        const game_message &m = *it;
+        entries.push_back( { m.get_with_count(), m.get_color( curmes ),
+                             m.is_recent( curmes ), m.is_in_cooldown(),
+                             log_exceeds_ttl( m.timestamp_in_user_actions, message_ttl,
+                                              user_actions ) } );
+    }
+    return log_snapshot_build( entries, max_messages, from_top );
+}
+
+std::vector<log_message> sidebar_snapshot( const size_t max_messages )
+{
+    return sidebar_snapshot_at( max_messages, player_messages.curmes,
+                                g->get_user_action_counter(), log_from_top );
+}
+
+} // namespace Messages
 
 std::vector<std::pair<std::string, std::string>> Messages::recent_messages( const size_t count )
 {

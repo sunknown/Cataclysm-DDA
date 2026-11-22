@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "calendar.h"
+#include "color.h"
 #include "coords_fwd.h"
 #include "debug.h"
 #include "enums.h"
@@ -41,6 +43,34 @@ bool has_undisplayed_messages();
 void display_messages();
 void display_messages( const catacurses::window &ipk_target, int left, int top, int right,
                        int bottom );
+
+// One styled segment of a sidebar log line. `color` is the colour in force for
+// the segment: inline <color_*> tags are already resolved, and an old message's
+// segment carries the message's old colour.
+struct log_run {
+    std::string text;
+    nc_color color;
+};
+
+// One visible sidebar log message, its runs in reading order.
+struct log_message {
+    std::vector<log_run> runs;
+};
+
+// The sidebar log, newest first, filtered exactly like display_messages: a
+// message past the TTL stops the scan, and a cooldown-hidden message is skipped
+// only when the log flows downwards. Reads `curmes`; never advances it.
+std::vector<log_message> sidebar_snapshot( size_t max_messages );
+
+// The same snapshot with an explicit clock and user-action counter. A test seam:
+// game::user_action_counter is private, and TTL and recency need it controlled.
+std::vector<log_message> sidebar_snapshot_at( size_t max_messages, time_point curmes,
+        int user_actions, bool from_top );
+
+// True when a message inserted at `timestamp_in_user_actions` is past the TTL
+// at `user_actions`. Shared by message_exceeds_ttl and the snapshot.
+bool log_exceeds_ttl( int timestamp_in_user_actions, int ttl, int user_actions );
+
 void serialize( JsonOut &json );
 void deserialize( const JsonObject &json );
 
