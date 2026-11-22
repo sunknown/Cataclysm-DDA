@@ -168,6 +168,10 @@
 #include "mp/mp_turn.h"
 #if defined( MP_SERVER )
 #include "mp/mp_server_screen.h"
+
+// Set by the look-mode draw callback and consumed after draw_ter sends the
+// avatar cursor, so the look cell is the last cursor written for this draw.
+static std::optional<point> g_mp_look_cursor;
 #endif
 #include "monstergenerator.h"
 #include "move_mode.h"
@@ -3476,6 +3480,12 @@ void game::draw( ui_adaptor &ui )
     // much easier to play with them
     // (e.g. for blind players)
     ui.set_cursor( w_terrain, -you.view_offset.xy().raw() + point( POSX, POSY ) );
+#if defined( MP_SERVER )
+    if( g_mp_look_cursor ) {
+        mp_server_set_cursor( g_mp_look_cursor->x, g_mp_look_cursor->y, true );
+        g_mp_look_cursor.reset();
+    }
+#endif
 
     you.view_offset = real_offset;
 }
@@ -6113,8 +6123,8 @@ void game::draw_look_around_cursor( const tripoint_bub_ms &lp, const visibility_
     const tripoint_bub_ms look_center = u.pos_bub() + u.view_offset;
     const tripoint_rel_ms look_screen = point_rel_ms( POSX, POSY ) + lp - look_center;
     const point look_cell = look_screen.raw().xy();
-    mp_server_set_cursor( getbegx( w_terrain ) + look_cell.x,
-                          getbegy( w_terrain ) + look_cell.y, true );
+    g_mp_look_cursor = point( getbegx( w_terrain ) + look_cell.x,
+                              getbegy( w_terrain ) + look_cell.y );
 #endif
 
     if( !mp_active_live_view().is_enabled() ) {
