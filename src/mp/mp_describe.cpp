@@ -5,6 +5,12 @@
 #include <utility>
 #include <vector>
 
+#include "cursesdef.h"
+#include "cursesport.h"
+#include "game.h"
+#include "map.h"
+#include "point.h"
+
 namespace
 {
 
@@ -15,7 +21,7 @@ constexpr size_t describe_max_runs = 256;
 
 // Cuts to at most `limit` bytes without leaving a partial UTF-8 sequence: the
 // first excluded byte is advanced past every continuation byte.
-std::string utf8_truncate( const std::string &text, const size_t limit )
+std::string cut_utf8( const std::string &text, const size_t limit )
 {
     if( text.size() <= limit ) {
         return text;
@@ -125,7 +131,7 @@ std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
                 break;
             }
             const size_t remaining = MP_DESCRIBE_MAX_TEXT_BYTES - text_bytes;
-            const std::string text = utf8_truncate( cell.ch, remaining );
+            const std::string text = cut_utf8( cell.ch, remaining );
             if( text.empty() ) {
                 // Not even this glyph fits; the answer ends here.
                 full = true;
@@ -157,4 +163,44 @@ std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
     }
 
     return lines;
+}
+
+std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, const int width )
+{
+    std::vector<mp_log_line> lines;
+    if( width <= 0 ) {
+        return lines;
+    }
+
+    // The scratch window is never refreshed or blitted: it exists only to let
+    // the game's own tile-info renderer produce text the feed can read back.
+    catacurses::window win = catacurses::newwin( MP_DESCRIBE_MAX_LINES, width, point::zero );
+    if( !win ) {
+        return lines;
+    }
+    werase( win );
+    int line = 0;
+    g->pre_print_all_tile_info( tile, win, line, MP_DESCRIBE_MAX_LINES - 1,
+                                get_map().get_visibility_variables_cache() );
+
+    std::vector<mp_cell> cells;
+    cells.reserve( static_cast<size_t>( width ) * MP_DESCRIBE_MAX_LINES );
+    for( int y = 0; y < MP_DESCRIBE_MAX_LINES; ++y ) {
+        for( int x = 0; x < width; ++x ) {
+            catacurses::window_cell cell;
+            if( !catacurses::get_cell( win, point( x, y ), cell ) ) {
+                // A window that lost a cell is a curses failure; keep the row
+                // aligned with a blank rather than shift the text.
+                cells.push_back( mp_cell() );
+                continue;
+            }
+            mp_cell out;
+            out.ch = std::move( cell.ch );
+            out.fg = cell.fg;
+            out.bg = cell.bg;
+            cells.push_back( std::move( out ) );
+        }
+    }
+
+    return mp_describe_extract( cells, width, MP_DESCRIBE_MAX_LINES );
 }

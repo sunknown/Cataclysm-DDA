@@ -6,14 +6,24 @@
 #include <string>
 #include <vector>
 
+#include "avatar.h"
+#include "catacharset.h"
 #include "color.h"
 #include "cursesdef.h"
 #include "cursesport.h"
+#include "game.h"
+#include "game_test_helper.h"
+#include "map.h"
+#include "map_helpers.h"
+#include "map_helpers_tests.h"
 #include "mp/mp_cell.h"
+#include "mp/mp_context.h"
 #include "mp/mp_describe.h"
 #include "mp/mp_protocol.h"
 #include "output.h"
+#include "player_helpers.h"
 #include "point.h"
+#include "type_id.h"
 
 // The hover-describe feed and the screen blit both read window cells through
 // catacurses::get_cell, so the accessor has to report exactly what the window
@@ -245,6 +255,65 @@ TEST_CASE( "mp_describe_extract_cleans_cells", "[mp]" )
     SECTION( "a grid with no text yields no lines" ) {
         CHECK( mp_describe_extract( {}, 5, 5 ).empty() );
         CHECK( mp_describe_extract( blank_grid( 5, 3 ), 5, 3 ).empty() );
+    }
+}
+
+// Phase 4b-2: the server renders the game's own tile-info text into a scratch
+// window and reads it back, so a describe answer is what the look-around panel
+// would have drawn rather than a second description implementation.
+
+namespace
+{
+
+// A cleared world with one avatar and no creatures, matching the co-op scene
+// tests. The active context is restored when the test ends.
+void stand_on_a_cleared_map_for_describe()
+{
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    clear_creatures();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+} // namespace
+
+TEST_CASE( "mp_describe_lines_renders_a_tile", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map_for_describe();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+    here.invalidate_visibility_cache();
+    here.update_visibility_cache( you.posz() );
+
+    const tripoint_bub_ms tile = you.pos_bub();
+
+    // The active seat owns a map window and a view centre; neither is used by
+    // the render itself, but a describe request arrives from such a seat.
+    player_context &ctx = mp_active_context();
+    ctx.w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    ctx.ter_view_p = tile;
+
+    for( const int width : { 20, 40, 80 } ) {
+        CAPTURE( width );
+        const std::vector<mp_log_line> lines = mp_describe_lines( tile, width );
+        REQUIRE_FALSE( lines.empty() );
+
+        std::string text;
+        for( const mp_log_line &line : lines ) {
+            const std::string line_text = run_text( line );
+            text += line_text;
+            // The window is the requested width, so no folded line can be
+            // wider than it.
+            CHECK( utf8_width( line_text ) <= width );
+            for( const mp_log_run &run : line.runs ) {
+                CHECK_FALSE( run.text.empty() );
+            }
+        }
+        CHECK_FALSE( text.empty() );
     }
 }
 

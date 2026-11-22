@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "coordinates.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_protocol.h"
 
@@ -28,5 +29,11 @@ constexpr size_t MP_DESCRIBE_MAX_TEXT_BYTES = 16 * 1024;
 // text. Every cap truncates: no empty run and no padded line is emitted.
 std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
         int width, int height );
+
+// Renders the game's own tile-info text for `tile` into a scratch window `width`
+// columns wide and returns it as describe lines. The caller clamps `width`;
+// this function does not. A scratch window that cannot be created yields no
+// lines, so a failed render can never crash the request path.
+std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, int width );
 
 #endif // CATA_SRC_MP_MP_DESCRIBE_H
