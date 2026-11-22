@@ -166,6 +166,9 @@
 #include "mp/mp_placement.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_turn.h"
+#if defined( MP_SERVER )
+#include "mp/mp_server_screen.h"
+#endif
 #include "monstergenerator.h"
 #include "move_mode.h"
 #include "mtype.h"
@@ -6102,6 +6105,17 @@ std::optional<tripoint_bub_ms> game::look_debug()
 void game::draw_look_around_cursor( const tripoint_bub_ms &lp, const visibility_variables &cache )
 {
     const map &here = get_map();
+
+#if defined( MP_SERVER )
+    // The look cursor is a highlighted terrain cell, not the terminal cursor,
+    // so the terrain draw's set_cursor keeps pointing at the avatar. Send the
+    // looked-at cell explicitly for the client's 3D border.
+    const tripoint_bub_ms look_center = u.pos_bub() + u.view_offset;
+    const tripoint_rel_ms look_screen = point_rel_ms( POSX, POSY ) + lp - look_center;
+    const point look_cell = look_screen.raw().xy();
+    mp_server_set_cursor( getbegx( w_terrain ) + look_cell.x,
+                          getbegy( w_terrain ) + look_cell.y, true );
+#endif
 
     if( !mp_active_live_view().is_enabled() ) {
 #if defined( TILES )
