@@ -3,6 +3,7 @@
 #define CATA_SRC_MP_MP_SCENE_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -131,5 +132,12 @@ struct mp_scene {
 // overlay layers; masks are filled from the flush's text-over-3D regions.
 mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
                          uint8_t z_levels );
+
+// The absolute map tile behind a scene cell, or nothing when the cell lies
+// outside `rect`. The rect is placed by the same origin rule the builder uses:
+// origin = view_centre - ( rect.w / 2, rect.h / 2 ), and the cell's offset
+// within the rect is added to it. The returned tile takes the view's z.
+std::optional<tripoint_bub_ms> mp_scene_tile_at( const mp_scene_rect &rect,
+        const tripoint_bub_ms &view_centre, int cell_x, int cell_y );
 
 #endif // CATA_SRC_MP_MP_SCENE_H

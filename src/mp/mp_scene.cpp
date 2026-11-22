@@ -175,7 +175,26 @@ uint16_t vehicle_heading_65536( const vehicle &veh )
                std::lround( units::to_degrees( veh.face.dir() ) * 65536.0 / 360.0 ) & 0xFFFF );
 }
 
+// Top-left map cell of a w by h rect centred on `view`. Keeping this in one
+// place is what stops a later cell lookup from disagreeing with the frame the
+// builder sends.
+tripoint_bub_ms scene_origin( const tripoint_bub_ms &view, int w, int h )
+{
+    return view + tripoint_rel_ms( -( w / 2 ), -( h / 2 ), 0 );
+}
+
 } // namespace
+
+std::optional<tripoint_bub_ms> mp_scene_tile_at( const mp_scene_rect &rect,
+        const tripoint_bub_ms &view_centre, int cell_x, int cell_y )
+{
+    if( cell_x < rect.x || cell_y < rect.y ||
+        cell_x >= rect.x + rect.w || cell_y >= rect.y + rect.h ) {
+        return std::nullopt;
+    }
+    return scene_origin( view_centre, rect.w, rect.h ) +
+           tripoint_rel_ms( cell_x - rect.x, cell_y - rect.y, 0 );
+}
 
 mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
                          uint8_t z_levels )
@@ -190,9 +209,7 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
 
     map &here = get_map();
     avatar &you = get_avatar_legacy();
-    const tripoint_bub_ms origin =
-        view_centre + tripoint_rel_ms( static_cast<int>( scene.view_dx ),
-                                       static_cast<int>( scene.view_dy ), 0 );
+    const tripoint_bub_ms origin = scene_origin( view_centre, width, height );
     scene.avatar_dx = static_cast<int16_t>( you.pos_bub().x() - origin.x() );
     scene.avatar_dy = static_cast<int16_t>( you.pos_bub().y() - origin.y() );
 

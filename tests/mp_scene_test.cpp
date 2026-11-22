@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -118,6 +119,43 @@ const std::string &id_at( const mp_scene &scene, uint16_t idx )
 }
 
 } // namespace
+
+TEST_CASE( "mp_scene_tile_at_matches_the_scene_origin", "[mp]" )
+{
+    const tripoint_bub_ms view( 100, 100, 0 );
+
+    SECTION( "cells map to the rect origin the builder uses" ) {
+        const mp_scene_rect rect{ 0, 0, 160, 45, 0 };
+        CHECK( mp_scene_tile_at( rect, view, 0, 0 ) == tripoint_bub_ms( 20, 78, 0 ) );
+        CHECK( mp_scene_tile_at( rect, view, 80, 22 ) == tripoint_bub_ms( 100, 100, 0 ) );
+        CHECK( mp_scene_tile_at( rect, view, 159, 44 ) == tripoint_bub_ms( 179, 122, 0 ) );
+    }
+
+    SECTION( "cells outside the rect have no tile" ) {
+        const mp_scene_rect rect{ 0, 0, 160, 45, 0 };
+        CHECK( mp_scene_tile_at( rect, view, -1, 0 ) == std::nullopt );
+        CHECK( mp_scene_tile_at( rect, view, 160, 0 ) == std::nullopt );
+        CHECK( mp_scene_tile_at( rect, view, 0, -1 ) == std::nullopt );
+        CHECK( mp_scene_tile_at( rect, view, 0, 45 ) == std::nullopt );
+    }
+
+    SECTION( "a rect with a non-zero offset" ) {
+        const mp_scene_rect rect{ 30, 5, 40, 10, 0 };
+        CHECK( mp_scene_tile_at( rect, view, 30, 5 ) == tripoint_bub_ms( 80, 95, 0 ) );
+    }
+
+    SECTION( "an odd width still puts the view centre on the middle cell" ) {
+        const mp_scene_rect rect{ 0, 0, 161, 45, 0 };
+        CHECK( mp_scene_tile_at( rect, view, 80, 22 ) == tripoint_bub_ms( 100, 100, 0 ) );
+        CHECK( mp_scene_tile_at( rect, view, 160, 22 ) == tripoint_bub_ms( 180, 100, 0 ) );
+    }
+
+    SECTION( "the tile takes the view's z" ) {
+        const mp_scene_rect rect{ 0, 0, 160, 45, 0 };
+        CHECK( mp_scene_tile_at( rect, tripoint_bub_ms( 100, 100, -3 ), 80, 22 ) ==
+               tripoint_bub_ms( 100, 100, -3 ) );
+    }
+}
 
 TEST_CASE( "mp_scene_build_emits_visible_terrain_runs", "[mp]" )
 {
