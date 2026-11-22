@@ -43,6 +43,7 @@
 #include "mp/mp_sched.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_session.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_tether.h"
 #include "mp/mp_turn.h"
 #include "overmapbuffer.h"
@@ -2340,6 +2341,37 @@ TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
     REQUIRE( harness.run_until( [&]() {
         return !compare_is_open();
     }, 20 ) );
+}
+
+TEST_CASE( "mp_session_ui", "[mp]" )
+{
+    SECTION( "a describe seat is describable only while in game" ) {
+        mp_session seat;
+        seat.caps = MP_CAP_DESCRIBE;
+        CHECK_FALSE( mp_session_ui_active( seat ) );
+        CHECK_FALSE( mp_session_can_describe( seat ) );
+
+        mp_session_ui_enter( seat );
+        CHECK( mp_session_ui_active( seat ) );
+        CHECK( mp_session_can_describe( seat ) );
+
+        seat.describe_pending = mp_describe_request{ 4, 10, 20, 30 };
+        seat.describe_last = std::chrono::steady_clock::now();
+        mp_session_ui_leave( seat );
+        CHECK_FALSE( mp_session_ui_active( seat ) );
+        CHECK_FALSE( mp_session_can_describe( seat ) );
+        CHECK_FALSE( seat.describe_pending.has_value() );
+        CHECK( seat.describe_last == std::chrono::steady_clock::time_point{} );
+    }
+
+    SECTION( "no describe capability means no describe even in game" ) {
+        mp_session seat;
+        // Scene and log but not bit2.
+        seat.caps = 3;
+        mp_session_ui_enter( seat );
+        CHECK( mp_session_ui_active( seat ) );
+        CHECK_FALSE( mp_session_can_describe( seat ) );
+    }
 }
 
 #endif // MP_SERVER

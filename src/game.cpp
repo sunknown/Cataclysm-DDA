@@ -159,7 +159,6 @@
 #include "monexamine.h"
 #include "mongroup.h"
 #include "monster.h"
-#include "mp/mp_log.h"
 #if defined(MULTIPLAYER)
 #include "mp/mp_mode.h"
 #endif
@@ -169,6 +168,8 @@
 #include "mp/mp_turn.h"
 #if defined( MP_SERVER )
 #include "mp/mp_server_screen.h"
+#include "mp/mp_session.h"
+#include "mp/mp_session_ui.h"
 
 // Set by the look-mode draw callback and consumed after draw_ter sends the
 // avatar cursor, so the look cell is the last cursor written for this draw.
@@ -3493,9 +3494,14 @@ void game::draw( ui_adaptor &ui )
 
 void game::draw_panels( bool force_draw )
 {
-    // An in-game screen is up even when the Log panel is toggled off, so a
-    // console-style client keeps its widget.
-    mp_native_log_note_ui();
+#if defined( MP_SERVER )
+    // An in-game screen is up for this seat even when the Log panel is toggled
+    // off, so a console-style client keeps its widget. Only this seat: another
+    // seat may be in the join menu or character creation in the same process.
+    if( mp_session *const s = mp_active_session() ) {
+        mp_session_ui_enter( *s );
+    }
+#endif
     static int previous_turn = -1;
     const int current_turn = to_turns<int>( calendar::turn - calendar::turn_zero );
     const bool draw_this_turn = current_turn > previous_turn || force_draw;

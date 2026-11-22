@@ -15,6 +15,7 @@
 #include "mp/mp_sched.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_session.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_log.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_mask.h"
@@ -59,7 +60,13 @@ void mp_server_blank_screens()
     // No game screen is up, and the old sidebar rect is not a hint to keep.
     mp_native_log_clear_rect();
     for( const std::unique_ptr<mp_session> &session : mp_sessions() ) {
-        if( !session || !session->transport || !session->transport->connected() ) {
+        if( !session ) {
+            continue;
+        }
+        // Every seat leaves the UI, connected or not: a disconnected or
+        // replacing seat must not keep a stale flag or hover request.
+        mp_session_ui_leave( *session );
+        if( !session->transport || !session->transport->connected() ) {
             continue;
         }
         // resize() discards the join menu's cells and marks every row dirty,
@@ -178,7 +185,7 @@ void mp_server_flush_screen()
         if( !mp_native_log_panel_enabled() || !mp_native_log_source_rect( log_rect ) ) {
             log_rect = {};
         }
-        const std::string body = mp_log_body( log_from_top, mp_native_log_ui_active(),
+        const std::string body = mp_log_body( log_from_top, mp_session_ui_active( *s ),
                                               log_rect, s->log_seq + 1 );
         const uint64_t hash = mp_log_hash( body );
         if( !s->log_sent_once || hash != s->log_hash ) {

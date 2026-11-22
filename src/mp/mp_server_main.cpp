@@ -37,6 +37,7 @@
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_socket.h"
 #include "mp/mp_tcp_transport.h"
 #include "mp/mp_transport.h"
@@ -761,8 +762,11 @@ void mp_server_reconnected( const size_t slot )
 static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session> fresh )
 {
     cata_assert( fresh != nullptr );
-    // A new terminal's geometry and screen state are not the old client's.
+    // A new terminal's geometry and screen state are not the old client's, and
+    // neither is its UI state: leave the retained seat before anything is
+    // copied so no stale flag or hover request survives into the newcomer.
     mp_native_log_clear_rect();
+    mp_session_ui_leave( seat );
     seat.transport = std::move( fresh->transport );
     seat.grid = std::move( fresh->grid );
     seat.cursor_x = fresh->cursor_x;

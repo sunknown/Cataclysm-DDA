@@ -21,18 +21,14 @@ void mp_native_log_note_rect( int x, int y, int w, int h );
 // so the zero-rect decision has one owner.
 bool mp_native_log_source_rect( mp_scene_rect &out );
 
-// Drops the rect and marks the UI inactive: join and waiting screens, character
-// creation, and a replaced seat all leave no game UI the log could belong to.
+// Drops the rect: join and waiting screens, character creation, and a replaced
+// seat all leave no source panel for the log to point at. Does not touch the
+// seat's UI state; that is mp_session_ui's to own.
 void mp_native_log_clear_rect();
 
 // The current sidebar layout has a Log panel that is toggled on and renders.
 // False when the layout has no Log panel.
 bool mp_native_log_panel_enabled();
-
-// The game's main UI was drawn since the last clear. draw_panels calls this
-// every frame, so a toggled-off Log panel is still an in-game UI.
-void mp_native_log_note_ui();
-bool mp_native_log_ui_active();
 
 // Builds the log control body (JSON, the control kind included) from the newest
 // Messages::sidebar_snapshot(200): palette bytes, the rect/UI/flow fields, and

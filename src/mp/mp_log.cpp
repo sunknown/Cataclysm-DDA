@@ -18,7 +18,6 @@ namespace
 
 mp_scene_rect source_rect;
 bool source_rect_valid = false;
-bool ui_active = false;
 
 } // namespace
 
@@ -50,7 +49,6 @@ void mp_native_log_clear_rect()
 {
     source_rect = {};
     source_rect_valid = false;
-    ui_active = false;
 }
 
 bool mp_native_log_panel_enabled()
@@ -62,16 +60,6 @@ bool mp_native_log_panel_enabled()
         }
     }
     return false;
-}
-
-void mp_native_log_note_ui()
-{
-    ui_active = true;
-}
-
-bool mp_native_log_ui_active()
-{
-    return ui_active;
 }
 
 #if defined(MP_SERVER)

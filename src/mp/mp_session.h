@@ -4,6 +4,7 @@
 
 #if defined(MP_SERVER)
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -47,8 +48,20 @@ struct mp_session {
     // learn about networking types.
     size_t context_index = 0;
     // Capability bits from the hello. Bit0 is the 3D scene stream; bit1 is the
-    // native log snapshot; zero means a text client that gets neither.
+    // native log snapshot; bit2 is the hover describe feed; zero means a text
+    // client that gets none.
     uint32_t caps = 0;
+    // Whether this seat is looking at an in-game screen. Only mp_session_ui_*
+    // writes it: a join, creation, or blank seat has no UI the log or a hover
+    // answer could belong to.
+    bool ui_active = false;
+    // The newest hover describe request, or nothing. Latest wins; there is no
+    // queue, so a fast pointer cannot grow the session. Cleared whenever this
+    // seat leaves the UI.
+    std::optional<mp_describe_request> describe_pending;
+    // When the last describe answer was built, for the server-side interval.
+    // The epoch default makes the first request due at once.
+    std::chrono::steady_clock::time_point describe_last{};
     // The encoded z-levels this client asked for, already clamped to 1..10.
     uint8_t scene_z_levels = 10;
     // Sequence of the last scene frame actually sent; a skipped frame does not

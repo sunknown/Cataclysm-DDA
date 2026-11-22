@@ -23,6 +23,7 @@
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_transport.h"
 #include "cursesport.h"
 #include "log_snapshot.h"
@@ -225,14 +226,17 @@ TEST_CASE( "mp_log_palette_index", "[mp]" )
 
 TEST_CASE( "mp_log_source_rect", "[mp]" )
 {
+    // The UI flag is per seat now. Drive it the way draw_panels and the join
+    // menu do: through this session's own state.
+    mp_session seat;
     mp_native_log_clear_rect();
-    CHECK_FALSE( mp_native_log_ui_active() );
+    CHECK_FALSE( mp_session_ui_active( seat ) );
 
     mp_scene_rect rect;
     CHECK_FALSE( mp_native_log_source_rect( rect ) );
 
-    mp_native_log_note_ui();
-    CHECK( mp_native_log_ui_active() );
+    mp_session_ui_enter( seat );
+    CHECK( mp_session_ui_active( seat ) );
 
     mp_native_log_note_rect( 134, 2, 26, 33 );
     REQUIRE( mp_native_log_source_rect( rect ) );
@@ -245,8 +249,14 @@ TEST_CASE( "mp_log_source_rect", "[mp]" )
     mp_native_log_note_rect( 1, 2, 0, 5 );
     CHECK_FALSE( mp_native_log_source_rect( rect ) );
 
+    // Clearing the rect is not leaving the game: the seat keeps its flag.
+    mp_native_log_note_rect( 134, 2, 26, 33 );
     mp_native_log_clear_rect();
-    CHECK_FALSE( mp_native_log_ui_active() );
+    CHECK( mp_session_ui_active( seat ) );
+    CHECK_FALSE( mp_native_log_source_rect( rect ) );
+
+    mp_session_ui_leave( seat );
+    CHECK_FALSE( mp_session_ui_active( seat ) );
     CHECK_FALSE( mp_native_log_source_rect( rect ) );
 }
 
@@ -438,7 +448,7 @@ TEST_CASE( "mp_log_flush", "[mp]" )
     Messages::log_message line;
     line.runs.push_back( { "hello", c_white } );
     set_fake_sidebar_snapshot( { line } );
-    mp_native_log_note_ui();
+    mp_session_ui_enter( *session );
     mp_native_log_note_rect( 134, 2, 26, 33 );
 
     mp_server_flush_screen();
@@ -472,12 +482,44 @@ TEST_CASE( "mp_log_flush", "[mp]" )
 
     // ui=false is the join/creation state: no rect, nothing to place.
     session->caps = 2;
+    mp_session_ui_leave( *session );
     mp_native_log_clear_rect();
     mp_server_flush_screen();
     logs = log_controls( drain_log_frames( *client ) );
     REQUIRE( logs.size() == 1 );
     CHECK_FALSE( logs[0].log.ui );
     CHECK( logs[0].log.w == 0 );
+}
+
+TEST_CASE( "mp_log_ui_per_seat", "[mp]" )
+{
+    // The 4b-1 regression: the flag used to be one process-wide static, so a
+    // playing seat's draw_panels made a creation seat's snapshot claim an
+    // in-game UI. Each seat owns its flag now.
+    reset_log_test_world();
+    const std::shared_ptr<mp_transport> client = install_log_session();
+    mp_session *const creation = mp_session_of_slot( 0 );
+    REQUIRE( creation != nullptr );
+    creation->caps = 2;
+
+    // A second seat in the same process is playing.
+    auto other = std::make_unique<mp_session>();
+    other->context_index = 1;
+    mp_session *const playing = other.get();
+    mp_sessions().push_back( std::move( other ) );
+
+    Messages::log_message line;
+    line.runs.push_back( { "hello", c_white } );
+    set_fake_sidebar_snapshot( { line } );
+    mp_session_ui_enter( *playing );
+    mp_session_ui_leave( *creation );
+    mp_native_log_note_rect( 134, 2, 26, 33 );
+
+    // The flush runs for the active seat, which is the creation seat.
+    mp_server_flush_screen();
+    const std::vector<mp_control> logs = log_controls( drain_log_frames( *client ) );
+    REQUIRE( logs.size() == 1 );
+    CHECK_FALSE( logs[0].log.ui );
 }
 
 TEST_CASE( "mp_log_panel_lookup_before_init", "[mp]" )
