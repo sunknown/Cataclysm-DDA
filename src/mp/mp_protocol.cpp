@@ -42,6 +42,13 @@ bool mp_unwrap( const std::vector<uint8_t> &payload, mp_msg_kind &kind,
 namespace
 {
 
+// A describe answer is one hover tooltip, so its caps are deliberately tighter
+// than the log's whole-sidebar 200 lines / 64 KiB: remote input must not make
+// the client allocate a screenful of text per request.
+constexpr size_t MP_DESCRIBE_MAX_LINES = 24;
+constexpr size_t MP_DESCRIBE_MAX_RUNS = 256;
+constexpr size_t MP_DESCRIBE_MAX_TEXT = 16u * 1024u;
+
 const char *kind_to_string( const mp_control_kind kind )
 {
     switch( kind ) {
@@ -61,6 +68,8 @@ const char *kind_to_string( const mp_control_kind kind )
             return "character_card";
         case mp_control_kind::log:
             return "log";
+        case mp_control_kind::describe:
+            return "describe";
     }
     return "bye";
 }
@@ -83,6 +92,8 @@ bool string_to_kind( const std::string &text, mp_control_kind &out )
         out = mp_control_kind::character_card;
     } else if( text == "log" ) {
         out = mp_control_kind::log;
+    } else if( text == "describe" ) {
+        out = mp_control_kind::describe;
     } else {
         return false;
     }
@@ -140,6 +151,66 @@ bool read_event( const JsonObject &obj, input_event &ev )
     return true;
 }
 
+// Writes a `lines` member: a nested array of {t,c} runs. The log snapshot and
+// the describe answer share the run shape because the client draws both with
+// the same palette and wrapping rules.
+void write_lines( JsonOut &jo, const char *const member,
+                      const std::vector<mp_log_line> &lines )
+{
+    jo.member( member );
+    jo.start_array();
+    for( const mp_log_line &line : lines ) {
+        jo.start_array();
+        for( const mp_log_run &run : line.runs ) {
+            jo.start_object();
+            jo.member( "t", run.text );
+            jo.member( "c", static_cast<int>( run.color ) );
+            jo.end_object();
+        }
+        jo.end_array();
+    }
+    jo.end_array();
+}
+
+// Reads a `lines` member, which must be present. The caller supplies the caps:
+// the log snapshot is a whole sidebar, the describe answer one tooltip. A
+// malformed shape, an out-of-palette colour or an exceeded cap all fail the
+// whole message -- a partly parsed answer could draw a lie.
+bool read_lines( const JsonObject &obj, const size_t max_lines,
+                     const size_t max_runs, const size_t max_text,
+                     std::vector<mp_log_line> &out )
+{
+    JsonArray lines = obj.get_array( "lines" );
+    if( lines.size() > max_lines ) {
+        return false;
+    }
+    size_t text_bytes = 0;
+    out.reserve( lines.size() );
+    for( size_t i = 0; i < lines.size(); i++ ) {
+        JsonArray runs = lines.get_array( i );
+        if( runs.size() > max_runs ) {
+            return false;
+        }
+        mp_log_line line;
+        line.runs.reserve( runs.size() );
+        for( size_t j = 0; j < runs.size(); j++ ) {
+            JsonObject run = runs.get_object( j );
+            const std::string text = run.get_string( "t" );
+            const int color = run.get_int( "c" );
+            if( color < 0 || color > 255 ) {
+                return false;
+            }
+            text_bytes += text.size();
+            if( text_bytes > max_text ) {
+                return false;
+            }
+            line.runs.push_back( { text, static_cast<uint8_t>( color ) } );
+        }
+        out.push_back( std::move( line ) );
+    }
+    return true;
+}
+
 } // namespace
 
 std::string mp_control_to_json( const mp_control &msg )
@@ -163,6 +234,7 @@ std::string mp_control_to_json( const mp_control &msg )
         case mp_control_kind::hello_ack:
             jo.member( "ok", msg.hello_ack.accepted );
             jo.member( "reason", msg.hello_ack.reason );
+            jo.member( "caps", static_cast<int>( msg.hello_ack.caps ) );
             break;
         case mp_control_kind::resize:
             jo.member( "w", msg.resize.width );
@@ -192,19 +264,15 @@ std::string mp_control_to_json( const mp_control &msg )
             jo.member( "w", static_cast<int>( msg.log.w ) );
             jo.member( "h", static_cast<int>( msg.log.h ) );
             jo.member( "top", msg.log.top );
-            jo.member( "lines" );
-            jo.start_array();
-            for( const mp_log_line &line : msg.log.lines ) {
-                jo.start_array();
-                for( const mp_log_run &run : line.runs ) {
-                    jo.start_object();
-                    jo.member( "t", run.text );
-                    jo.member( "c", static_cast<int>( run.color ) );
-                    jo.end_object();
-                }
-                jo.end_array();
-            }
-            jo.end_array();
+            write_lines( jo, "lines", msg.log.lines );
+            break;
+        case mp_control_kind::describe:
+            jo.member( "seq", static_cast<int>( msg.describe.seq ) );
+            jo.member( "frame", static_cast<int>( msg.describe.frame ) );
+            jo.member( "x", static_cast<int>( msg.describe.x ) );
+            jo.member( "y", static_cast<int>( msg.describe.y ) );
+            jo.member( "w", static_cast<int>( msg.describe.w ) );
+            write_lines( jo, "lines", msg.describe.lines );
             break;
     }
     jo.end_object();
@@ -256,6 +324,11 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
             case mp_control_kind::hello_ack:
                 msg.hello_ack.accepted = obj.get_bool( "ok" );
                 msg.hello_ack.reason = obj.get_string( "reason" );
+                // Optional so an older server's ack still parses; it just
+                // advertises no streams. A negative mask must not become a
+                // full set of bits.
+                msg.hello_ack.caps = static_cast<uint32_t>(
+                                         std::max( 0, obj.get_int( "caps", 0 ) ) );
                 break;
             case mp_control_kind::resize:
                 msg.resize.width = obj.get_int( "w" );
@@ -291,33 +364,35 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 msg.log.h = dim( obj.get_int( "h" ) );
                 msg.log.top = obj.get_bool( "top" );
 
-                JsonArray lines = obj.get_array( "lines" );
-                if( lines.size() > 200 ) {
+                if( !read_lines( obj, 200, 256, 64u * 1024u, msg.log.lines ) ) {
                     return false;
                 }
-                size_t text_bytes = 0;
-                msg.log.lines.reserve( lines.size() );
-                for( size_t i = 0; i < lines.size(); i++ ) {
-                    JsonArray runs = lines.get_array( i );
-                    if( runs.size() > 256 ) {
-                        return false;
-                    }
-                    mp_log_line line;
-                    line.runs.reserve( runs.size() );
-                    for( size_t j = 0; j < runs.size(); j++ ) {
-                        JsonObject run = runs.get_object( j );
-                        const std::string text = run.get_string( "t" );
-                        const int color = run.get_int( "c" );
-                        if( color < 0 || color > 255 ) {
-                            return false;
-                        }
-                        text_bytes += text.size();
-                        if( text_bytes > 64u * 1024u ) {
-                            return false;
-                        }
-                        line.runs.push_back( { text, static_cast<uint8_t>( color ) } );
-                    }
-                    msg.log.lines.push_back( std::move( line ) );
+                break;
+            }
+            case mp_control_kind::describe: {
+                // seq, x, y and w are required: a request without a rectangle
+                // names nothing, and an answer without seq cannot be matched to
+                // its request. `frame` and `lines` are the answer's, so both are
+                // optional -- a request carries neither.
+                if( !obj.has_int( "seq" ) || !obj.has_int( "x" ) || !obj.has_int( "y" ) ||
+                    !obj.has_int( "w" ) ) {
+                    return false;
+                }
+                const auto dim = []( const int value ) {
+                    return static_cast<uint16_t>( std::clamp( value, 0, 65535 ) );
+                };
+                msg.describe.seq = static_cast<uint32_t>( std::max( 0, obj.get_int( "seq" ) ) );
+                msg.describe.frame =
+                    static_cast<uint32_t>( std::max( 0, obj.get_int( "frame", 0 ) ) );
+                msg.describe.x = dim( obj.get_int( "x" ) );
+                msg.describe.y = dim( obj.get_int( "y" ) );
+                msg.describe.w = dim( obj.get_int( "w" ) );
+                // An answer is all-or-nothing: a partly parsed tooltip could
+                // draw a lie, so a bad line fails the whole message.
+                if( obj.has_array( "lines" ) &&
+                    !read_lines( obj, MP_DESCRIBE_MAX_LINES, MP_DESCRIBE_MAX_RUNS,
+                                     MP_DESCRIBE_MAX_TEXT, msg.describe.lines ) ) {
+                    return false;
                 }
                 break;
             }

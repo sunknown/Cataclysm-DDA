@@ -13,6 +13,16 @@
 // failure mode of a silent mismatch is a garbled screen.
 constexpr int MP_PROTOCOL_VERSION = 2;
 
+// Capability bits. A client asks for streams in its hello; the server answers
+// with the set it can serve in the hello_ack, so a client never waits for a
+// stream that will not come. Bits are independent.
+constexpr uint32_t MP_CAP_SCENE = 1u;
+constexpr uint32_t MP_CAP_LOG = 2u;
+constexpr uint32_t MP_CAP_DESCRIBE = 4u;
+// Everything this server can serve. Advertised in every hello_ack, accepted
+// or refused, so a client never waits for a stream that will not come.
+constexpr uint32_t MP_SERVER_CAPS = 7u;
+
 // Every framed payload starts with one kind byte. Control traffic is JSON, so
 // it can be read in a log by eye; screen traffic is the compact binary of
 // mp_screen_codec, because it is the hot path.
@@ -37,6 +47,7 @@ enum class mp_control_kind {
     bye,
     character_card,
     log,
+    describe,
 };
 
 struct mp_hello {
@@ -54,8 +65,8 @@ struct mp_hello {
     int width = 0;
     int height = 0;
     bool colors_256 = false;
-    // Capability bits; bit0 asks for the 3D scene stream. Absent means 0, so an
-    // old text client is served exactly as before.
+    // Capability bits from MP_CAP_*; the client asks for the streams it can
+    // draw. Absent means 0, so an old text client is served exactly as before.
     uint32_t caps = 0;
     // Requested encoded z-levels, 1..10. Absent means 10; the parser clamps out
     // of range requests rather than refusing the client.
@@ -65,6 +76,9 @@ struct mp_hello {
 struct mp_hello_ack {
     bool accepted = false;
     std::string reason;
+    // The capability bits the server will honour, from MP_SERVER_CAPS. Absent
+    // from an older server means 0: the client must not expect any stream.
+    uint32_t caps = 0;
 };
 
 struct mp_resize {
@@ -113,6 +127,29 @@ struct mp_log_msg {
     std::vector<mp_log_line> lines;
 };
 
+// Client to server: what is under a rectangle of the client's 3D screen. `w`
+// bounds the answer's text width, so the server wraps exactly as the client
+// will draw. This is a hover: the client sends it when the cursor rests.
+struct mp_describe_request {
+    uint32_t seq = 0;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    uint16_t w = 0;
+};
+
+// Server to client: the describe answer for request `seq`, rendered at `frame`
+// (the scene frame the answer was computed from, so the client can discard an
+// answer that outlived its world). Same run shape as the log, because both are
+// drawn with the same palette and wrapping rules.
+struct mp_describe_msg {
+    uint32_t seq = 0;
+    uint32_t frame = 0;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    uint16_t w = 0;
+    std::vector<mp_log_line> lines;
+};
+
 // One control message. Only the member matching `kind` is meaningful; this is
 // a plain struct rather than a variant so that adding a message type later is
 // a local edit.
@@ -126,6 +163,7 @@ struct mp_control {
     std::string bye_reason;
     mp_character_card_msg character_card;
     mp_log_msg log;
+    mp_describe_msg describe;
 };
 
 std::string mp_control_to_json( const mp_control &msg );

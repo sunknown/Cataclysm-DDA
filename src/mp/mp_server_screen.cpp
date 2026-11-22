@@ -170,7 +170,7 @@ void mp_server_flush_screen()
         s->cursor_changed = false;
     }
 
-    if( ( s->caps & 2u ) != 0 ) {
+    if( ( s->caps & MP_CAP_LOG ) != 0 ) {
         // The snapshot is built once per active-seat flush, the same cadence at
         // which that seat's text screen is drawn. The panel check is here so a
         // toggled-off Log panel cannot hand the client a stale rect.
@@ -203,7 +203,7 @@ void mp_server_flush_scene()
     if( s == nullptr || !s->transport ) {
         return;
     }
-    if( ( s->caps & 1u ) == 0 ) {
+    if( ( s->caps & MP_CAP_SCENE ) == 0 ) {
         // A text client. Nothing below this point may run for it.
         return;
     }

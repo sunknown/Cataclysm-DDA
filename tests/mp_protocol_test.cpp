@@ -264,4 +264,177 @@ TEST_CASE( "mp_control_rejects_a_malformed_log", "[mp]" )
     big += R"(","c":1}]]})";
     CHECK_FALSE( mp_control_from_json( big, got ) );
 }
+
+TEST_CASE( "mp_control_round_trips_a_hello_ack_with_capabilities", "[mp]" )
+{
+    mp_control sent;
+    sent.kind = mp_control_kind::hello_ack;
+    sent.hello_ack.accepted = true;
+    sent.hello_ack.caps = MP_SERVER_CAPS;
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::hello_ack );
+    CHECK( got.hello_ack.accepted );
+    CHECK( got.hello_ack.caps == 7u );
+    CHECK( MP_CAP_SCENE == 1u );
+    CHECK( MP_CAP_LOG == 2u );
+    CHECK( MP_CAP_DESCRIBE == 4u );
+    CHECK( MP_SERVER_CAPS == 7u );
+
+    // A server that predates capability advertisement accepts without caps.
+    REQUIRE( mp_control_from_json( R"({"t":"hello_ack","ok":true,"reason":""})", got ) );
+    CHECK( got.hello_ack.caps == 0u );
+}
+
+TEST_CASE( "mp_control_round_trips_a_describe_request", "[mp]" )
+{
+    mp_control got;
+    REQUIRE( mp_control_from_json( R"({"t":"describe","seq":12,"x":147,"y":39,"w":40})",
+                                   got ) );
+    CHECK( got.kind == mp_control_kind::describe );
+    CHECK( got.describe.seq == 12 );
+    CHECK( got.describe.frame == 0 );
+    CHECK( got.describe.x == 147 );
+    CHECK( got.describe.y == 39 );
+    CHECK( got.describe.w == 40 );
+    CHECK( got.describe.lines.empty() );
+
+    // The writer names the response members too, so our own request survives
+    // the trip with an explicit empty answer.
+    REQUIRE( mp_control_from_json( mp_control_to_json( got ), got ) );
+    CHECK( got.kind == mp_control_kind::describe );
+    CHECK( got.describe.seq == 12 );
+    CHECK( got.describe.x == 147 );
+    CHECK( got.describe.y == 39 );
+    CHECK( got.describe.w == 40 );
+    CHECK( got.describe.lines.empty() );
+}
+
+TEST_CASE( "mp_control_round_trips_a_describe_response", "[mp]" )
+{
+    mp_control sent;
+    sent.kind = mp_control_kind::describe;
+    sent.describe.seq = 13;
+    sent.describe.frame = 417;
+    sent.describe.x = 20;
+    sent.describe.y = 5;
+    sent.describe.w = 30;
+
+    mp_log_line first;
+    first.runs.push_back( { "a zombie corpse", 2 } );
+    first.runs.push_back( { " lies here.", 8 } );
+    sent.describe.lines.push_back( first );
+    // An empty inner line is a blank separator the tooltip renders as-is.
+    sent.describe.lines.push_back( mp_log_line() );
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::describe );
+    CHECK( got.describe.seq == 13 );
+    CHECK( got.describe.frame == 417 );
+    CHECK( got.describe.x == 20 );
+    CHECK( got.describe.y == 5 );
+    CHECK( got.describe.w == 30 );
+    REQUIRE( got.describe.lines.size() == 2 );
+    REQUIRE( got.describe.lines[0].runs.size() == 2 );
+    CHECK( got.describe.lines[0].runs[0].text == "a zombie corpse" );
+    CHECK( got.describe.lines[0].runs[0].color == 2 );
+    CHECK( got.describe.lines[0].runs[1].text == " lies here." );
+    CHECK( got.describe.lines[0].runs[1].color == 8 );
+    CHECK( got.describe.lines[1].runs.empty() );
+}
+
+TEST_CASE( "mp_control_rejects_a_malformed_describe", "[mp]" )
+{
+    mp_control got;
+
+    // Every required member must be present; none of them has a default.
+    CHECK_FALSE( mp_control_from_json( R"({"t":"describe","seq":1,"y":0,"w":1})", got ) );
+    CHECK_FALSE( mp_control_from_json( R"({"t":"describe","seq":1,"x":0,"w":1})", got ) );
+    CHECK_FALSE( mp_control_from_json( R"({"t":"describe","seq":1,"x":0,"y":0})", got ) );
+    CHECK_FALSE( mp_control_from_json( R"({"t":"describe","x":0,"y":0,"w":1})", got ) );
+
+    // A hover answer is a tooltip, not a log: 24 lines, 256 runs, 16 KiB.
+    std::string many = R"({"t":"describe","seq":1,"x":0,"y":0,"w":1,"lines":[)";
+    for( int i = 0; i < 25; i++ ) {
+        if( i > 0 ) {
+            many += ",";
+        }
+        many += "[]";
+    }
+    many += "]}";
+    CHECK_FALSE( mp_control_from_json( many, got ) );
+
+    std::string runs =
+        R"({"t":"describe","seq":1,"x":0,"y":0,"w":1,"lines":[[)";
+    for( int i = 0; i < 257; i++ ) {
+        if( i > 0 ) {
+            runs += ",";
+        }
+        runs += R"({"t":"x","c":1})";
+    }
+    runs += "]]}";
+    CHECK_FALSE( mp_control_from_json( runs, got ) );
+
+    CHECK_FALSE( mp_control_from_json(
+                     R"({"t":"describe","seq":1,"x":0,"y":0,"w":1,"lines":[[{"t":"x","c":256}]]})",
+                     got ) );
+
+    std::string big =
+        R"({"t":"describe","seq":1,"x":0,"y":0,"w":1,"lines":[[{"t":")";
+    big.append( 16u * 1024u + 1u, 'x' );
+    big += R"(","c":1}]]})";
+    CHECK_FALSE( mp_control_from_json( big, got ) );
+
+    // A body that is not an object is not a message at all.
+    CHECK_FALSE( mp_control_from_json( "[1,2,3]", got ) );
+}
+
+TEST_CASE( "mp_control_accepts_a_describe_at_the_limits", "[mp]" )
+{
+    // Exactly 24 lines, exactly 256 runs on one line and exactly 16 KiB of
+    // text must pass; each rejection above is one past one of these.
+    std::string at_limits =
+        R"({"t":"describe","seq":1,"x":0,"y":0,"w":1,"lines":[[)";
+    for( int i = 0; i < 256; i++ ) {
+        if( i > 0 ) {
+            at_limits += ",";
+        }
+        at_limits += R"({"t":")";
+        if( i == 0 ) {
+            at_limits.append( 16u * 1024u, 'x' );
+        }
+        at_limits += R"(","c":0})";
+    }
+    at_limits += "]";
+    for( int i = 1; i < 24; i++ ) {
+        at_limits += ",[]";
+    }
+    at_limits += "]}";
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( at_limits, got ) );
+    REQUIRE( got.describe.lines.size() == 24 );
+    REQUIRE( got.describe.lines[0].runs.size() == 256 );
+    CHECK( got.describe.lines[0].runs[0].text.size() == 16u * 1024u );
+}
+
+TEST_CASE( "mp_control_from_json_ignores_an_unknown_describe_member", "[mp]" )
+{
+    mp_control got;
+    bool parsed = false;
+    const std::string dmsg = capture_debugmsg_during( [&got, &parsed]() {
+        parsed = mp_control_from_json(
+                     R"({"t":"describe","seq":1,"x":2,"y":3,"w":4,"field_from_the_future":7})",
+                     got );
+    } );
+
+    CHECK( dmsg.empty() );
+    REQUIRE( parsed );
+    CHECK( got.kind == mp_control_kind::describe );
+    CHECK( got.describe.x == 2 );
+    CHECK( got.describe.y == 3 );
+    CHECK( got.describe.w == 4 );
+}
 #endif // MULTIPLAYER

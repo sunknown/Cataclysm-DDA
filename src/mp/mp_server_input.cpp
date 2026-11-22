@@ -45,6 +45,9 @@ void send_hello_ack( mp_transport &transport, const bool accepted, const std::st
     ack.kind = mp_control_kind::hello_ack;
     ack.hello_ack.accepted = accepted;
     ack.hello_ack.reason = reason;
+    // The same set on acceptance and refusal: every answer names what this
+    // server can serve, so a client needs no second query.
+    ack.hello_ack.caps = MP_SERVER_CAPS;
     const std::string json = mp_control_to_json( ack );
     transport.send( mp_wrap( mp_msg_kind::control,
                              std::vector<uint8_t>( json.begin(), json.end() ) ) );
