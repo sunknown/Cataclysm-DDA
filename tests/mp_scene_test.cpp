@@ -688,6 +688,13 @@ TEST_CASE( "mp_scene_build_sends_construction_percent", "[mp]" )
     refresh_visibility( you.posz() );
 
     const mp_scene scene = mp_scene_build( you.pos_bub(), 21, 21, 1 );
+    // The partial constructions are test-only state. Remove them before the
+    // assertions below: an aborted case would otherwise leave the malformed
+    // entry in the map, and the next session test's autosave would log an
+    // invalid construction id, failing the run.
+    here.partial_con_remove_no_vision_for_testing( quarter );
+    here.partial_con_remove_no_vision_for_testing( almost );
+    here.partial_con_remove_no_vision_for_testing( malformed );
     REQUIRE( scene.levels.size() == 1 );
     const mp_scene_level &level = scene.levels[0];
     REQUIRE( level.constructions.size() == 2 );
