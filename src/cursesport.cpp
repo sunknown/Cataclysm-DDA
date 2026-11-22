@@ -501,6 +501,19 @@ uint8_t nc_color_foreground_index( const nc_color &color )
     return static_cast<uint8_t>( fg + ( color.is_bold() ? 8 : 0 ) );
 }
 
+bool catacurses::get_cell( const window &win, const point &p, window_cell &out )
+{
+    const cata_cursesport::WINDOW *const w = win ? win.get<cata_cursesport::WINDOW>() : nullptr;
+    if( w == nullptr || p.x < 0 || p.y < 0 || p.x >= w->width || p.y >= w->height ) {
+        return false;
+    }
+    const cata_cursesport::cursecell &cell = w->line[p.y].chars[p.x];
+    out.ch = cell.ch;
+    out.fg = static_cast<uint8_t>( cell.FG );
+    out.bg = static_cast<uint8_t>( cell.BG );
+    return true;
+}
+
 void catacurses::wattron( const window &win_, const nc_color &attrs )
 {
     cata_cursesport::WINDOW *const win = win_.get<cata_cursesport::WINDOW>();

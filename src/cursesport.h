@@ -99,6 +99,22 @@ void curses_drawwindow( const catacurses::window &win );
 // grid and the log cannot disagree.
 uint8_t nc_color_foreground_index( const nc_color &color );
 
+namespace catacurses
+{
+// One cell of an in-memory curses window: the glyph and the palette bytes a
+// blit carries to the client. An empty `ch` is the second column of a
+// double-width glyph, exactly as the window stores it.
+struct window_cell {
+    std::string ch;
+    uint8_t fg = 0;
+    uint8_t bg = 0;
+};
+
+// Copies one cell of `win` into `out`. Returns false for a null window or a
+// point outside its width/height, leaving `out` untouched.
+bool get_cell( const window &win, const point &p, window_cell &out );
+} // namespace catacurses
+
 // TODO: move into cata_cursesport
 // Used only in SDL mode for clearing windows using rendering
 void clear_window_area( const catacurses::window &win );

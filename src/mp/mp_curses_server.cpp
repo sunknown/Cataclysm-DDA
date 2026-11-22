@@ -113,13 +113,19 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &win_ )
         row.clear();
         row.reserve( win->width );
         for( int i = 0; i < win->width; ++i ) {
-            const cata_cursesport::cursecell &cell = win->line[j].chars[i];
+            catacurses::window_cell cell;
+            // The loop bounds are the window's own size, so this cannot fail;
+            // a default cell keeps the row at full width if it ever did.
+            if( !catacurses::get_cell( win_, point( i, j ), cell ) ) {
+                row.push_back( mp_cell() );
+                continue;
+            }
             mp_cell out;
             // An empty glyph is the second column of a double-width character;
             // it is carried through as-is so the client renders it the same way.
             out.ch = mp_translate_line_glyph( cell.ch );
-            out.fg = static_cast<uint8_t>( cell.FG );
-            out.bg = static_cast<uint8_t>( cell.BG );
+            out.fg = cell.fg;
+            out.bg = cell.bg;
             row.push_back( out );
         }
         mp_server_blit_row( win->pos.x, win->pos.y + j, row );
