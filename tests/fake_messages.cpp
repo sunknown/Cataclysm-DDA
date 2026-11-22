@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "calendar.h"
+#include "fake_messages.h"
 #include "coords_fwd.h"
 #include "messages.h"
 
@@ -87,4 +88,23 @@ void add_msg_if_player_sees( const tripoint_bub_ms &, const game_message_params 
 void add_msg_if_player_sees( const Creature &, const game_message_params &, std::string m )
 {
     Messages::add_msg( std::move( m ) );
+}
+
+// Phase 4b-1: the snapshot the server's body builder reads. The real
+// implementation lives in src/messages.cpp, which this binary does not link.
+static std::vector<Messages::log_message> sidebar_snapshot_stub;
+
+void set_fake_sidebar_snapshot( std::vector<Messages::log_message> lines )
+{
+    sidebar_snapshot_stub = std::move( lines );
+}
+
+std::vector<Messages::log_message> Messages::sidebar_snapshot( size_t )
+{
+    return sidebar_snapshot_stub;
+}
+
+std::vector<Messages::log_message> Messages::sidebar_snapshot_at( size_t, time_point, int, bool )
+{
+    return sidebar_snapshot_stub;
 }

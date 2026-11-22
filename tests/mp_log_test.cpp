@@ -7,6 +7,8 @@
 
 #include "color.h"
 #include "cursesdef.h"
+#include "fake_messages.h"
+#include "mp/mp_protocol.h"
 #include "cursesport.h"
 #include "log_snapshot.h"
 #include "messages.h"
@@ -227,6 +229,107 @@ TEST_CASE( "mp_log_source_rect", "[mp]" )
     mp_native_log_clear_rect();
     CHECK_FALSE( mp_native_log_ui_active() );
     CHECK_FALSE( mp_native_log_source_rect( rect ) );
+}
+
+TEST_CASE( "mp_log_body", "[mp]" )
+{
+    const cata_cursesport::pairs saved = cata_cursesport::colorpairs[98];
+    cata_cursesport::colorpairs[98].FG = catacurses::magenta;
+
+    Messages::log_message first;
+    first.runs.push_back( { "alpha ", nc_color::from_color_pair_index( 98 ) } );
+    first.runs.push_back( { "beta", nc_color::from_color_pair_index( 98 ).bold() } );
+    Messages::log_message second;
+    second.runs.push_back( { "gamma", c_white } );
+    set_fake_sidebar_snapshot( { first, second } );
+
+    const mp_scene_rect rect{ 134, 2, 26, 33 };
+    const std::string body = mp_log_body( false, true, rect, 7 );
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( body, got ) );
+    CHECK( got.kind == mp_control_kind::log );
+    CHECK( got.log.seq == 7 );
+    CHECK( got.log.ui );
+    CHECK( got.log.x == 134 );
+    CHECK( got.log.y == 2 );
+    CHECK( got.log.w == 26 );
+    CHECK( got.log.h == 33 );
+    CHECK_FALSE( got.log.top );
+    REQUIRE( got.log.lines.size() == 2 );
+    REQUIRE( got.log.lines[0].runs.size() == 2 );
+    CHECK( got.log.lines[0].runs[0].text == "alpha " );
+    CHECK( got.log.lines[0].runs[0].color ==
+           static_cast<uint8_t>( catacurses::magenta ) );
+    CHECK( got.log.lines[0].runs[1].color ==
+           static_cast<uint8_t>( catacurses::magenta ) + 8 );
+
+    cata_cursesport::colorpairs[98] = saved;
+}
+
+TEST_CASE( "mp_log_hash", "[mp]" )
+{
+    Messages::log_message line;
+    line.runs.push_back( { "same", c_white } );
+    set_fake_sidebar_snapshot( { line } );
+
+    const mp_scene_rect rect{ 0, 0, 0, 0 };
+    const std::string first = mp_log_body( false, true, rect, 1 );
+    const std::string second = mp_log_body( false, true, rect, 2 );
+    CHECK( first != second );
+    CHECK( mp_log_hash( first ) == mp_log_hash( second ) );
+
+    line.runs[0].text = "changed";
+    set_fake_sidebar_snapshot( { line } );
+    CHECK( mp_log_hash( first ) != mp_log_hash( mp_log_body( false, true, rect, 1 ) ) );
+}
+
+TEST_CASE( "mp_log_body_caps", "[mp]" )
+{
+    const mp_scene_rect rect{ 0, 0, 0, 0 };
+
+    SECTION( "at most 200 lines, newest kept" ) {
+        std::vector<Messages::log_message> lines;
+        for( int i = 0; i < 201; i++ ) {
+            Messages::log_message line;
+            line.runs.push_back( { std::to_string( i ), c_white } );
+            lines.push_back( line );
+        }
+        set_fake_sidebar_snapshot( std::move( lines ) );
+
+        mp_control got;
+        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1 ), got ) );
+        CHECK( got.log.lines.size() == 200 );
+        CHECK( got.log.lines[0].runs[0].text == "0" );
+    }
+
+    SECTION( "runs past 256 fold into the last kept run" ) {
+        Messages::log_message line;
+        for( int i = 0; i < 257; i++ ) {
+            line.runs.push_back( { std::to_string( i ), c_white } );
+        }
+        set_fake_sidebar_snapshot( { line } );
+
+        mp_control got;
+        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1 ), got ) );
+        REQUIRE( got.log.lines.size() == 1 );
+        REQUIRE( got.log.lines[0].runs.size() == 256 );
+        CHECK( got.log.lines[0].runs.back().text == "255256" );
+    }
+
+    SECTION( "64 KiB truncates at a UTF-8 boundary" ) {
+        Messages::log_message line;
+        std::string text( 65535, 'x' );
+        text += "\xC3\xA9";  // e-acute; a raw cut at 65536 would split it
+        line.runs.push_back( { text, c_white } );
+        set_fake_sidebar_snapshot( { line } );
+
+        mp_control got;
+        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1 ), got ) );
+        REQUIRE( got.log.lines.size() == 1 );
+        REQUIRE( got.log.lines[0].runs.size() == 1 );
+        CHECK( got.log.lines[0].runs[0].text.size() == 65535 );
+    }
 }
 
 #endif // MP_SERVER

@@ -2,6 +2,9 @@
 #ifndef CATA_SRC_MP_MP_LOG_H
 #define CATA_SRC_MP_MP_LOG_H
 
+#include <cstdint>
+#include <string>
+
 #include "mp/mp_scene.h"
 
 // Phase 4b-1: the native log's source panel and UI state. The server records
@@ -30,5 +33,15 @@ bool mp_native_log_panel_enabled();
 // every frame, so a toggled-off Log panel is still an in-game UI.
 void mp_native_log_note_ui();
 bool mp_native_log_ui_active();
+
+// Builds the log control body (JSON, the control kind included) from the newest
+// Messages::sidebar_snapshot(200): palette bytes, the rect/UI/flow fields, and
+// the wire limits. Never empty; a client that did not ask for the log never
+// calls this.
+std::string mp_log_body( bool from_top, bool ui, const mp_scene_rect &rect, uint32_t seq );
+
+// FNV-1a 64 over the body with the digits after "seq": replaced by nothing, so
+// an unchanged log hashes equal across sequence numbers.
+uint64_t mp_log_hash( const std::string &body );
 
 #endif // CATA_SRC_MP_MP_LOG_H
