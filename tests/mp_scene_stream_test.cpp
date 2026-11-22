@@ -242,7 +242,7 @@ TEST_CASE( "mp_scene_stream_hello_without_caps_still_connects", "[mp]" )
     std::string reason;
     REQUIRE( mp_server_handshake( *pair.a, session, reason ) );
     CHECK( reason.empty() );
-    CHECK( session.scene_caps == 0 );
+    CHECK( session.caps == 0 );
     CHECK( session.scene_z_levels == 10 );
 }
 
@@ -285,7 +285,7 @@ TEST_CASE( "mp_scene_stream_hello_caps_and_z_levels_round_trip", "[mp]" )
     send_hello_json( *pair.b, mp_control_to_json( sent ) );
     std::string reason;
     REQUIRE( mp_server_handshake( *pair.a, session, reason ) );
-    CHECK( session.scene_caps == 1 );
+    CHECK( session.caps == 1 );
     CHECK( session.scene_z_levels == 3 );
 }
 
@@ -299,8 +299,8 @@ TEST_CASE( "mp_scene_stream_scene_frame_follows_the_screen_frame", "[mp]" )
     std::shared_ptr<mp_transport> second = install_session( 1 );
     REQUIRE( mp_session_of_slot( 0 ) != nullptr );
     REQUIRE( mp_session_of_slot( 1 ) != nullptr );
-    mp_session_of_slot( 0 )->scene_caps = 1;
-    mp_session_of_slot( 1 )->scene_caps = 1;
+    mp_session_of_slot( 0 )->caps = 1;
+    mp_session_of_slot( 1 )->caps = 1;
 
     // Mark each grid fully dirty, so every seat also emits a screen frame.
     mp_set_active_context( &stream_ctx0 );
@@ -353,7 +353,7 @@ TEST_CASE( "mp_scene_stream_unchanged_scene_does_not_advance_frame_seq", "[mp]" 
     std::shared_ptr<mp_transport> wire = install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 1;
+    session->caps = 1;
     mp_server_set_terminal_size( 80, 24 );
 
     // The first scene is built because the seat's map was just blitted.
@@ -387,7 +387,7 @@ TEST_CASE( "mp_scene_stream_scene_is_not_sent_without_the_baton", "[mp]" )
     std::shared_ptr<mp_transport> wire = install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 1;
+    session->caps = 1;
     mp_server_set_terminal_size( 80, 24 );
 
     // The legacy path: a capable session and an active context, but no
@@ -419,7 +419,7 @@ TEST_CASE( "mp_scene_stream_scene_uses_the_requested_z_levels", "[mp]" )
     std::shared_ptr<mp_transport> wire = install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 1;
+    session->caps = 1;
     session->scene_z_levels = 2;
     mp_server_set_terminal_size( 80, 24 );
 
@@ -437,7 +437,7 @@ TEST_CASE( "mp_scene_stream_scene_is_not_sent_to_a_text_only_client", "[mp]" )
     std::shared_ptr<mp_transport> wire = install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 0;
+    session->caps = 0;
     mp_server_set_terminal_size( 80, 24 );
 
     flush_scene_under_baton( 0 );
@@ -454,7 +454,7 @@ TEST_CASE( "mp_scene_stream_blank_avatar_sends_no_scene", "[mp]" )
     std::shared_ptr<mp_transport> wire = install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 1;
+    session->caps = 1;
     mp_server_set_terminal_size( 80, 24 );
 
     // The join phase hands the baton to a seat whose avatar is still the blank
@@ -488,7 +488,7 @@ TEST_CASE( "mp_scene_stream_backlog_keeps_one_newest_scene_frame", "[mp]" )
     std::shared_ptr<mp_transport> wire = install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 1;
+    session->caps = 1;
     mp_server_set_terminal_size( 80, 24 );
 
     // First frame, sequence 1. The peer never reads, so it stays queued.
@@ -525,7 +525,7 @@ TEST_CASE( "mp_scene_stream_terrain_blit_marks_the_scene_dirty", "[mp]" )
     install_session( 0 );
     mp_session *const session = mp_session_of_slot( 0 );
     REQUIRE( session != nullptr );
-    session->scene_caps = 1;
+    session->caps = 1;
     session->scene_terrain_dirty = false;
 
     catacurses::mvwprintw( stream_ctx0.w_terrain, point::zero, "." );
@@ -602,8 +602,8 @@ TEST_CASE( "two_sessions_get_their_own_scene_rects", "[mp]" )
     std::shared_ptr<mp_transport> second = install_session( 1 );
     REQUIRE( mp_session_of_slot( 0 ) != nullptr );
     REQUIRE( mp_session_of_slot( 1 ) != nullptr );
-    mp_session_of_slot( 0 )->scene_caps = 1;
-    mp_session_of_slot( 1 )->scene_caps = 1;
+    mp_session_of_slot( 0 )->caps = 1;
+    mp_session_of_slot( 1 )->caps = 1;
 
     // Seat 0 flushes with its own context active, its own map window and its
     // own avatar in u. The blit clears the mask grid, then one region of seat
@@ -699,8 +699,8 @@ TEST_CASE( "scene_rect_survives_a_resize", "[mp]" )
     std::shared_ptr<mp_transport> second = install_session( 1 );
     REQUIRE( mp_session_of_slot( 0 ) != nullptr );
     REQUIRE( mp_session_of_slot( 1 ) != nullptr );
-    mp_session_of_slot( 0 )->scene_caps = 1;
-    mp_session_of_slot( 1 )->scene_caps = 1;
+    mp_session_of_slot( 0 )->caps = 1;
+    mp_session_of_slot( 1 )->caps = 1;
 
     mp_set_active_context( &stream_ctx0 );
     mp_server_set_terminal_size( 80, 24 );
@@ -768,7 +768,7 @@ TEST_CASE( "mp_scene_stream_text_reconnect_clears_the_scene_stream", "[mp]" )
     mp_session *const retained = mp_session_of_slot( 0 );
     REQUIRE( retained != nullptr );
     retained->card_save_id = "seat-card";
-    retained->scene_caps = 1;
+    retained->caps = 1;
     retained->scene_seq = 7;
     retained->scene_hash = 42;
     retained->scene_mask_hash = 42;
@@ -780,7 +780,7 @@ TEST_CASE( "mp_scene_stream_text_reconnect_clears_the_scene_stream", "[mp]" )
     // client's capability and stream position, or it would send scene frames
     // nobody asked for.
     const std::shared_ptr<mp_transport> wire = admit_with_card( "seat-card", 0, 10 );
-    CHECK( retained->scene_caps == 0 );
+    CHECK( retained->caps == 0 );
     CHECK( retained->scene_seq == 0 );
     CHECK( retained->scene_hash == 0 );
     CHECK( retained->scene_mask_hash == 0 );
@@ -801,7 +801,7 @@ TEST_CASE( "mp_scene_stream_scene_reconnect_starts_at_frame_one", "[mp]" )
     mp_session *const retained = mp_session_of_slot( 0 );
     REQUIRE( retained != nullptr );
     retained->card_save_id = "seat-card";
-    retained->scene_caps = 0;
+    retained->caps = 0;
     retained->scene_seq = 7;
     retained->scene_hash = 42;
     retained->scene_mask_hash = 42;
@@ -813,7 +813,7 @@ TEST_CASE( "mp_scene_stream_scene_reconnect_starts_at_frame_one", "[mp]" )
     // asked for, and the stream restarts rather than inheriting the old
     // seat's sequence or send state.
     const std::shared_ptr<mp_transport> wire = admit_with_card( "seat-card", 1, 3 );
-    CHECK( retained->scene_caps == 1 );
+    CHECK( retained->caps == 1 );
     CHECK( retained->scene_z_levels == 3 );
     CHECK( retained->scene_seq == 0 );
     CHECK( retained->scene_hash == 0 );

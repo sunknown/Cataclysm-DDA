@@ -46,9 +46,9 @@ struct mp_session {
     // player_context pointer: player_context ships in every build and must not
     // learn about networking types.
     size_t context_index = 0;
-    // Capability bits from the hello. Bit0 is the 3D scene stream; zero means
-    // this client is a text client and must never receive a scene frame.
-    uint32_t scene_caps = 0;
+    // Capability bits from the hello. Bit0 is the 3D scene stream; bit1 is the
+    // native log snapshot; zero means a text client that gets neither.
+    uint32_t caps = 0;
     // The encoded z-levels this client asked for, already clamped to 1..10.
     uint8_t scene_z_levels = 10;
     // Sequence of the last scene frame actually sent; a skipped frame does not
@@ -65,6 +65,12 @@ struct mp_session {
     // a successful send. The only thing that forces a rebuild without a mask
     // change.
     bool scene_terrain_dirty = false;
+    // The log snapshot stream: the sequence of the last snapshot actually sent,
+    // its body hash with the sequence removed, and whether one was ever sent.
+    // The first flush must send even when the hash is the zero-initialised one.
+    uint32_t log_seq = 0;
+    uint64_t log_hash = 0;
+    bool log_sent_once = false;
 };
 
 // The sessions of the running server, indexed the same way as game::contexts.

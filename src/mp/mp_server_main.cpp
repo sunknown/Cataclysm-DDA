@@ -776,13 +776,17 @@ static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session
     // The new client negotiated its own scene stream: keep its capability and
     // depth, and start the stream from scratch so a frame the previous client
     // already received cannot be suppressed by its send state.
-    seat.scene_caps = fresh->scene_caps;
+    seat.caps = fresh->caps;
     seat.scene_z_levels = fresh->scene_z_levels;
     seat.scene_seq = 0;
     seat.scene_hash = 0;
     seat.scene_mask_hash = 0;
     seat.scene_sent_once = false;
     seat.scene_terrain_dirty = true;
+    // The new client asked for its own log stream: start it from scratch.
+    seat.log_seq = 0;
+    seat.log_hash = 0;
+    seat.log_sent_once = false;
 }
 
 bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::string &err )

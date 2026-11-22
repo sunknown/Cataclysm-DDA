@@ -215,7 +215,7 @@ bool mp_server_handshake( mp_transport &transport, mp_session &session,
     session.card_world = hello.hello.world;
     // Capabilities are only honoured after every version and size check has
     // passed, so a refused client leaves the session untouched.
-    session.scene_caps = hello.hello.caps;
+    session.caps = hello.hello.caps;
     session.scene_z_levels = hello.hello.z_levels;
     send_hello_ack( transport, true, std::string() );
     mp_server_log_mark_connected();

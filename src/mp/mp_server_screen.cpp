@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "cached_options.h"
 #include "mp/mp_context.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_scene.h"
@@ -169,6 +170,26 @@ void mp_server_flush_screen()
         s->cursor_changed = false;
     }
 
+    if( ( s->caps & 2u ) != 0 ) {
+        // The snapshot is built once per active-seat flush, the same cadence at
+        // which that seat's text screen is drawn. The panel check is here so a
+        // toggled-off Log panel cannot hand the client a stale rect.
+        mp_scene_rect log_rect;
+        if( !mp_native_log_panel_enabled() || !mp_native_log_source_rect( log_rect ) ) {
+            log_rect = {};
+        }
+        const std::string body = mp_log_body( log_from_top, mp_native_log_ui_active(),
+                                              log_rect, s->log_seq + 1 );
+        const uint64_t hash = mp_log_hash( body );
+        if( !s->log_sent_once || hash != s->log_hash ) {
+            s->log_seq++;
+            s->log_sent_once = true;
+            s->log_hash = hash;
+            t->send( mp_wrap( mp_msg_kind::control,
+                              std::vector<uint8_t>( body.begin(), body.end() ) ) );
+        }
+    }
+
     // After the grid, so a client can paint the scene under the text it just
     // received. The gates live in the scene flush: the world phase, the join
     // loop (which flushes under the world's baton) and the legacy path all
@@ -182,7 +203,7 @@ void mp_server_flush_scene()
     if( s == nullptr || !s->transport ) {
         return;
     }
-    if( ( s->scene_caps & 1u ) == 0 ) {
+    if( ( s->caps & 1u ) == 0 ) {
         // A text client. Nothing below this point may run for it.
         return;
     }

@@ -2,18 +2,37 @@
 
 #if defined(MP_SERVER)
 
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "avatar.h"
 #include "color.h"
 #include "cursesdef.h"
 #include "fake_messages.h"
+#include "game.h"
+#include "game_test_helper.h"
+#include "map_helpers.h"
+#include "map_helpers_tests.h"
+#include "mp/mp_context.h"
+#include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_sched.h"
+#include "mp/mp_server_main.h"
+#include "mp/mp_server_screen.h"
+#include "mp/mp_session.h"
+#include "mp/mp_transport.h"
 #include "cursesport.h"
 #include "log_snapshot.h"
 #include "messages.h"
 #include "mp/mp_log.h"
 #include "output.h"
+#include "panels.h"
+#include "player_helpers.h"
+#include "point.h"
+#include "type_id.h"
 
 // Phase 4b-1: the wire and the glyph path must resolve inline colour tags with
 // one implementation. split_by_color() cuts at each tag, so a tag segment also
@@ -330,6 +349,135 @@ TEST_CASE( "mp_log_body_caps", "[mp]" )
         REQUIRE( got.log.lines[0].runs.size() == 1 );
         CHECK( got.log.lines[0].runs[0].text.size() == 65535 );
     }
+}
+
+namespace
+{
+
+// The active-context pointer must not dangle between test cases.
+player_context log_test_ctx;
+
+struct wire_frame {
+    mp_msg_kind kind = mp_msg_kind::control;
+    std::vector<uint8_t> body;
+};
+
+void reset_log_test_world()
+{
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    clear_creatures();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_activate_player( 0 );
+
+    mp_set_active_context( &log_test_ctx );
+    log_test_ctx.slot_index = 0;
+    log_test_ctx.input_queue.clear();
+    log_test_ctx.w_terrain = catacurses::newwin( 24, 80, point( 0, 0 ) );
+
+    mp_set_active_sched( nullptr );
+    mp_sessions_reset_for_test();
+    mp_server_reset_for_test();
+    // The real server builds the sidebar layouts at game start; without them
+    // panel_manager::get_current_layout() recurses on its own fallback.
+    panel_manager::get_manager().init();
+    mp_native_log_clear_rect();
+}
+
+std::shared_ptr<mp_transport> install_log_session()
+{
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    auto session = std::make_unique<mp_session>();
+    session->transport = pair.a;
+    session->context_index = 0;
+    session->grid.resize( 80, 24 );
+    mp_sessions().push_back( std::move( session ) );
+    return pair.b;
+}
+
+std::vector<wire_frame> drain_log_frames( mp_transport &transport )
+{
+    std::vector<wire_frame> frames;
+    while( const std::optional<std::vector<uint8_t>> payload = transport.recv( 0 ) ) {
+        wire_frame frame;
+        REQUIRE( mp_unwrap( *payload, frame.kind, frame.body ) );
+        frames.push_back( std::move( frame ) );
+    }
+    return frames;
+}
+
+std::vector<mp_control> log_controls( const std::vector<wire_frame> &frames )
+{
+    std::vector<mp_control> controls;
+    for( const wire_frame &frame : frames ) {
+        if( frame.kind != mp_msg_kind::control ) {
+            continue;
+        }
+        mp_control control;
+        if( mp_control_from_json( std::string( frame.body.begin(), frame.body.end() ),
+                                  control ) &&
+            control.kind == mp_control_kind::log ) {
+            controls.push_back( control );
+        }
+    }
+    return controls;
+}
+
+} // namespace
+
+TEST_CASE( "mp_log_flush", "[mp]" )
+{
+    reset_log_test_world();
+    const std::shared_ptr<mp_transport> client = install_log_session();
+    mp_session *const session = mp_session_of_slot( 0 );
+    REQUIRE( session != nullptr );
+    session->caps = 2;
+
+    Messages::log_message line;
+    line.runs.push_back( { "hello", c_white } );
+    set_fake_sidebar_snapshot( { line } );
+    mp_native_log_note_ui();
+    mp_native_log_note_rect( 134, 2, 26, 33 );
+
+    mp_server_flush_screen();
+    std::vector<mp_control> logs = log_controls( drain_log_frames( *client ) );
+    REQUIRE( logs.size() == 1 );
+    CHECK( logs[0].log.seq == 1 );
+    CHECK( logs[0].log.ui );
+    CHECK( logs[0].log.x == 134 );
+    CHECK( logs[0].log.y == 2 );
+    CHECK( logs[0].log.w == 26 );
+    CHECK( logs[0].log.h == 33 );
+    REQUIRE( logs[0].log.lines.size() == 1 );
+    CHECK( logs[0].log.lines[0].runs[0].text == "hello" );
+
+    // The same log on the next flush sends nothing.
+    mp_server_flush_screen();
+    CHECK( log_controls( drain_log_frames( *client ) ).empty() );
+
+    // A changed message advances the sequence.
+    line.runs[0].text = "changed";
+    set_fake_sidebar_snapshot( { line } );
+    mp_server_flush_screen();
+    logs = log_controls( drain_log_frames( *client ) );
+    REQUIRE( logs.size() == 1 );
+    CHECK( logs[0].log.seq == 2 );
+
+    // A text client never gets one.
+    session->caps = 0;
+    mp_server_flush_screen();
+    CHECK( log_controls( drain_log_frames( *client ) ).empty() );
+
+    // ui=false is the join/creation state: no rect, nothing to place.
+    session->caps = 2;
+    mp_native_log_clear_rect();
+    mp_server_flush_screen();
+    logs = log_controls( drain_log_frames( *client ) );
+    REQUIRE( logs.size() == 1 );
+    CHECK_FALSE( logs[0].log.ui );
+    CHECK( logs[0].log.w == 0 );
 }
 
 #endif // MP_SERVER
