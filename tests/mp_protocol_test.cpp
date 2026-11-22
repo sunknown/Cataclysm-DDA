@@ -183,4 +183,85 @@ TEST_CASE( "mp_control_from_json_ignores_a_field_it_does_not_know", "[mp]" )
     CHECK( got.kind == mp_control_kind::bye );
     CHECK( got.bye_reason == "client quit" );
 }
+TEST_CASE( "mp_control_round_trips_a_log_snapshot", "[mp]" )
+{
+    mp_control sent;
+    sent.kind = mp_control_kind::log;
+    sent.log.seq = 17;
+    sent.log.ui = true;
+    sent.log.x = 134;
+    sent.log.y = 2;
+    sent.log.w = 26;
+    sent.log.h = 33;
+    sent.log.top = false;
+
+    mp_log_line first;
+    first.runs.push_back( { "You hit the zombie for ", 8 } );
+    first.runs.push_back( { "5", 1 } );
+    first.runs.push_back( { " damage.", 8 } );
+    sent.log.lines.push_back( first );
+
+    mp_log_line second;
+    second.runs.push_back( { "You hear a whack!", 8 } );
+    sent.log.lines.push_back( second );
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::log );
+    CHECK( got.log.seq == 17 );
+    CHECK( got.log.ui );
+    CHECK( got.log.x == 134 );
+    CHECK( got.log.y == 2 );
+    CHECK( got.log.w == 26 );
+    CHECK( got.log.h == 33 );
+    CHECK_FALSE( got.log.top );
+    REQUIRE( got.log.lines.size() == 2 );
+    REQUIRE( got.log.lines[0].runs.size() == 3 );
+    CHECK( got.log.lines[0].runs[0].text == "You hit the zombie for " );
+    CHECK( got.log.lines[0].runs[1].text == "5" );
+    CHECK( got.log.lines[0].runs[1].color == 1 );
+    CHECK( got.log.lines[1].runs[0].text == "You hear a whack!" );
+}
+
+TEST_CASE( "mp_control_rejects_a_malformed_log", "[mp]" )
+{
+    mp_control got;
+
+    // A body missing the snapshot members is not a log message.
+    CHECK_FALSE( mp_control_from_json( R"({"t":"log","seq":1})", got ) );
+
+    // More than 200 lines.
+    std::string many = R"({"t":"log","seq":1,"ui":true,"x":0,"y":0,"w":0,"h":0,"top":false,"lines":[)";
+    for( int i = 0; i < 201; i++ ) {
+        if( i > 0 ) {
+            many += ",";
+        }
+        many += "[]";
+    }
+    many += "]}";
+    CHECK_FALSE( mp_control_from_json( many, got ) );
+
+    // More than 256 runs in one line.
+    std::string runs = R"({"t":"log","seq":1,"ui":true,"x":0,"y":0,"w":0,"h":0,"top":false,"lines":[[)";
+    for( int i = 0; i < 257; i++ ) {
+        if( i > 0 ) {
+            runs += ",";
+        }
+        runs += R"({"t":"x","c":1})";
+    }
+    runs += "]]}";
+    CHECK_FALSE( mp_control_from_json( runs, got ) );
+
+    // A palette index outside 0..255.
+    CHECK_FALSE( mp_control_from_json(
+                     R"({"t":"log","seq":1,"ui":true,"x":0,"y":0,"w":0,"h":0,"top":false,"lines":[[{"t":"x","c":256}]]})",
+                     got ) );
+
+    // More than 64 KiB of text.
+    std::string big =
+        R"({"t":"log","seq":1,"ui":true,"x":0,"y":0,"w":0,"h":0,"top":false,"lines":[[{"t":")";
+    big.append( 65537, 'x' );
+    big += R"(","c":1}]]})";
+    CHECK_FALSE( mp_control_from_json( big, got ) );
+}
 #endif // MULTIPLAYER

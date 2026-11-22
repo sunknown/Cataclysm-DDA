@@ -59,6 +59,8 @@ const char *kind_to_string( const mp_control_kind kind )
             return "bye";
         case mp_control_kind::character_card:
             return "character_card";
+        case mp_control_kind::log:
+            return "log";
     }
     return "bye";
 }
@@ -79,6 +81,8 @@ bool string_to_kind( const std::string &text, mp_control_kind &out )
         out = mp_control_kind::bye;
     } else if( text == "character_card" ) {
         out = mp_control_kind::character_card;
+    } else if( text == "log" ) {
+        out = mp_control_kind::log;
     } else {
         return false;
     }
@@ -180,6 +184,28 @@ std::string mp_control_to_json( const mp_control &msg )
             jo.member( "save_id", msg.character_card.save_id );
             jo.member( "name", msg.character_card.character_name );
             break;
+        case mp_control_kind::log:
+            jo.member( "seq", static_cast<int>( msg.log.seq ) );
+            jo.member( "ui", msg.log.ui );
+            jo.member( "x", static_cast<int>( msg.log.x ) );
+            jo.member( "y", static_cast<int>( msg.log.y ) );
+            jo.member( "w", static_cast<int>( msg.log.w ) );
+            jo.member( "h", static_cast<int>( msg.log.h ) );
+            jo.member( "top", msg.log.top );
+            jo.member( "lines" );
+            jo.start_array();
+            for( const mp_log_line &line : msg.log.lines ) {
+                jo.start_array();
+                for( const mp_log_run &run : line.runs ) {
+                    jo.start_object();
+                    jo.member( "t", run.text );
+                    jo.member( "c", static_cast<int>( run.color ) );
+                    jo.end_object();
+                }
+                jo.end_array();
+            }
+            jo.end_array();
+            break;
     }
     jo.end_object();
     return stream.str();
@@ -253,6 +279,48 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 msg.character_card.save_id = obj.get_string( "save_id" );
                 msg.character_card.character_name = obj.get_string( "name" );
                 break;
+            case mp_control_kind::log: {
+                const auto dim = []( const int value ) {
+                    return static_cast<uint16_t>( std::clamp( value, 0, 65535 ) );
+                };
+                msg.log.seq = static_cast<uint32_t>( std::max( 0, obj.get_int( "seq" ) ) );
+                msg.log.ui = obj.get_bool( "ui" );
+                msg.log.x = dim( obj.get_int( "x" ) );
+                msg.log.y = dim( obj.get_int( "y" ) );
+                msg.log.w = dim( obj.get_int( "w" ) );
+                msg.log.h = dim( obj.get_int( "h" ) );
+                msg.log.top = obj.get_bool( "top" );
+
+                JsonArray lines = obj.get_array( "lines" );
+                if( lines.size() > 200 ) {
+                    return false;
+                }
+                size_t text_bytes = 0;
+                msg.log.lines.reserve( lines.size() );
+                for( size_t i = 0; i < lines.size(); i++ ) {
+                    JsonArray runs = lines.get_array( i );
+                    if( runs.size() > 256 ) {
+                        return false;
+                    }
+                    mp_log_line line;
+                    line.runs.reserve( runs.size() );
+                    for( size_t j = 0; j < runs.size(); j++ ) {
+                        JsonObject run = runs.get_object( j );
+                        const std::string text = run.get_string( "t" );
+                        const int color = run.get_int( "c" );
+                        if( color < 0 || color > 255 ) {
+                            return false;
+                        }
+                        text_bytes += text.size();
+                        if( text_bytes > 64u * 1024u ) {
+                            return false;
+                        }
+                        line.runs.push_back( { text, static_cast<uint8_t>( color ) } );
+                    }
+                    msg.log.lines.push_back( std::move( line ) );
+                }
+                break;
+            }
         }
         out = msg;
         return true;

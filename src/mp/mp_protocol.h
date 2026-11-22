@@ -36,6 +36,7 @@ enum class mp_control_kind {
     cursor,
     bye,
     character_card,
+    log,
 };
 
 struct mp_hello {
@@ -86,6 +87,32 @@ struct mp_character_card_msg {
     std::string character_name;
 };
 
+// One styled run of a native log line. `color` is a palette index, the same
+// byte the screen grid uses.
+struct mp_log_run {
+    std::string text;
+    uint8_t color = 0;
+};
+
+// One visible sidebar log message, its runs in reading order.
+struct mp_log_line {
+    std::vector<mp_log_run> runs;
+};
+
+// The phase 4b-1 log snapshot. `ui` separates an in-game screen from join and
+// character creation; the rect is a placement hint, zero when there is no
+// source panel; `top` mirrors LOG_FLOW=new_top.
+struct mp_log_msg {
+    uint32_t seq = 0;
+    bool ui = false;
+    uint16_t x = 0;
+    uint16_t y = 0;
+    uint16_t w = 0;
+    uint16_t h = 0;
+    bool top = false;
+    std::vector<mp_log_line> lines;
+};
+
 // One control message. Only the member matching `kind` is meaningful; this is
 // a plain struct rather than a variant so that adding a message type later is
 // a local edit.
@@ -98,6 +125,7 @@ struct mp_control {
     input_event event;
     std::string bye_reason;
     mp_character_card_msg character_card;
+    mp_log_msg log;
 };
 
 std::string mp_control_to_json( const mp_control &msg );
