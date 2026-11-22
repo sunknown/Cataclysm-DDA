@@ -12,6 +12,10 @@
 #include "cursesdef.h"
 #include "point.h"
 
+#if defined( MP_SERVER )
+#include "mp/mp_server_screen.h"
+#endif
+
 #if defined(EMSCRIPTEN)
 #include <emscripten.h>
 #endif
@@ -178,6 +182,11 @@ void ui_adaptor::set_cursor( const catacurses::window &w, const point &pos )
 #if !defined( TILES )
     cursor_type = cursor::custom;
     cursor_pos = point( getbegx( w ), getbegy( w ) ) + pos;
+#if defined( MP_SERVER )
+    // Send immediately: the game's terrain draw runs outside the ui_manager
+    // redraw loop, so the restore_cursor pass never sees this cell.
+    mp_server_set_cursor( cursor_pos.x, cursor_pos.y, true );
+#endif
 #else
     // Unimplemented
     cursor_type = cursor::disabled;
@@ -222,6 +231,9 @@ void ui_adaptor::default_cursor()
 void ui_adaptor::disable_cursor()
 {
     cursor_type = cursor::disabled;
+#if defined( MP_SERVER )
+    mp_server_set_cursor( 0, 0, false );
+#endif
 }
 
 static void restore_cursor( const point &p )
