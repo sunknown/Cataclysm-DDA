@@ -159,8 +159,8 @@
 #include "monexamine.h"
 #include "mongroup.h"
 #include "monster.h"
-#if defined(MULTIPLAYER)
 #include "mp/mp_log.h"
+#if defined(MULTIPLAYER)
 #include "mp/mp_mode.h"
 #endif
 #include "mp/mp_context.h"

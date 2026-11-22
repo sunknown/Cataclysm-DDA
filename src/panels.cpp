@@ -432,13 +432,30 @@ panel_manager::panel_manager()
 
 panel_layout &panel_manager::get_current_layout()
 {
+    if( layouts.empty() ) {
+        // Before init(): a client flush can reach the log panel lookup during a
+        // load-time prompt. Report an empty layout without a debug error, which
+        // would open a prompt of its own.
+        static panel_layout empty_layout =
+            panel_layout( translation(), std::vector<window_panel>() );
+        return empty_layout;
+    }
     auto kv = layouts.find( current_layout_id );
     if( kv != layouts.end() ) {
         return kv->second;
     }
     debugmsg( "Invalid current panel layout, defaulting to classic" );
     current_layout_id = "legacy_classic_sidebar";
-    return get_current_layout();
+    auto fallback = layouts.find( current_layout_id );
+    if( fallback != layouts.end() ) {
+        return fallback->second;
+    }
+    // No layouts exist yet: the manager is being used before init(), for
+    // example a client flush during a load-time prompt. Return an empty layout
+    // instead of recursing on the fallback until the stack dies.
+    static panel_layout empty_layout =
+        panel_layout( translation(), std::vector<window_panel>() );
+    return empty_layout;
 }
 
 widget *panel_manager::get_current_sidebar()

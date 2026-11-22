@@ -480,4 +480,13 @@ TEST_CASE( "mp_log_flush", "[mp]" )
     CHECK( logs[0].log.w == 0 );
 }
 
+TEST_CASE( "mp_log_panel_lookup_before_init", "[mp]" )
+{
+    // A fresh manager has no layouts at all. Before a game starts, a client
+    // flush during a load-time prompt can reach the log panel lookup; it must
+    // report "no Log panel", not recurse through its own classic fallback.
+    panel_manager fresh;
+    CHECK( fresh.get_current_layout().panels().empty() );
+}
+
 #endif // MP_SERVER
