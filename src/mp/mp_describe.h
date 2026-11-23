@@ -17,6 +17,9 @@
 // server and the connection.
 
 constexpr int MP_DESCRIBE_MAX_LINES = 24;
+// A per-line draw budget; the text byte cap is global, so one tall answer
+// cannot crowd out the rest of the connection.
+constexpr int MP_DESCRIBE_MAX_RUNS = 256;
 constexpr int MP_DESCRIBE_MIN_WIDTH = 20;
 constexpr int MP_DESCRIBE_MAX_WIDTH = 80;
 constexpr int MP_DESCRIBE_MIN_INTERVAL_MS = 100;

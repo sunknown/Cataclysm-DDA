@@ -29,7 +29,9 @@ void mp_server_set_terminal_size( int width, int height );
 // Blanks every connected session's screen and marks it fully dirty. The join
 // menu paints into the session grid without a window that survives the join
 // phase, so those cells would otherwise ghost over the running game until some
-// later window happened to repaint them. Called once when the party starts.
+// later window happened to repaint them. Every seat also leaves the UI here,
+// which clears its in-game flag and any hover request, so the join menu's state
+// does not survive into play. Called once when the party starts.
 void mp_server_blank_screens();
 
 // True while the connected client is still present. False when no transport
@@ -49,9 +51,12 @@ void mp_server_blit_row( int x0, int y, const std::vector<mp_cell> &cells );
 void mp_server_set_cursor( int x, int y, bool visible );
 
 // Encodes and sends the dirty rows and the cursor, then clears the dirty
-// flags. Does nothing when nothing changed or no session/transport is active.
-// Also calls mp_server_flush_scene() after the grid, so a capable client sees
-// the screen frame before the scene frame that belongs with it.
+// flags. A client that negotiated the log stream also gets its snapshot, and
+// one that negotiated the scene stream gets a frame from
+// mp_server_flush_scene() after the grid, so the screen frame precedes the
+// scene frame that belongs with it. A due hover answer is sent last, after
+// that scene frame, so it can name the frame the client is about to draw.
+// Does nothing when no session or transport is active.
 void mp_server_flush_screen();
 
 // Sends one scene frame if this seat negotiated the capability, holds the baton

@@ -30,6 +30,7 @@
 #include "mp/mp_session.h"
 #include "cata_scope_helpers.h"
 #include "input.h"
+#include "panels.h"
 #include "player_helpers.h"
 
 // Server input lives in the active player context (its input_queue), so every
@@ -620,6 +621,86 @@ TEST_CASE( "a_client_without_the_describe_cap_is_not_served", "[mp]" )
 
     mp_server_flush_screen();
     CHECK( describe_replies( drain_frames( *seat.client ) ).empty() );
+}
+
+TEST_CASE( "a_scene_and_log_client_without_describe_keeps_its_traffic", "[mp]" )
+{
+    // The spec's caps-3 client -- scene | log, no describe -- is the only old
+    // client whose flush shares every block with the new one. The describe
+    // block runs last and must leave the screen, log and scene frames intact,
+    // never answer, and never keep the request it was not entitled to make.
+    restore_active_state restore;
+    mp_ensure_player_context();
+    mp_sync_context_count();
+    mp_activate_player( 0 );
+    // The scene and the describe cell mapping read the map window, and the
+    // avatar must be on the map for the scene to have levels.
+    clear_avatar();
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    test_input_ctx.ter_view_p = get_avatar_legacy().pos_bub();
+    test_input_ctx.w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    mp_set_active_sched( nullptr );
+    mp_server_reset_for_test();
+    // The log snapshot walks the panel layout; without one the lookup would
+    // recurse through its classic fallback (see mp_log_test.cpp).
+    panel_manager::get_manager().init();
+
+    const describe_seat seat = prepare_describe_seat( MP_CAP_SCENE | MP_CAP_LOG );
+    mp_server_set_terminal_size( 80, 24 );
+    // A dirty grid is an ordinary screen frame for this client, and the point
+    // is that it still arrives.
+    mp_server_blit_row( 0, 0, text_row( "dirty" ) );
+
+    send_control( *seat.client, describe_request( 7, 30, 5, 40 ) );
+    mp_server_pump();
+    CHECK_FALSE( seat.session->describe_pending );
+
+    mp_sched sched( 1 );
+    mp_set_active_sched( &sched );
+    on_out_of_scope clear_sched( []() {
+        mp_set_active_sched( nullptr );
+    } );
+    std::thread player( [&sched]() {
+        sched.wait_for_turn( 0 );
+        mp_server_flush_screen();
+        sched.release_to( 0, mp_sched::world );
+    } );
+    sched.yield_to( mp_sched::world, 0 );
+    player.join();
+
+    CHECK_FALSE( seat.session->describe_pending );
+    const std::vector<io_frame> frames = drain_frames( *seat.client );
+    size_t screen_index = frames.size();
+    size_t log_index = frames.size();
+    size_t scene_index = frames.size();
+    for( size_t i = 0; i < frames.size(); ++i ) {
+        if( frames[i].kind == mp_msg_kind::screen ) {
+            screen_index = std::min( screen_index, i );
+        } else if( frames[i].kind == mp_msg_kind::scene ) {
+            scene_index = std::min( scene_index, i );
+        } else {
+            mp_control msg;
+            REQUIRE( mp_control_from_json( std::string( frames[i].body.begin(),
+                                          frames[i].body.end() ), msg ) );
+            CHECK( msg.kind != mp_control_kind::describe );
+            if( msg.kind == mp_control_kind::log ) {
+                log_index = std::min( log_index, i );
+            }
+        }
+    }
+    // The flush's own order: the screen, then the log snapshot, then the scene
+    // frame. A describe block that consumed or reordered any of them would
+    // move one of these indices.
+    REQUIRE( screen_index < frames.size() );
+    REQUIRE( log_index < frames.size() );
+    REQUIRE( scene_index < frames.size() );
+    CHECK( screen_index < log_index );
+    CHECK( log_index < scene_index );
+    CHECK( describe_replies( frames ).empty() );
+
+    test_input_ctx.w_terrain = catacurses::window();
 }
 
 TEST_CASE( "a_seat_that_left_the_ui_loses_its_describe_request", "[mp]" )

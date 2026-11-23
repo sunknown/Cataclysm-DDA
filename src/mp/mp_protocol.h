@@ -21,7 +21,7 @@ constexpr uint32_t MP_CAP_LOG = 2u;
 constexpr uint32_t MP_CAP_DESCRIBE = 4u;
 // Everything this server can serve. Advertised in every hello_ack, accepted
 // or refused, so a client never waits for a stream that will not come.
-constexpr uint32_t MP_SERVER_CAPS = 7u;
+constexpr uint32_t MP_SERVER_CAPS = MP_CAP_SCENE | MP_CAP_LOG | MP_CAP_DESCRIBE;
 
 // Every framed payload starts with one kind byte. Control traffic is JSON, so
 // it can be read in a log by eye; screen traffic is the compact binary of

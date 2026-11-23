@@ -82,14 +82,19 @@ void discard_earlier_world_saves()
         return;
     }
     for( const save_t &save : world->world_saves ) {
-        // Every file a character writes shares the save id's base64 name as the
-        // head of its file name (`.sav`, `.sav.zzip`, `.log`, map memory and the
-        // rest). This is the same prefix game::move_save_to_graveyard() collects,
-        // and nothing else in the world folder is named after a save id.
+        // The save loop names every file it writes under the save id's base64
+        // name (`.sav`, `.sav.zzip`, `.log` and the rest), so this prefix sweep
+        // collects those; it is the same prefix game::move_save_to_graveyard()
+        // uses. It does not reach map memory, a `<base>.mm1/` directory whose
+        // removal fails and whose contents stay, nor the diary
+        // `<id>_diary.json`, which does not match the prefix at all. Those are
+        // left to the per-run world deletion.
         const std::string prefix = save.base_path() + ".";
         for( const cata_path &file : get_files_from_path( prefix, world->folder_path() ) ) {
             // Best effort. A file that cannot be removed must not fail a test,
-            // and the list is cleared below whether or not every file went away.
+            // and the list is cleared below whether or not every file went away:
+            // save_exists() reads the list, not the disk, so a surviving file
+            // must not make the next harness see a taken name.
             remove_file( file );
         }
     }

@@ -5,6 +5,7 @@
 
 #include "json.h"
 #include "json_loader.h"
+#include "mp/mp_describe.h"
 #include "point.h"
 
 std::vector<uint8_t> mp_wrap( const mp_msg_kind kind, const std::vector<uint8_t> &body )
@@ -44,10 +45,8 @@ namespace
 
 // A describe answer is one hover tooltip, so its caps are deliberately tighter
 // than the log's whole-sidebar 200 lines / 64 KiB: remote input must not make
-// the client allocate a screenful of text per request.
-constexpr size_t MP_DESCRIBE_MAX_LINES = 24;
-constexpr size_t MP_DESCRIBE_MAX_RUNS = 256;
-constexpr size_t MP_DESCRIBE_MAX_TEXT = 16u * 1024u;
+// the client allocate a screenful of text per request. The limits themselves
+// live in mp_describe.h so the builder and this parser cannot drift apart.
 
 const char *kind_to_string( const mp_control_kind kind )
 {
@@ -391,7 +390,7 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 // draw a lie, so a bad line fails the whole message.
                 if( obj.has_array( "lines" ) &&
                     !read_lines( obj, MP_DESCRIBE_MAX_LINES, MP_DESCRIBE_MAX_RUNS,
-                                     MP_DESCRIBE_MAX_TEXT, msg.describe.lines ) ) {
+                                     MP_DESCRIBE_MAX_TEXT_BYTES, msg.describe.lines ) ) {
                     return false;
                 }
                 break;

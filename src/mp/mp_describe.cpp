@@ -20,11 +20,6 @@
 namespace
 {
 
-// A line of more runs than this is truncated. The run cap is a per-line draw
-// budget; the text cap is global, so one tall answer cannot crowd out the
-// rest of the connection.
-constexpr size_t describe_max_runs = 256;
-
 // Cuts to at most `limit` bytes without leaving a partial UTF-8 sequence: the
 // first excluded byte is advanced past every continuation byte.
 std::string cut_utf8( const std::string &text, const size_t limit )
@@ -147,7 +142,7 @@ std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
                 // The run cap bounds run count, not characters, so a merged
                 // run keeps the line's text.
                 line.runs.back().text += text;
-            } else if( line.runs.size() < describe_max_runs ) {
+            } else if( line.runs.size() < static_cast<size_t>( MP_DESCRIBE_MAX_RUNS ) ) {
                 line.runs.push_back( { text, cell.fg } );
             } else {
                 // The line is already at the run cap; the rest of it is cut.

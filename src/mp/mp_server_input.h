@@ -59,10 +59,13 @@ input_event mp_server_wait_for_input( int timeout_ms );
 // on before it blocks on its own wire (the curses backend's get_input_event),
 // and from that moment the world and the other players run: they repoint the
 // active context, flip the world-phase flag and swap avatars. So this reads no
-// process-wide state at all -- only `session` (its transport and pending
-// resize) and `ctx` (its input queue), both of which belong to this player
-// alone. The caller captures them, and flushes the screen, while it still holds
-// the baton.
+// process-wide state at all -- only `session` (its transport, pending resize
+// and hover request) and `ctx` (its input queue), both of which belong to this
+// player alone. A pending hover request also caps the wait to its due time and
+// wakes when it falls due, so the caller's next flush can build the answer
+// instead of sleeping past it; this path only wakes, it never builds the answer
+// itself. The caller captures them, and flushes the screen, while it still
+// holds the baton.
 input_event mp_server_wait_for_input_of( mp_session *session, player_context *ctx,
         int timeout_ms );
 
