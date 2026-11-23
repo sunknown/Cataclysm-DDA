@@ -288,7 +288,7 @@ void memorial_logger::write_text_memorial( std::ostream &file,
     //Last 20 messages
     file << _( "Final Messages:" ) << eol;
     std::vector<std::pair<std::string, std::string> > recent_messages =
-        Messages::recent_messages( 20 );
+        Messages::recent_messages_for( u.name, 20 );
     for( const std::pair<std::string, std::string> &recent_message : recent_messages ) {
         file << indent << recent_message.first << " " << recent_message.second;
         file << eol;

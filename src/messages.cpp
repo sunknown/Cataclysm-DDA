@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <unordered_set>
 
+#include "avatar.h"
 #include "cached_options.h"
 #include "calendar.h"
 #include "catacharset.h"
@@ -83,10 +84,6 @@ struct game_message {
         return string_format( _( "%s x %d" ), text, count );
     }
 
-    std::string get_with_count() const {
-        return get_with_count( message );
-    }
-
     /** Get whether or not a message should not be displayed (hidden) in the side bar because it's in a cooldown period.
      * @returns `true` if the message should **not** be displayed, `false` otherwise.
      */
@@ -138,6 +135,35 @@ struct game_message {
         jsout.end_object();
     }
 };
+
+// The seat whose screen is being drawn. A co-op server services one active seat
+// at a time and draws only that seat's UI, so the active avatar is the viewer of
+// every server-drawn log surface. Single-player builds record no actor with a
+// message, so there is no second text to choose from there.
+const std::string *display_viewer_id()
+{
+#if defined(MP_SERVER)
+    return &get_avatar().name;
+#else
+    return nullptr;
+#endif
+}
+
+// The text one viewer reads for a stored message: the actor's own seat keeps the
+// second person, every other seat reads the third-person form naming the actor.
+std::string message_text_for( const game_message &msg, const std::string &viewer_id )
+{
+    return resolve_actor_text( msg.message, msg.other_message, msg.actor_id,
+                               msg.actor_display, viewer_id );
+}
+
+// The text the active seat reads on the server-drawn surfaces: the full-screen
+// history, the AIM log pane, the classic sidebar and the memorial.
+std::string display_text( const game_message &msg )
+{
+    const std::string *const viewer = display_viewer_id();
+    return viewer == nullptr ? msg.message : message_text_for( msg, *viewer );
+}
 
 class messages_impl
 {
@@ -416,7 +442,8 @@ class messages_impl
             }
         }
 
-        std::vector<std::pair<std::string, std::string>> recent_messages( size_t count ) const {
+        std::vector<std::pair<std::string, std::string>> recent_messages(
+            const std::string *viewer_id, size_t count ) const {
             count = std::min( count, messages.size() );
 
             std::vector<std::pair<std::string, std::string>> result;
@@ -425,9 +452,11 @@ class messages_impl
             const int offset = static_cast<std::ptrdiff_t>( messages.size() - count );
 
             std::transform( begin( messages ) + offset, end( messages ), back_inserter( result ),
-            []( const game_message & msg ) {
+            [viewer_id]( const game_message & msg ) {
+                const std::string text = viewer_id == nullptr ? msg.message :
+                                         message_text_for( msg, *viewer_id );
                 return std::make_pair( to_string_time_of_day( msg.timestamp_in_turns ),
-                                       msg.get_with_count() );
+                                       msg.get_with_count( text ) );
             } );
 
             return result;
@@ -542,7 +571,13 @@ std::vector<log_message> sidebar_snapshot_for( const std::string &viewer_id,
 
 std::vector<std::pair<std::string, std::string>> Messages::recent_messages( const size_t count )
 {
-    return player_messages.recent_messages( count );
+    return player_messages.recent_messages( nullptr, count );
+}
+
+std::vector<std::pair<std::string, std::string>> Messages::recent_messages_for(
+    const std::string &viewer_id, const size_t count )
+{
+    return player_messages.recent_messages( &viewer_id, count );
 }
 
 bool Messages::has_debug_filter( debugmode::debug_filter type )
@@ -785,7 +820,7 @@ void Messages::dialog::init( ui_adaptor &ui )
     for( size_t ind = 0; ind < msg_count; ++ind ) {
         const size_t msg_ind = log_from_top ? ind : msg_count - 1 - ind;
         const game_message &msg = player_messages.history( msg_ind );
-        const auto &folded = foldstring( msg.get_with_count(), msg_width );
+        const auto &folded = foldstring( msg.get_with_count( display_text( msg ) ), msg_width );
         for( const auto &it : folded ) {
             folded_filtered.emplace_back( folded_all.size() );
             folded_all.emplace_back( msg_ind, it );
@@ -921,7 +956,8 @@ void Messages::dialog::do_filter( const std::string &filter_str )
         const size_t msg_ind = folded_all[folded_ind].first;
         const game_message &msg = player_messages.history( msg_ind );
         const bool match = ( !has_type_filter || filter_type == msg.type ) &&
-                           ci_find_substr( remove_color_tags( msg.get_with_count() ), filter_text ) >= 0;
+                           ci_find_substr( remove_color_tags( msg.get_with_count( display_text( msg ) ) ),
+                                           filter_text ) >= 0;
 
         // Always advance the index, but only add to filtered list if the original message matches
         for( ; folded_ind < folded_all.size() && folded_all[folded_ind].first == msg_ind; ++folded_ind ) {
@@ -1074,7 +1110,7 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
             }
 
             const nc_color col = m.get_color( player_messages.curmes );
-            std::string message_text = m.get_with_count();
+            std::string message_text = m.get_with_count( display_text( m ) );
             if( !m.is_recent( player_messages.curmes ) ) {
                 message_text = remove_color_tags( message_text );
             }
@@ -1107,7 +1143,7 @@ void Messages::display_messages( const catacurses::window &ipk_target, const int
             }
 
             const nc_color col = m.get_color( player_messages.curmes );
-            std::string message_text = m.get_with_count();
+            std::string message_text = m.get_with_count( display_text( m ) );
             if( !m.is_recent( player_messages.curmes ) ) {
                 message_text = remove_color_tags( message_text );
             }

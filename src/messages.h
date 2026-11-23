@@ -28,6 +28,11 @@ namespace Messages
 {
 
 std::vector<std::pair<std::string, std::string>> recent_messages( size_t count );
+// The same feed resolved for one viewer, exactly like the per-seat log: the
+// actor's own seat keeps the second-person text, another seat reads the
+// third-person form. The memorial uses this with the dying character's name.
+std::vector<std::pair<std::string, std::string>> recent_messages_for(
+    const std::string &viewer_id, size_t count );
 bool has_debug_filter( debugmode::debug_filter type );
 void add_msg( std::string msg );
 void add_msg( const game_message_params &params, std::string msg );

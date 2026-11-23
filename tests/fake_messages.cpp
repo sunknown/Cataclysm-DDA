@@ -55,6 +55,13 @@ std::vector<std::pair<std::string, std::string>> Messages::recent_messages( size
 {
     return messages;
 }
+
+std::vector<std::pair<std::string, std::string>> Messages::recent_messages_for(
+    const std::string &, size_t )
+{
+    // The fake keeps no actor fields; every line is the writer's own text.
+    return messages;
+}
 bool Messages::has_debug_filter( debugmode::debug_filter )
 {
     return true;
