@@ -531,4 +531,36 @@ TEST_CASE( "mp_log_panel_lookup_before_init", "[mp]" )
     CHECK( fresh.get_current_layout().panels().empty() );
 }
 
+TEST_CASE( "resolve_actor_text", "[mp]" )
+{
+    // The actor keeps the player form even after a rename: stable id matches.
+    CHECK( resolve_actor_text( "You drop your rock.",
+                               "<npcname> drops their rock.",
+                               "Katelynn Burdette", "Kate", "Katelynn Burdette" )
+           == "You drop your rock." );
+
+    // Another seat reads the frozen display name, all placeholders replaced.
+    CHECK( resolve_actor_text( "You see the rock.",
+                               "<npcname> sees the rock; <npcname> smiles.",
+                               "Katelynn Burdette", "Kate", "Emory Mullen" )
+           == "Kate sees the rock; Kate smiles." );
+
+    // No third-person form, no actor, or no display name: the primary stays.
+    CHECK( resolve_actor_text( "You hear thunder.", "",
+                               "Katelynn Burdette", "Kate", "Emory Mullen" )
+           == "You hear thunder." );
+    CHECK( resolve_actor_text( "You hear thunder.", "<npcname> hears thunder.",
+                               "", "", "Emory Mullen" )
+           == "You hear thunder." );
+    CHECK( resolve_actor_text( "You drop your rock.", "<npcname> drops their rock.",
+                               "Katelynn Burdette", "", "Emory Mullen" )
+           == "You drop your rock." );
+
+    // A name with punctuation is substituted literally.
+    CHECK( resolve_actor_text( "You drop.", "<npcname> drops.",
+                               "Rose 'Ragtag' Williamson", "Rose 'Ragtag' Williamson",
+                               "Emory Mullen" )
+           == "Rose 'Ragtag' Williamson drops." );
+}
+
 #endif // MP_SERVER

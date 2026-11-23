@@ -27,4 +27,12 @@ struct log_source_entry {
 std::vector<Messages::log_message> log_snapshot_build(
     const std::vector<log_source_entry> &newest_first, size_t max_messages, bool from_top );
 
+// Picks the text a viewer reads for one message. An empty third-person form,
+// an empty actor, or an empty display name keeps the primary text. Otherwise
+// the viewer that is not the actor reads `other` with every <npcname> replaced
+// by `actor_display`.
+std::string resolve_actor_text( const std::string &primary, const std::string &other,
+                                const std::string &actor_id, const std::string &actor_display,
+                                const std::string &viewer_id );
+
 #endif // CATA_SRC_LOG_SNAPSHOT_H

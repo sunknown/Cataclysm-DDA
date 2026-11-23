@@ -56,3 +56,17 @@ std::vector<Messages::log_message> log_snapshot_build(
 
     return result;
 }
+
+std::string resolve_actor_text( const std::string &primary, const std::string &other,
+                                const std::string &actor_id, const std::string &actor_display,
+                                const std::string &viewer_id )
+{
+    if( other.empty() || actor_id.empty() || actor_display.empty() ||
+        actor_id == viewer_id ) {
+        return primary;
+    }
+
+    std::string out = other;
+    replace_substring( out, "<npcname>", actor_display, true );
+    return out;
+}
