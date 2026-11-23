@@ -821,6 +821,7 @@ void Character::add_msg_player_or_npc( const std::string &player_msg,
 #if defined(MP_SERVER)
     Messages::add_msg_player_or_npc( m_neutral, player_msg, npc_msg, name, get_name() );
 #else
+    (void)npc_msg;
     Messages::add_msg( player_msg );
 #endif
 }
@@ -837,6 +838,7 @@ void Character::add_msg_player_or_npc( const game_message_params &params,
 #if defined(MP_SERVER)
     Messages::add_msg_player_or_npc( params, player_msg, npc_msg, name, get_name() );
 #else
+    (void)npc_msg;
     Messages::add_msg( params, player_msg );
 #endif
 }
