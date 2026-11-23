@@ -12,6 +12,7 @@
 #include "avatar.h"
 #include "cached_options.h"
 #include "cursesdef.h"
+#include "filesystem.h"
 #include "game.h"
 #include "game_constants.h"
 #include "game_test_helper.h"
@@ -25,6 +26,7 @@
 #include "player_helpers.h"
 #include "type_id.h"
 #include "ui_manager.h"
+#include "worldfactory.h"
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
@@ -55,6 +57,43 @@ std::string read_bye_reason( mp_transport &transport, const int timeout_ms )
         return std::string();
     }
     return control.kind == mp_control_kind::bye ? control.bye_reason : std::string();
+}
+
+// Erases every character save in the active world, from disk and from the
+// world's save list. A join harness creates its characters through the join
+// menu's random creator, whose names come from the game RNG, and the test
+// listener reseeds that RNG to the same `--rng-seed` before every test section.
+// Two harnesses can therefore roll the same name, and the second one then meets
+// the first one's save: name_is_free() refuses it, settle_name() opens "Choose
+// another name:", and the seat -- which has nobody to type into that prompt --
+// never joins. Each harness owns the test world, so starting it without any
+// survivor an earlier harness left behind is the fix. Characters this harness
+// creates are untouched and still save under their own names, which is what its
+// reconnect and reclaim paths look up.
+//
+// The test world is made fresh per run and dropped on success (tests/test_main.cpp),
+// so what this removes is this run's earlier harnesses, not a user's game. A
+// save-persistence test can still inspect what its own harness wrote: the sweep
+// runs at the next harness's start, never at the writing harness's end.
+void discard_earlier_world_saves()
+{
+    WORLD *const world = world_generator->active_world;
+    if( world == nullptr ) {
+        return;
+    }
+    for( const save_t &save : world->world_saves ) {
+        // Every file a character writes shares the save id's base64 name as the
+        // head of its file name (`.sav`, `.sav.zzip`, `.log`, map memory and the
+        // rest). This is the same prefix game::move_save_to_graveyard() collects,
+        // and nothing else in the world folder is named after a save id.
+        const std::string prefix = save.base_path() + ".";
+        for( const cata_path &file : get_files_from_path( prefix, world->folder_path() ) ) {
+            // Best effort. A file that cannot be removed must not fail a test,
+            // and the list is cleared below whether or not every file went away.
+            remove_file( file );
+        }
+    }
+    world->world_saves.clear();
 }
 } // namespace
 
@@ -116,6 +155,11 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     g->new_game = true;
     game_test_helper::reset_player_slots();
     mp_sessions_reset_for_test();
+    // The join-phase characters live in the world, not only in the sessions
+    // reset above: their saves outlast the harness that made them, and the
+    // next harness's random creator can roll the same name. Start from a world
+    // with no earlier harness's survivors.
+    discard_earlier_world_saves();
 
     // Sessions are gone, so the terminal set up below lands in the fallback
     // grid rather than in a leftover session's. From here on the harness is a
