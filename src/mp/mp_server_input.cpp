@@ -13,10 +13,12 @@
 #include "debug.h"
 #include "game_constants.h"
 #include "mp/mp_context.h"
+#include "mp/mp_describe.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_transport.h"
 
 // Defined here, called by the screen module's reset (mp_server_screen.cpp) so
@@ -34,6 +36,22 @@ input_event make_timeout_event()
     input_event ev;
     ev.type = input_event_t::timeout;
     return ev;
+}
+
+// How long the describe feed still owes its pending request before the server
+// may answer it. Only the session's own fields are read: the input wait runs
+// without the baton, when the game's state belongs to whoever holds it.
+std::chrono::milliseconds describe_time_left( const mp_session &s )
+{
+    const clock::time_point due = s.describe_last +
+                                  std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS );
+    const clock::time_point now = clock::now();
+    if( now >= due ) {
+        return std::chrono::milliseconds( 0 );
+    }
+    // Round up, so a fraction of a millisecond never becomes a zero-length
+    // recv that spins until the due instant.
+    return std::chrono::ceil<std::chrono::milliseconds>( due - now );
 }
 
 // Sends a hello_ack control carrying the handshake verdict to the client. The
@@ -88,6 +106,23 @@ void dispatch( const mp_control &msg, mp_session *const s, player_context *const
             if( msg.resize.width <= MP_MAX_TERMINAL_WIDTH &&
                 msg.resize.height <= MP_MAX_TERMINAL_HEIGHT ) {
                 s->pending_resize = msg.resize;
+            }
+            break;
+        case mp_control_kind::describe:
+            // A hover asks about one cell of the current view: only the newest
+            // question is worth answering, so this overwrites instead of
+            // queueing and a fast pointer cannot grow the session. The cell is
+            // not checked here -- a cell the flush cannot describe is answered
+            // with empty lines, so the client always gets its seq back. The
+            // answer itself is built in the flush, which is the only place the
+            // baton and the game state are available.
+            if( mp_session_can_describe( *s ) ) {
+                mp_describe_request req;
+                req.seq = msg.describe.seq;
+                req.x = msg.describe.x;
+                req.y = msg.describe.y;
+                req.w = msg.describe.w;
+                s->describe_pending = req;
             }
             break;
         case mp_control_kind::bye:
@@ -241,6 +276,11 @@ void mp_server_input_reset_for_test()
     // Clear pending resize on the active session if there is one.
     if( mp_session *s = mp_active_session() ) {
         s->pending_resize.reset();
+        // The hover feed's per-seat state dies with the test's world, exactly
+        // as leaving the UI clears it: a stale request or interval must not
+        // leak into the next case.
+        s->describe_pending.reset();
+        s->describe_last = {};
     }
 }
 
@@ -296,6 +336,17 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
                 remaining = 0;
             }
         }
+        // The hover feed's own deadline: a request that is due must be built
+        // by the caller's next flush, so the wait may not sleep past the
+        // interval even when the caller asked for longer. It only ever
+        // shortens the caller's budget, never extends it -- a seat that lost
+        // its clock must not turn a brief wait into a long one.
+        if( s && s->describe_pending ) {
+            const int until_due = static_cast<int>( describe_time_left( *s ).count() );
+            if( remaining < 0 || until_due < remaining ) {
+                remaining = until_due;
+            }
+        }
         const std::optional<std::vector<uint8_t>> msg = t->recv( remaining );
         if( !msg ) {
             // Either the wait expired or the transport went away; both read as
@@ -315,6 +366,13 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
             // size -- staring at nothing until the player pressed a key.
             // Input wins the race above, so waking this way never drops a
             // keystroke; the request stays recorded for the backend to take.
+            return make_timeout_event();
+        }
+        if( s && s->describe_pending && describe_time_left( *s ).count() == 0 ) {
+            // The hover answer is due and the caller's flush builds it under
+            // the baton. Waking rather than answering keeps game state out of
+            // this path; input and a resize above still win this wake, so a
+            // keystroke that arrived with the request is never delayed.
             return make_timeout_event();
         }
     }

@@ -1,29 +1,36 @@
 #include "cata_catch.h"
 
 #if defined(MP_SERVER)
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "avatar.h"
+#include "cursesdef.h"
 #include "game.h"
 #include "game_constants.h"
 #include "game_test_helper.h"
 #include "input_enums.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_context.h"
+#include "mp/mp_describe.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_server_input.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_turn.h"
 #include "mp/mp_session.h"
 #include "cata_scope_helpers.h"
 #include "input.h"
+#include "player_helpers.h"
 
 // Server input lives in the active player context (its input_queue), so every
 // test must set one before any input call or reset. Static, not a stack local,
@@ -83,6 +90,91 @@ static void set_test_transport( std::shared_ptr<mp_transport> transport )
     s->transport = std::move( transport );
     s->context_index = 0;
     mp_sessions().push_back( std::move( s ) );
+}
+
+// The client-visible frames of one flush, in wire order.
+struct io_frame {
+    mp_msg_kind kind = mp_msg_kind::control;
+    std::vector<uint8_t> body;
+};
+
+static std::vector<io_frame> drain_frames( mp_transport &client )
+{
+    std::vector<io_frame> frames;
+    while( const std::optional<std::vector<uint8_t>> payload = client.recv( 0 ) ) {
+        io_frame frame;
+        REQUIRE( mp_unwrap( *payload, frame.kind, frame.body ) );
+        frames.push_back( std::move( frame ) );
+    }
+    return frames;
+}
+
+// The describe replies among `frames`, in wire order. Every control frame must
+// parse; the ones of other kinds are skipped.
+static std::vector<mp_describe_msg> describe_replies( const std::vector<io_frame> &frames )
+{
+    std::vector<mp_describe_msg> replies;
+    for( const io_frame &frame : frames ) {
+        if( frame.kind != mp_msg_kind::control ) {
+            continue;
+        }
+        mp_control msg;
+        REQUIRE( mp_control_from_json( std::string( frame.body.begin(), frame.body.end() ), msg ) );
+        if( msg.kind == mp_control_kind::describe ) {
+            replies.push_back( msg.describe );
+        }
+    }
+    return replies;
+}
+
+static mp_control describe_request( const uint32_t seq, const int x, const int y, const int w )
+{
+    mp_control msg;
+    msg.kind = mp_control_kind::describe;
+    msg.describe.seq = seq;
+    msg.describe.x = static_cast<uint16_t>( x );
+    msg.describe.y = static_cast<uint16_t>( y );
+    msg.describe.w = static_cast<uint16_t>( w );
+    return msg;
+}
+
+// A loopback client whose seat negotiated `caps` and entered the in-game UI.
+// The seat is the active one (context 0), so mp_server_pump() and the flush
+// both address it.
+struct describe_seat {
+    std::shared_ptr<mp_transport> client;
+    mp_session *session = nullptr;
+};
+
+static describe_seat prepare_describe_seat( const uint32_t caps = MP_CAP_DESCRIBE )
+{
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    describe_seat seat;
+    seat.session = mp_active_session();
+    REQUIRE( seat.session != nullptr );
+    seat.session->caps = caps;
+    mp_session_ui_enter( *seat.session );
+    seat.client = pair.b;
+    return seat;
+}
+
+// One row of `width` cells no two neighbours of which are equal: the glyph
+// repeats every 94 columns while the foreground byte advances with x. The
+// screen codec therefore spends a whole run on every cell, and a 1000x100 full
+// redraw stays over MP_SCREEN_BACKLOG_BYTES even after the flush has dropped
+// the queued history and sent one replacement.
+static void blit_wide_backlog_row( const int y, const int width )
+{
+    std::vector<mp_cell> cells;
+    cells.reserve( static_cast<size_t>( width ) );
+    for( int x = 0; x < width; ++x ) {
+        mp_cell cell;
+        cell.ch = std::string( 1, static_cast<char>( '!' + x % 94 ) );
+        cell.fg = static_cast<uint8_t>( x % 251 );
+        cells.push_back( cell );
+    }
+    mp_server_blit_row( 0, y, cells );
 }
 
 TEST_CASE( "server_blits_a_row_into_the_screen_grid", "[mp]" )
@@ -443,6 +535,380 @@ TEST_CASE( "server_survives_a_dropped_transport", "[mp]" )
     mp_server_flush_screen();
     const input_event got = mp_server_wait_for_input( 10 );
     CHECK( got.type == input_event_t::timeout );
+}
+
+TEST_CASE( "a_describe_request_gets_an_answer_on_the_wire", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    // The epoch default already makes the request due, so the flush answers
+    // it without any further delay.
+    send_control( *seat.client, describe_request( 12, 30, 5, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+    CHECK( seat.session->describe_pending->seq == 12 );
+
+    mp_server_flush_screen();
+    CHECK_FALSE( seat.session->describe_pending );
+
+    const std::vector<io_frame> frames = drain_frames( *seat.client );
+    const std::vector<mp_describe_msg> replies = describe_replies( frames );
+    REQUIRE( replies.size() == 1 );
+    CHECK( replies[0].seq == 12 );
+    CHECK( replies[0].frame == seat.session->scene_seq );
+    CHECK( replies[0].x == 30 );
+    CHECK( replies[0].y == 5 );
+    CHECK( replies[0].w == 40 );
+    // The answer is all-or-nothing, so the lines member is on every reply even
+    // when the cell has no text.
+    bool saw_lines_member = false;
+    for( const io_frame &frame : frames ) {
+        if( frame.kind == mp_msg_kind::control ) {
+            const std::string body( frame.body.begin(), frame.body.end() );
+            if( body.find( "\"seq\":12" ) != std::string::npos ) {
+                saw_lines_member = body.find( "\"lines\"" ) != std::string::npos;
+            }
+        }
+    }
+    CHECK( saw_lines_member );
+}
+
+TEST_CASE( "a_cell_outside_the_terminal_is_still_answered", "[mp]" )
+{
+    // The dispatch stores whatever rectangle the client pointed at; only the
+    // reply decides whether it can describe anything. Dropping the request at
+    // the door would leave the client waiting for a seq that never comes.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    send_control( *seat.client, describe_request( 3, 900, 700, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+    CHECK( seat.session->describe_pending->x == 900 );
+    CHECK( seat.session->describe_pending->y == 700 );
+
+    mp_server_flush_screen();
+    const std::vector<mp_describe_msg> replies = describe_replies( drain_frames( *seat.client ) );
+    REQUIRE( replies.size() == 1 );
+    CHECK( replies[0].seq == 3 );
+    CHECK( replies[0].x == 900 );
+    CHECK( replies[0].y == 700 );
+    CHECK( replies[0].lines.empty() );
+}
+
+TEST_CASE( "a_client_without_the_describe_cap_is_not_served", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat( 0 );
+    mp_server_set_terminal_size( 40, 10 );
+
+    send_control( *seat.client, describe_request( 1, 30, 5, 40 ) );
+    mp_server_pump();
+    CHECK_FALSE( seat.session->describe_pending );
+
+    mp_server_flush_screen();
+    CHECK( describe_replies( drain_frames( *seat.client ) ).empty() );
+}
+
+TEST_CASE( "a_seat_that_left_the_ui_loses_its_describe_request", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    // Leaving the UI is the invariant, but the flush is what runs next: it
+    // must not serve a request the seat is no longer entitled to, even if the
+    // flag changed without going through mp_session_ui_leave().
+    mp_session_ui_leave( *seat.session );
+    send_control( *seat.client, describe_request( 2, 30, 5, 40 ) );
+    mp_server_pump();
+    CHECK_FALSE( seat.session->describe_pending );
+
+    seat.session->describe_pending = mp_describe_request{ 2, 30, 5, 40 };
+    mp_server_flush_screen();
+    CHECK_FALSE( seat.session->describe_pending );
+    CHECK( describe_replies( drain_frames( *seat.client ) ).empty() );
+}
+
+TEST_CASE( "the_describe_interval_gates_the_answer", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    send_control( *seat.client, describe_request( 4, 30, 5, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+
+    // An answer built at this instant closes the window: the next request
+    // waits out the interval even though it is already pending.
+    seat.session->describe_last = std::chrono::steady_clock::now();
+    mp_server_flush_screen();
+    CHECK( seat.session->describe_pending );
+    CHECK( describe_replies( drain_frames( *seat.client ) ).empty() );
+
+    seat.session->describe_last = std::chrono::steady_clock::now() -
+                                  std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS + 1 );
+    mp_server_flush_screen();
+    CHECK_FALSE( seat.session->describe_pending );
+    const std::vector<mp_describe_msg> replies = describe_replies( drain_frames( *seat.client ) );
+    REQUIRE( replies.size() == 1 );
+    CHECK( replies[0].seq == 4 );
+}
+
+TEST_CASE( "a_pending_describe_caps_the_input_wait", "[mp]" )
+{
+    // Without the cap the wait would sleep for the caller's whole budget, so
+    // an answer that is already due would sit until the player pressed a key.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    send_control( *seat.client, describe_request( 5, 30, 5, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+    seat.session->describe_last = std::chrono::steady_clock::now();
+
+    const auto start = std::chrono::steady_clock::now();
+    const input_event got = mp_server_wait_for_input( 5000 );
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start );
+
+    CHECK( got.type == input_event_t::timeout );
+    // The wait woke on the interval, not on the caller's five seconds, and it
+    // did not skip the interval either.
+    CHECK( elapsed >= std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS / 2 ) );
+    CHECK( elapsed < std::chrono::milliseconds( 1000 ) );
+    // Waking is not answering: the request survives for the caller's flush.
+    CHECK( seat.session->describe_pending );
+}
+
+TEST_CASE( "a_burst_of_describe_requests_builds_one_answer", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    for( int i = 0; i < 1000; ++i ) {
+        send_control( *seat.client, describe_request( static_cast<uint32_t>( i + 1 ), 30, 5, 40 ) );
+    }
+
+    const auto first_start = std::chrono::steady_clock::now();
+    const input_event first = mp_server_wait_for_input( 5000 );
+    const auto first_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - first_start );
+    // The first frame makes the request due at once, so the wait wakes instead
+    // of sleeping on the five-second budget.
+    CHECK( first.type == input_event_t::timeout );
+    CHECK( first_elapsed < std::chrono::milliseconds( 1000 ) );
+
+    // The caller's next pass answers the request it saw; the latest already
+    // won over the earlier ones by leaving one slot.
+    const std::chrono::steady_clock::time_point before = seat.session->describe_last;
+    mp_server_flush_screen();
+    CHECK( seat.session->describe_last > before );
+    CHECK_FALSE( seat.session->describe_pending );
+
+    // The second wait reads what is left of the burst; the interval keeps it
+    // from building another answer before it returns.
+    CHECK( mp_server_wait_for_input( 5000 ).type == input_event_t::timeout );
+
+    const std::vector<mp_describe_msg> replies = describe_replies( drain_frames( *seat.client ) );
+    REQUIRE( replies.size() == 1 );
+    CHECK( replies[0].seq == 1 );
+}
+
+TEST_CASE( "a_seat_without_the_baton_keeps_its_describe_request", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_activate_player( 0 );
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+
+    mp_sched sched( 2 );
+    mp_set_active_sched( &sched );
+    on_out_of_scope clear_sched( []() {
+        mp_set_active_sched( nullptr );
+    } );
+
+    send_control( *seat.client, describe_request( 6, 30, 5, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+    seat.session->describe_last = std::chrono::steady_clock::now() -
+                                  std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS + 1 );
+
+    // The world holds the baton: the join-loop redraw reaches the flush with
+    // this seat's context active, but it must not answer for it.
+    mp_server_flush_screen();
+    CHECK( seat.session->describe_pending );
+    CHECK( describe_replies( drain_frames( *seat.client ) ).empty() );
+
+    // The seat's own turn answers it.
+    std::thread player( [&sched]() {
+        sched.wait_for_turn( 0 );
+        mp_server_flush_screen();
+        sched.release_to( 0, mp_sched::world );
+    } );
+    sched.yield_to( mp_sched::world, 0 );
+    player.join();
+
+    CHECK_FALSE( seat.session->describe_pending );
+    const std::vector<mp_describe_msg> replies = describe_replies( drain_frames( *seat.client ) );
+    REQUIRE( replies.size() == 1 );
+    CHECK( replies[0].seq == 6 );
+}
+
+TEST_CASE( "a_backlogged_transport_drops_the_describe_request", "[mp]" )
+{
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    // A full redraw this wide cannot be folded by the codec: at six bytes a
+    // cell it stays over the backlog cap after the flush replaces the queued
+    // history with one redraw, which is what the describe block then sees.
+    mp_server_set_terminal_size( 1000, 100 );
+    for( int y = 0; y < 100; ++y ) {
+        blit_wide_backlog_row( y, 1000 );
+    }
+    mp_server_flush_screen();
+    REQUIRE( seat.session->transport->pending_bytes() > MP_SCREEN_BACKLOG_BYTES );
+
+    send_control( *seat.client, describe_request( 7, 30, 5, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+    seat.session->describe_last = std::chrono::steady_clock::now() -
+                                  std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS + 1 );
+
+    mp_server_flush_screen();
+    // The request is dropped, not deferred: a hover answer that outlived its
+    // view is worth less than the client's next question.
+    CHECK_FALSE( seat.session->describe_pending );
+    CHECK( describe_replies( drain_frames( *seat.client ) ).empty() );
+}
+
+TEST_CASE( "a_describe_answer_follows_the_scene_frame", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    mp_sync_context_count();
+    mp_activate_player( 0 );
+    // The base avatar can still be at the join-phase sentinel (z far below the
+    // map), and a scene built there has no levels. A cleared avatar is on the
+    // map at a fixed tile, which is all the scene and the cell mapping need.
+    clear_avatar();
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    test_input_ctx.ter_view_p = get_avatar_legacy().pos_bub();
+    // The scene takes its viewport from the map window, and the describe
+    // answer maps the client's cell through that same rect.
+    test_input_ctx.w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    mp_set_active_sched( nullptr );
+    mp_server_reset_for_test();
+
+    // Both blocks below read these: a scene built at a z outside the map has
+    // no levels, and a missing map window has no rect for either.
+    REQUIRE( get_avatar_legacy().posz() == 0 );
+    mp_scene_rect map_rect;
+    REQUIRE( mp_scene_mask_map_rect( map_rect ) );
+    CHECK( map_rect.w == 40 );
+    CHECK( map_rect.h == 10 );
+
+    const describe_seat seat = prepare_describe_seat( MP_CAP_SCENE | MP_CAP_DESCRIBE );
+    mp_server_set_terminal_size( 80, 24 );
+
+    send_control( *seat.client, describe_request( 21, 30, 5, 40 ) );
+    mp_server_pump();
+    REQUIRE( seat.session->describe_pending );
+    seat.session->describe_last = std::chrono::steady_clock::now() -
+                                  std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS + 1 );
+
+    // Both the scene frame and the answer need the baton: the world yields to
+    // the seat for one flush and takes it back. The flush is the whole batch,
+    // so the wire order below is the order the server produced.
+    mp_sched sched( 1 );
+    mp_set_active_sched( &sched );
+    on_out_of_scope clear_sched( []() {
+        mp_set_active_sched( nullptr );
+    } );
+    std::thread player( [&sched]() {
+        sched.wait_for_turn( 0 );
+        mp_server_flush_screen();
+        sched.release_to( 0, mp_sched::world );
+    } );
+    sched.yield_to( mp_sched::world, 0 );
+    player.join();
+
+    CHECK_FALSE( seat.session->describe_pending );
+    REQUIRE( seat.session->scene_seq == 1 );
+    const std::vector<io_frame> frames = drain_frames( *seat.client );
+    size_t screen_index = frames.size();
+    size_t scene_index = frames.size();
+    size_t describe_index = frames.size();
+    mp_describe_msg reply;
+    for( size_t i = 0; i < frames.size(); ++i ) {
+        if( frames[i].kind == mp_msg_kind::screen ) {
+            screen_index = std::min( screen_index, i );
+        }
+        if( frames[i].kind == mp_msg_kind::scene ) {
+            scene_index = std::min( scene_index, i );
+        }
+        if( frames[i].kind == mp_msg_kind::control ) {
+            mp_control msg;
+            REQUIRE( mp_control_from_json( std::string( frames[i].body.begin(),
+                                          frames[i].body.end() ), msg ) );
+            if( msg.kind == mp_control_kind::describe ) {
+                describe_index = std::min( describe_index, i );
+                reply = msg.describe;
+            }
+        }
+    }
+    REQUIRE( scene_index < frames.size() );
+    REQUIRE( describe_index < frames.size() );
+    CHECK( screen_index < scene_index );
+    CHECK( scene_index < describe_index );
+    // The answer names the frame the scene block just sent, which is what lets
+    // the client discard text computed for a world it no longer draws.
+    CHECK( reply.seq == 21 );
+    CHECK( reply.frame == 1 );
+    CHECK( reply.x == 30 );
+    CHECK( reply.y == 5 );
+    CHECK( reply.w == 40 );
+
+    test_input_ctx.w_terrain = catacurses::window();
 }
 
 TEST_CASE( "handshake_accepts_a_matching_protocol_version", "[mp]" )

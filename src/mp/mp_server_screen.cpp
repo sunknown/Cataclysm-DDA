@@ -2,6 +2,7 @@
 
 #include "mp/mp_server_screen.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <utility>
@@ -9,6 +10,7 @@
 
 #include "cached_options.h"
 #include "mp/mp_context.h"
+#include "mp/mp_describe.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_scene.h"
 #include "mp/mp_scene_codec.h"
@@ -202,6 +204,48 @@ void mp_server_flush_screen()
     // loop (which flushes under the world's baton) and the legacy path all
     // reach here and must leave without building.
     mp_server_flush_scene();
+
+    // The hover answer is last, so the client draws it over the scene it
+    // names: `frame` is this seat's scene sequence as it stands after the
+    // scene block above. A seat that left the UI, lost the capability, or
+    // never had it loses the request here rather than being served text for a
+    // screen it is not looking at.
+    if( !mp_session_can_describe( *s ) ) {
+        s->describe_pending.reset();
+        return;
+    }
+    if( !s->describe_pending ) {
+        return;
+    }
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::time_point due = s->describe_last +
+            std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS );
+    mp_sched *const sched = mp_active_sched();
+    // The interval is what stops a peer from driving the build rate: a hover
+    // that arrives while the previous answer is fresh waits for the next
+    // flush. The baton check is the same one the scene flush uses -- the join
+    // loop and the world phase draw for a seat that is not entitled to run.
+    if( now < due || ( sched != nullptr && !sched->holds( s->context_index ) ) ) {
+        return;
+    }
+    if( t->pending_bytes() > MP_SCREEN_BACKLOG_BYTES ) {
+        // The peer is not draining its socket. A hover answer is a snapshot of
+        // the instant the pointer rested, so replaying it after the client
+        // catches up would describe a view that is already gone. The request
+        // is dropped rather than deferred; the client asks again on its next
+        // hover, and its latest request is the only one either way.
+        s->describe_pending.reset();
+        return;
+    }
+    const mp_describe_request req = *s->describe_pending;
+    s->describe_pending.reset();
+    s->describe_last = now;
+    mp_control msg;
+    msg.kind = mp_control_kind::describe;
+    msg.describe = mp_describe_reply( req.seq, s->scene_seq, req.x, req.y, req.w );
+    const std::string json = mp_control_to_json( msg );
+    t->send( mp_wrap( mp_msg_kind::control,
+                      std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
 void mp_server_flush_scene()
