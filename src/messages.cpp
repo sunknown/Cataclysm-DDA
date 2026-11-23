@@ -49,6 +49,11 @@ namespace
 
 struct game_message {
     std::string       message;
+    // The acting player's stable character name and the display name frozen at
+    // add time, plus the third-person form with the <npcname> placeholder.
+    std::string       actor_id;
+    std::string       actor_display;
+    std::string       other_message;
     time_point timestamp_in_turns = calendar::turn_zero;
     int               timestamp_in_user_actions = 0; // NOLINT(cata-serialize)
     int               count = 1;
@@ -70,12 +75,16 @@ struct game_message {
         return timestamp_in_turns;
     }
 
-    std::string get_with_count() const {
+    std::string get_with_count( const std::string &text ) const {
         if( count <= 1 ) {
-            return message;
+            return text;
         }
         //~ Message %s on the message log was repeated %d times, e.g. "You hear a whack! x 12"
-        return string_format( _( "%s x %d" ), message, count );
+        return string_format( _( "%s x %d" ), text, count );
+    }
+
+    std::string get_with_count() const {
+        return get_with_count( message );
     }
 
     /** Get whether or not a message should not be displayed (hidden) in the side bar because it's in a cooldown period.
@@ -112,6 +121,9 @@ struct game_message {
         message = obj.get_string( "message" );
         count = obj.get_int( "count" );
         type = static_cast<game_message_type>( obj.get_int( "type" ) );
+        obj.read( "actor_id", actor_id );
+        obj.read( "actor_display", actor_display );
+        obj.read( "other", other_message );
     }
 
     void serialize( JsonOut &jsout ) const {
@@ -120,6 +132,9 @@ struct game_message {
         jsout.member( "message", message );
         jsout.member( "count", count );
         jsout.member( "type", static_cast<int>( type ) );
+        jsout.member( "actor_id", actor_id );
+        jsout.member( "actor_display", actor_display );
+        jsout.member( "other", other_message );
         jsout.end_object();
     }
 };
@@ -151,14 +166,15 @@ class messages_impl
                 return false;
             }
 
-            if( m.type != last_msg.type || m.message != last_msg.message ) {
+            if( m.type != last_msg.type || m.message != last_msg.message ||
+                m.other_message != last_msg.other_message || m.actor_id != last_msg.actor_id ) {
                 return false;
             }
 
             // update the cooldown message timer due to coalescing
             const auto cooldown_it = std::find_if( cooldown_templates.begin(), cooldown_templates.end(),
             [&m]( game_message & am ) -> bool {
-                return m.message == am.message;
+                return m.message == am.message && m.actor_id == am.actor_id;
             } );
             if( cooldown_it != cooldown_templates.end() ) {
                 cooldown_it->timestamp_in_turns = calendar::turn;
@@ -210,6 +226,44 @@ class messages_impl
             messages.emplace_back( m );
         }
 
+        // A player action with the actor's two forms. The primary text is for
+        // the acting seat; the other form keeps <npcname> for the other seats.
+        void add_msg_pair( std::string &&player, std::string &&npc,
+                           const std::string &actor_id, const std::string &actor_display,
+                           const game_message_params &params ) {
+            if( player.empty() || !active ) {
+                return;
+            }
+
+            if( params.type == m_debug && !debug_mode ) {
+                return;
+            }
+
+            modify_msg_with_exclamations( player, params.type );
+            if( !npc.empty() ) {
+                modify_msg_with_exclamations( npc, params.type );
+            }
+
+            game_message m = game_message( std::move( player ), params.type );
+            m.other_message = std::move( npc );
+            m.actor_id = actor_id;
+            m.actor_display = actor_display;
+
+            refresh_cooldown( m, params.flags );
+            hide_message_in_cooldown( m );
+
+            if( coalesce_messages( m ) ) {
+                return;
+            }
+
+            unsigned int message_limit = get_option<int>( "MESSAGE_LIMIT" );
+            while( messages.size() > message_limit ) {
+                messages.pop_front();
+            }
+
+            messages.emplace_back( std::move( m ) );
+        }
+
         /** Check if the current message needs to be prevented (hidden) or not from being displayed in the side bar.
          * @param message The message to be checked.
          */
@@ -224,7 +278,8 @@ class messages_impl
             // If there is one, this means the same message was already displayed.
             const auto cooldown_it = std::find_if( cooldown_templates.begin(), cooldown_templates.end(),
             [&message]( game_message & m_cooldown ) -> bool {
-                return m_cooldown.message == message.message;
+                return m_cooldown.message == message.message &&
+                       m_cooldown.actor_id == message.actor_id;
             } );
             if( cooldown_it == cooldown_templates.end() ) {
                 // nothing found, not in cooldown.
@@ -410,7 +465,8 @@ class messages_impl
             // If it's not we must put it in the cooldown queue now, otherwise just increment the number of times we have seen it.
             const auto cooldown_message_it = std::find_if( cooldown_templates.begin(),
             cooldown_templates.end(), [&message]( game_message & cooldown_message ) -> bool {
-                return cooldown_message.message == message.message;
+                return cooldown_message.message == message.message &&
+                       cooldown_message.actor_id == message.actor_id;
             } );
             if( cooldown_message_it == cooldown_templates.end() ) {
                 // push current message to cooldown message templates.
@@ -436,8 +492,12 @@ bool message_exceeds_ttl( const game_message &message )
 namespace Messages
 {
 
-std::vector<log_message> sidebar_snapshot_at( const size_t max_messages,
-        const time_point curmes, const int user_actions, const bool from_top )
+namespace
+{
+
+std::vector<log_message> sidebar_snapshot_at_viewer( const size_t max_messages,
+        const time_point curmes, const int user_actions, const bool from_top,
+        const std::string *viewer_id )
 {
     // Resolve the store first, then hand the rules to the pure builder so the
     // test binary (which links fake_messages.cpp, not this file) can pin them.
@@ -446,7 +506,10 @@ std::vector<log_message> sidebar_snapshot_at( const size_t max_messages,
     for( auto it = player_messages.messages.rbegin();
          it != player_messages.messages.rend(); ++it ) {
         const game_message &m = *it;
-        entries.push_back( { m.get_with_count(), m.get_color( curmes ),
+        const std::string text = viewer_id == nullptr ? m.message :
+                                 resolve_actor_text( m.message, m.other_message, m.actor_id,
+                                         m.actor_display, *viewer_id );
+        entries.push_back( { m.get_with_count( text ), m.get_color( curmes ),
                              m.is_recent( curmes ), m.is_in_cooldown(),
                              log_exceeds_ttl( m.timestamp_in_user_actions, message_ttl,
                                               user_actions ) } );
@@ -454,10 +517,25 @@ std::vector<log_message> sidebar_snapshot_at( const size_t max_messages,
     return log_snapshot_build( entries, max_messages, from_top );
 }
 
+} // namespace
+
+std::vector<log_message> sidebar_snapshot_at( const size_t max_messages,
+        const time_point curmes, const int user_actions, const bool from_top )
+{
+    return sidebar_snapshot_at_viewer( max_messages, curmes, user_actions, from_top, nullptr );
+}
+
 std::vector<log_message> sidebar_snapshot( const size_t max_messages )
 {
     return sidebar_snapshot_at( max_messages, player_messages.curmes,
                                 g->get_user_action_counter(), log_from_top );
+}
+
+std::vector<log_message> sidebar_snapshot_for( const std::string &viewer_id,
+        const size_t max_messages )
+{
+    return sidebar_snapshot_at_viewer( max_messages, player_messages.curmes,
+                                       g->get_user_action_counter(), log_from_top, &viewer_id );
 }
 
 } // namespace Messages
@@ -500,6 +578,14 @@ void Messages::add_msg( std::string msg )
 void Messages::add_msg( const game_message_params &params, std::string msg )
 {
     player_messages.add_msg_string( std::move( msg ), params );
+}
+
+void Messages::add_msg_player_or_npc( const game_message_params &params, std::string player_msg,
+                                      std::string npc_msg, const std::string &actor_id,
+                                      const std::string &actor_display )
+{
+    player_messages.add_msg_pair( std::move( player_msg ), std::move( npc_msg ), actor_id,
+                                  actor_display, params );
 }
 
 void Messages::clear_messages()

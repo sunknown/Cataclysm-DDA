@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,27 @@ class window;
  */
 
 static std::vector<std::pair<std::string, std::string>> messages;
+static std::vector<FakeMessagePair> fake_pairs;
+
+const std::vector<FakeMessagePair> &fake_message_pairs()
+{
+    return fake_pairs;
+}
+
+void clear_fake_message_pairs()
+{
+    fake_pairs.clear();
+}
+
+void Messages::add_msg_player_or_npc( const game_message_params &params, std::string player_msg,
+                                      std::string npc_msg, const std::string &actor_id,
+                                      const std::string &actor_display )
+{
+    fake_pairs.push_back( { player_msg, npc_msg, actor_id, actor_display } );
+    // The real store adds the pair to the same deque, so recent_messages and
+    // size see the player form. The fake mirrors that single-player view.
+    Messages::add_msg( params, std::move( player_msg ) );
+}
 
 std::vector<std::pair<std::string, std::string>> Messages::recent_messages( size_t )
 {
@@ -102,6 +124,21 @@ void set_fake_sidebar_snapshot( std::vector<Messages::log_message> lines )
 std::vector<Messages::log_message> Messages::sidebar_snapshot( size_t )
 {
     return sidebar_snapshot_stub;
+}
+
+static std::map<std::string, std::vector<Messages::log_message>> sidebar_snapshot_for_stub;
+
+void set_fake_sidebar_snapshot_for( const std::string &viewer_id,
+                                    std::vector<Messages::log_message> lines )
+{
+    sidebar_snapshot_for_stub[viewer_id] = std::move( lines );
+}
+
+std::vector<Messages::log_message> Messages::sidebar_snapshot_for( const std::string &viewer_id,
+        size_t )
+{
+    const auto it = sidebar_snapshot_for_stub.find( viewer_id );
+    return it == sidebar_snapshot_for_stub.end() ? sidebar_snapshot_stub : it->second;
 }
 
 std::vector<Messages::log_message> Messages::sidebar_snapshot_at( size_t, time_point, int, bool )

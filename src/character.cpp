@@ -816,9 +816,13 @@ void Character::add_msg_if_player( const std::string &msg ) const
 }
 
 void Character::add_msg_player_or_npc( const std::string &player_msg,
-                                       const std::string &/*npc_msg*/ ) const
+                                       const std::string &npc_msg ) const
 {
+#if defined(MP_SERVER)
+    Messages::add_msg_player_or_npc( m_neutral, player_msg, npc_msg, name, get_name() );
+#else
     Messages::add_msg( player_msg );
+#endif
 }
 
 void Character::add_msg_if_player( const game_message_params &params, const std::string &msg ) const
@@ -828,9 +832,13 @@ void Character::add_msg_if_player( const game_message_params &params, const std:
 
 void Character::add_msg_player_or_npc( const game_message_params &params,
                                        const std::string &player_msg,
-                                       const std::string &/*npc_msg*/ ) const
+                                       const std::string &npc_msg ) const
 {
+#if defined(MP_SERVER)
+    Messages::add_msg_player_or_npc( params, player_msg, npc_msg, name, get_name() );
+#else
     Messages::add_msg( params, player_msg );
+#endif
 }
 
 void Character::add_msg_player_or_say( const std::string &player_msg,

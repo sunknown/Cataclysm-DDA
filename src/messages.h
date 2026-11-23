@@ -31,6 +31,12 @@ std::vector<std::pair<std::string, std::string>> recent_messages( size_t count )
 bool has_debug_filter( debugmode::debug_filter type );
 void add_msg( std::string msg );
 void add_msg( const game_message_params &params, std::string msg );
+// One player action with both the acting player's and another seat's text.
+// `npc_msg` keeps the <npcname> placeholder; `actor_id` is the stable
+// character name and `actor_display` is the display name frozen at add time.
+void add_msg_player_or_npc( const game_message_params &params, std::string player_msg,
+                            std::string npc_msg, const std::string &actor_id,
+                            const std::string &actor_display );
 void clear_messages();
 void deactivate();
 // Re-enables message logging without discarding the history deactivate() left
@@ -61,6 +67,12 @@ struct log_message {
 // message past the TTL stops the scan, and a cooldown-hidden message is skipped
 // only when the log flows downwards. Reads `curmes`; never advances it.
 std::vector<log_message> sidebar_snapshot( size_t max_messages );
+
+// The same snapshot resolved for one viewer: the actor's own messages keep
+// the second-person text, another seat reads the third-person form with the
+// actor's display name. An empty viewer id is the no-actor path.
+std::vector<log_message> sidebar_snapshot_for( const std::string &viewer_id,
+        size_t max_messages );
 
 // The same snapshot with an explicit clock and user-action counter. A test seam:
 // game::user_action_counter is private, and TTL and recency need it controlled.

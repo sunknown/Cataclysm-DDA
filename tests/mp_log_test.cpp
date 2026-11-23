@@ -563,4 +563,24 @@ TEST_CASE( "resolve_actor_text", "[mp]" )
            == "Rose 'Ragtag' Williamson drops." );
 }
 
+TEST_CASE( "character_pair_records_actor", "[mp]" )
+{
+    // A local avatar: the hook only reads the names, and mutating the global
+    // one leaks the name into later [mp] cases that run in suite order.
+    avatar you;
+    you.name = "Katelynn Burdette";
+    you.play_name = "Kate";
+    clear_fake_message_pairs();
+
+    you.add_msg_player_or_npc( "You drop your rock.",
+                               "<npcname> drops their rock." );
+
+    REQUIRE( fake_message_pairs().size() == 1 );
+    const FakeMessagePair &pair = fake_message_pairs().front();
+    CHECK( pair.player == "You drop your rock." );
+    CHECK( pair.npc == "<npcname> drops their rock." );
+    CHECK( pair.actor_id == "Katelynn Burdette" );
+    CHECK( pair.actor_display == "Kate" );
+}
+
 #endif // MP_SERVER
