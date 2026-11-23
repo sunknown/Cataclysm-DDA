@@ -34,7 +34,8 @@ bool mp_native_log_panel_enabled();
 // Messages::sidebar_snapshot(200): palette bytes, the rect/UI/flow fields, and
 // the wire limits. Never empty; a client that did not ask for the log never
 // calls this.
-std::string mp_log_body( bool from_top, bool ui, const mp_scene_rect &rect, uint32_t seq );
+std::string mp_log_body( bool from_top, bool ui, const mp_scene_rect &rect, uint32_t seq,
+                         const std::string &viewer_id );
 
 // FNV-1a 64 over the body with the digits after "seq": replaced by nothing, so
 // an unchanged log hashes equal across sequence numbers.

@@ -13,6 +13,7 @@
 
 #include "activity_actor_definitions.h"
 #include "auto_pickup.h"
+#include "avatar.h"
 #include "character.h"
 #include "contents_change_handler.h"
 #include "debug.h"
@@ -58,13 +59,21 @@ static void show_pickup_message( const PickupMap &mapPickup )
 {
     for( const auto &entry : mapPickup ) {
         if( entry.second.first.invlet != 0 ) {
-            add_msg( _( "You pick up: %d %s [%c]" ), entry.second.second,
-                     entry.second.first.display_name( entry.second.second ), entry.second.first.invlet );
+            get_avatar().add_msg_player_or_npc(
+                _( "You pick up: %d %s [%c]" ),
+                _( "<npcname> picks up: %d %s [%c]" ),
+                entry.second.second, entry.second.first.display_name( entry.second.second ),
+                entry.second.first.invlet );
         } else if( entry.second.first.count_by_charges() ) {
-            add_msg( _( "You pick up: %s" ), entry.second.first.display_name( entry.second.second ) );
+            get_avatar().add_msg_player_or_npc(
+                _( "You pick up: %s" ),
+                _( "<npcname> picks up: %s" ),
+                entry.second.first.display_name( entry.second.second ) );
         } else {
-            add_msg( _( "You pick up: %d %s" ), entry.second.second,
-                     entry.second.first.display_name( entry.second.second ) );
+            get_avatar().add_msg_player_or_npc(
+                _( "You pick up: %d %s" ),
+                _( "<npcname> picks up: %d %s" ),
+                entry.second.second, entry.second.first.display_name( entry.second.second ) );
         }
     }
 }

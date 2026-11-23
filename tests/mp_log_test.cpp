@@ -273,7 +273,7 @@ TEST_CASE( "mp_log_body", "[mp]" )
     set_fake_sidebar_snapshot( { first, second } );
 
     const mp_scene_rect rect{ 134, 2, 26, 33 };
-    const std::string body = mp_log_body( false, true, rect, 7 );
+    const std::string body = mp_log_body( false, true, rect, 7, "" );
 
     mp_control got;
     REQUIRE( mp_control_from_json( body, got ) );
@@ -303,14 +303,14 @@ TEST_CASE( "mp_log_hash", "[mp]" )
     set_fake_sidebar_snapshot( { line } );
 
     const mp_scene_rect rect{ 0, 0, 0, 0 };
-    const std::string first = mp_log_body( false, true, rect, 1 );
-    const std::string second = mp_log_body( false, true, rect, 2 );
+    const std::string first = mp_log_body( false, true, rect, 1, "" );
+    const std::string second = mp_log_body( false, true, rect, 2, "" );
     CHECK( first != second );
     CHECK( mp_log_hash( first ) == mp_log_hash( second ) );
 
     line.runs[0].text = "changed";
     set_fake_sidebar_snapshot( { line } );
-    CHECK( mp_log_hash( first ) != mp_log_hash( mp_log_body( false, true, rect, 1 ) ) );
+    CHECK( mp_log_hash( first ) != mp_log_hash( mp_log_body( false, true, rect, 1, "" ) ) );
 }
 
 TEST_CASE( "mp_log_body_caps", "[mp]" )
@@ -327,7 +327,7 @@ TEST_CASE( "mp_log_body_caps", "[mp]" )
         set_fake_sidebar_snapshot( std::move( lines ) );
 
         mp_control got;
-        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1 ), got ) );
+        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1, "" ), got ) );
         CHECK( got.log.lines.size() == 200 );
         CHECK( got.log.lines[0].runs[0].text == "0" );
     }
@@ -340,7 +340,7 @@ TEST_CASE( "mp_log_body_caps", "[mp]" )
         set_fake_sidebar_snapshot( { line } );
 
         mp_control got;
-        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1 ), got ) );
+        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1, "" ), got ) );
         REQUIRE( got.log.lines.size() == 1 );
         REQUIRE( got.log.lines[0].runs.size() == 256 );
         CHECK( got.log.lines[0].runs.back().text == "255256" );
@@ -354,7 +354,7 @@ TEST_CASE( "mp_log_body_caps", "[mp]" )
         set_fake_sidebar_snapshot( { line } );
 
         mp_control got;
-        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1 ), got ) );
+        REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 1, "" ), got ) );
         REQUIRE( got.log.lines.size() == 1 );
         REQUIRE( got.log.lines[0].runs.size() == 1 );
         CHECK( got.log.lines[0].runs[0].text.size() == 65535 );
@@ -581,6 +581,36 @@ TEST_CASE( "character_pair_records_actor", "[mp]" )
     CHECK( pair.npc == "<npcname> drops their rock." );
     CHECK( pair.actor_id == "Katelynn Burdette" );
     CHECK( pair.actor_display == "Kate" );
+}
+
+TEST_CASE( "mp_log_body_uses_viewer", "[mp]" )
+{
+    Messages::log_message actor_line;
+    actor_line.runs.push_back( { "You drop your rock.", c_white } );
+    Messages::log_message other_line;
+    other_line.runs.push_back( { "Katelynn drops their rock.", c_white } );
+    set_fake_sidebar_snapshot_for( "Katelynn Burdette", { actor_line } );
+    set_fake_sidebar_snapshot_for( "Emory Mullen", { other_line } );
+
+    const mp_scene_rect rect{ 0, 0, 40, 20 };
+    mp_control actor;
+    REQUIRE( mp_control_from_json(
+        mp_log_body( false, true, rect, 1, "Katelynn Burdette" ), actor ) );
+    REQUIRE( actor.log.lines.size() == 1 );
+    CHECK( actor.log.lines[0].runs[0].text == "You drop your rock." );
+
+    mp_control other;
+    REQUIRE( mp_control_from_json(
+        mp_log_body( false, true, rect, 2, "Emory Mullen" ), other ) );
+    REQUIRE( other.log.lines.size() == 1 );
+    CHECK( other.log.lines[0].runs[0].text == "Katelynn drops their rock." );
+
+    // No placed character: the empty viewer id uses the default stub.
+    set_fake_sidebar_snapshot( { actor_line } );
+    mp_control empty;
+    REQUIRE( mp_control_from_json( mp_log_body( false, true, rect, 3, "" ), empty ) );
+    REQUIRE( empty.log.lines.size() == 1 );
+    CHECK( empty.log.lines[0].runs[0].text == "You drop your rock." );
 }
 
 #endif // MP_SERVER

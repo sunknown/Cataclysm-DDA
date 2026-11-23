@@ -88,7 +88,7 @@ std::string utf8_truncate( const std::string &text, const size_t limit )
 } // namespace
 
 std::string mp_log_body( const bool from_top, const bool ui, const mp_scene_rect &rect,
-                         const uint32_t seq )
+                         const uint32_t seq, const std::string &viewer_id )
 {
     mp_control message;
     message.kind = mp_control_kind::log;
@@ -101,7 +101,8 @@ std::string mp_log_body( const bool from_top, const bool ui, const mp_scene_rect
     message.log.top = from_top;
 
     size_t text_bytes = 0;
-    for( const Messages::log_message &line : Messages::sidebar_snapshot( log_max_lines ) ) {
+    for( const Messages::log_message &line :
+         Messages::sidebar_snapshot_for( viewer_id, log_max_lines ) ) {
         if( message.log.lines.size() >= log_max_lines ) {
             break;
         }

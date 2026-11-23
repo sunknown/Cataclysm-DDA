@@ -8,7 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "avatar.h"
 #include "cached_options.h"
+#include "game.h"
 #include "mp/mp_context.h"
 #include "mp/mp_describe.h"
 #include "mp/mp_protocol.h"
@@ -187,8 +189,11 @@ void mp_server_flush_screen()
         if( !mp_native_log_panel_enabled() || !mp_native_log_source_rect( log_rect ) ) {
             log_rect = {};
         }
+        // The stable character name is the viewer identity. A blank slot in
+        // the join menu has an empty name, which is the primary-text path.
+        const std::string viewer_id = g->player_at( s->context_index ).name;
         const std::string body = mp_log_body( log_from_top, mp_session_ui_active( *s ),
-                                              log_rect, s->log_seq + 1 );
+                                              log_rect, s->log_seq + 1, viewer_id );
         const uint64_t hash = mp_log_hash( body );
         if( !s->log_sent_once || hash != s->log_hash ) {
             s->log_seq++;
