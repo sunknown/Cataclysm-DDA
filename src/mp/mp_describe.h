@@ -39,6 +39,16 @@ std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
 // the MP_SERVER build.
 #if defined( MP_SERVER )
 std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, int width );
+
+// Builds the answer envelope for one hover request. `cell_x` and `cell_y` are
+// absolute terminal cells; the active context's map window decides which of
+// them exist, and `width` is clamped to
+// [MP_DESCRIBE_MIN_WIDTH, MP_DESCRIBE_MAX_WIDTH] before it reaches `w` and the
+// renderer. Every failure -- no game, no context, no map window, a cell
+// outside it, or a tile outside the map -- returns the same envelope with
+// empty `lines`, so the client always gets an answer for its latest seq.
+mp_describe_msg mp_describe_reply( uint32_t seq, uint32_t frame,
+                                   int cell_x, int cell_y, int width );
 #endif
 
 #endif // CATA_SRC_MP_MP_DESCRIBE_H

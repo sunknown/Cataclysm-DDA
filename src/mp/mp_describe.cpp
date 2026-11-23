@@ -1,6 +1,7 @@
 #include "mp/mp_describe.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -8,6 +9,9 @@
 #include "cursesdef.h"
 #if defined( MP_SERVER )
 #include "cursesport.h"
+#include "mp/mp_context.h"
+#include "mp/mp_scene.h"
+#include "mp/mp_server_mask.h"
 #endif
 #include "game.h"
 #include "map.h"
@@ -206,5 +210,46 @@ std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, const i
     }
 
     return mp_describe_extract( cells, width, MP_DESCRIBE_MAX_LINES );
+}
+
+mp_describe_msg mp_describe_reply( const uint32_t seq, const uint32_t frame,
+                                   const int cell_x, const int cell_y, const int width )
+{
+    mp_describe_msg msg;
+    msg.seq = seq;
+    msg.frame = frame;
+    msg.x = static_cast<uint16_t>( cell_x );
+    msg.y = static_cast<uint16_t>( cell_y );
+    // The effective width reaches `w` before any check, so a failed answer
+    // still reports the size the client would have drawn. The renderer below
+    // gets the same value rather than the raw request.
+    const int effective_width = std::clamp( width, MP_DESCRIBE_MIN_WIDTH,
+                              MP_DESCRIBE_MAX_WIDTH );
+    msg.w = static_cast<uint16_t>( effective_width );
+
+    if( g == nullptr ) {
+        return msg;
+    }
+    const player_context *const ctx = mp_active_context_ptr();
+    if( ctx == nullptr ) {
+        return msg;
+    }
+    // The live map window, never a cached rect, decides which cells exist. A
+    // resize between the request and this call leaves the answer empty rather
+    // than describing a cell the client cannot point at.
+    mp_scene_rect rect;
+    if( !mp_scene_mask_map_rect( rect ) || rect.w == 0 || rect.h == 0 ) {
+        return msg;
+    }
+    const std::optional<tripoint_bub_ms> tile =
+        mp_scene_tile_at( rect, ctx->ter_view_p, cell_x, cell_y );
+    if( !tile ) {
+        return msg;
+    }
+    if( !get_map().inbounds( *tile ) ) {
+        return msg;
+    }
+    msg.lines = mp_describe_lines( *tile, effective_width );
+    return msg;
 }
 #endif // MP_SERVER

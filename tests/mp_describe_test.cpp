@@ -324,4 +324,87 @@ TEST_CASE( "mp_describe_lines_renders_a_tile", "[mp]" )
     }
 }
 
+// Phase 4b-2: every hover request gets an answer, even a failed one. The
+// envelope carries the request's identity and the effective width, and only
+// the text differs between a described tile and a rejected cell.
+TEST_CASE( "mp_describe_reply_fills_the_envelope", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map_for_describe();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    // The hovered cell maps to the view centre, so the avatar's own tile is
+    // described and no sight test can turn the answer into an empty one.
+    const tripoint_bub_ms view_centre( 20, 5, 0 );
+    const tripoint_bub_ms previous_pos = you.pos_bub();
+    you.setpos( here, view_centre, false );
+    // The lightmap is only rebuilt when asked, so a bare move would leave the
+    // new tile's light at its previous value and the tile would read as
+    // unseen. build_test_map() deliberately skips the lightmap, so build it
+    // here at the day time set above.
+    here.invalidate_map_cache( 0 );
+    here.build_map_cache( 0, false );
+    here.invalidate_visibility_cache();
+    here.update_visibility_cache( you.posz() );
+
+    player_context ctx;
+    ctx.slot_index = 0;
+    mp_set_active_context( &ctx );
+    ctx.w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    ctx.ter_view_p = view_centre;
+
+    SECTION( "a cell inside the map window describes its tile" ) {
+        const mp_describe_msg msg = mp_describe_reply( 7, 42, 30, 5, 40 );
+        CHECK( msg.seq == 7 );
+        CHECK( msg.frame == 42 );
+        CHECK( msg.x == 30 );
+        CHECK( msg.y == 5 );
+        CHECK( msg.w == 40 );
+        REQUIRE_FALSE( msg.lines.empty() );
+
+        std::string text;
+        for( const mp_log_line &line : msg.lines ) {
+            text += run_text( line );
+        }
+        CHECK( text.find( "Pavement" ) != std::string::npos );
+    }
+
+    SECTION( "a cell outside the map window keeps the envelope" ) {
+        const mp_describe_msg msg = mp_describe_reply( 8, 43, 9, 0, 40 );
+        CHECK( msg.seq == 8 );
+        CHECK( msg.frame == 43 );
+        CHECK( msg.x == 9 );
+        CHECK( msg.y == 0 );
+        CHECK( msg.w == 40 );
+        CHECK( msg.lines.empty() );
+    }
+
+    SECTION( "the width is clamped to the supported range" ) {
+        const mp_describe_msg narrow = mp_describe_reply( 9, 44, 30, 5, 5 );
+        CHECK( narrow.w == MP_DESCRIBE_MIN_WIDTH );
+        CHECK_FALSE( narrow.lines.empty() );
+
+        const mp_describe_msg wide = mp_describe_reply( 10, 45, 30, 5, 500 );
+        CHECK( wide.w == MP_DESCRIBE_MAX_WIDTH );
+        CHECK_FALSE( wide.lines.empty() );
+    }
+
+    SECTION( "no map window yields an empty answer" ) {
+        ctx.w_terrain = catacurses::window();
+        const mp_describe_msg msg = mp_describe_reply( 11, 46, 30, 5, 40 );
+        CHECK( msg.seq == 11 );
+        CHECK( msg.frame == 46 );
+        CHECK( msg.x == 30 );
+        CHECK( msg.y == 5 );
+        CHECK( msg.w == 40 );
+        CHECK( msg.lines.empty() );
+    }
+
+    // Other co-op tests share the world; the next case starts from the
+    // position this one found rather than the one it needed to see a tile.
+    you.setpos( here, previous_pos, false );
+}
+
 #endif // MP_SERVER
