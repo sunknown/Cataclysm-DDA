@@ -6,7 +6,9 @@
 #include <vector>
 
 #include "cursesdef.h"
+#if defined( MP_SERVER )
 #include "cursesport.h"
+#endif
 #include "game.h"
 #include "map.h"
 #include "point.h"
@@ -165,6 +167,7 @@ std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
     return lines;
 }
 
+#if defined( MP_SERVER )
 std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, const int width )
 {
     std::vector<mp_log_line> lines;
@@ -204,3 +207,4 @@ std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, const i
 
     return mp_describe_extract( cells, width, MP_DESCRIBE_MAX_LINES );
 }
+#endif // MP_SERVER

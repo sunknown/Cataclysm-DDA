@@ -291,9 +291,13 @@ TEST_CASE( "mp_describe_lines_renders_a_tile", "[mp]" )
 
     const tripoint_bub_ms tile = you.pos_bub();
 
-    // The active seat owns a map window and a view centre; neither is used by
-    // the render itself, but a describe request arrives from such a seat.
-    player_context &ctx = mp_active_context();
+    // A local context owns the map window and view centre; only the pointer is
+    // installed, and restore_active_state puts the previous pointer back. The
+    // scratch window therefore cannot leak into the shared context or later
+    // cases.
+    player_context ctx;
+    ctx.slot_index = 0;
+    mp_set_active_context( &ctx );
     ctx.w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
     ctx.ter_view_p = tile;
 
@@ -314,6 +318,9 @@ TEST_CASE( "mp_describe_lines_renders_a_tile", "[mp]" )
             }
         }
         CHECK_FALSE( text.empty() );
+        // The rendered tile is pinned: a function that described some other
+        // tile would not produce this terrain name.
+        CHECK( text.find( "Pavement" ) != std::string::npos );
     }
 }
 

@@ -34,6 +34,11 @@ std::vector<mp_log_line> mp_describe_extract( const std::vector<mp_cell> &cells,
 // columns wide and returns it as describe lines. The caller clamps `width`;
 // this function does not. A scratch window that cannot be created yields no
 // lines, so a failed render can never crash the request path.
+//
+// Server-only: the in-memory curses window and its cell accessor exist only in
+// the MP_SERVER build.
+#if defined( MP_SERVER )
 std::vector<mp_log_line> mp_describe_lines( const tripoint_bub_ms &tile, int width );
+#endif
 
 #endif // CATA_SRC_MP_MP_DESCRIBE_H
