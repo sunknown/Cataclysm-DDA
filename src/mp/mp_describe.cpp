@@ -244,6 +244,17 @@ mp_describe_msg mp_describe_reply( const uint32_t seq, const uint32_t frame,
     if( !get_map().inbounds( *tile ) ) {
         return msg;
     }
+    map &here = get_map();
+    // A hover can be answered before the active seat's own draw has rebuilt the
+    // shared visibility state. Activating a seat and the world half of a turn
+    // only mark it dirty; until it is rebuilt, apparent_light_at() still reads
+    // the previous activation's fog and vision threshold, and a tile this
+    // player can see comes back as "Unseen.". The dirty flag bounds the
+    // rebuild to once per activation, not once per hover.
+    if( here.get_visibility_variables_cache().visibility_cache_dirty ) {
+        here.build_map_cache( ctx->ter_view_p.z(), true );
+        here.update_visibility_cache( ctx->ter_view_p.z() );
+    }
     msg.lines = mp_describe_lines( *tile, effective_width );
     return msg;
 }

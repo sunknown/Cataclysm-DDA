@@ -371,6 +371,21 @@ TEST_CASE( "mp_describe_reply_fills_the_envelope", "[mp]" )
         CHECK( text.find( "Pavement" ) != std::string::npos );
     }
 
+    SECTION( "a visible neighbouring tile is not Unseen" ) {
+        // The hovered cell is three tiles east of the avatar, open pavement in
+        // daylight. Looking around there shows its terrain, so a hover must
+        // describe the same tile rather than fall back to "Unseen.".
+        const mp_describe_msg msg = mp_describe_reply( 13, 48, 33, 5, 40 );
+        REQUIRE_FALSE( msg.lines.empty() );
+
+        std::string text;
+        for( const mp_log_line &line : msg.lines ) {
+            text += run_text( line );
+        }
+        CHECK( text.find( "Unseen" ) == std::string::npos );
+        CHECK( text.find( "Pavement" ) != std::string::npos );
+    }
+
     SECTION( "a cell outside the map window keeps the envelope" ) {
         const mp_describe_msg msg = mp_describe_reply( 8, 43, 9, 0, 40 );
         CHECK( msg.seq == 8 );
@@ -404,6 +419,62 @@ TEST_CASE( "mp_describe_reply_fills_the_envelope", "[mp]" )
 
     // Other co-op tests share the world; the next case starts from the
     // position this one found rather than the one it needed to see a tile.
+    you.setpos( here, previous_pos, false );
+}
+
+// Phase 4b-2: a hover can be answered before the active seat's own draw has
+// rebuilt the shared visibility state. Activating a seat and the world half of
+// a turn only mark it dirty; a stale cache from the previous activation made
+// every tile but the avatar's own come back as "Unseen.". The answer must be
+// built from the seat that asked.
+TEST_CASE( "mp_describe_refreshes_stale_visibility", "[mp]" )
+{
+    restore_active_state restore;
+    stand_on_a_cleared_map_for_describe();
+    map &here = get_map();
+    avatar &you = get_avatar_legacy();
+    set_time_to_day();
+
+    const tripoint_bub_ms previous_pos = you.pos_bub();
+    const tripoint_bub_ms first( 20, 5, 0 );
+    // Far enough that the previous seat's fog does not reach it: an open
+    // pavement map lets a FOV see about 60 tiles.
+    const tripoint_bub_ms seat( 100, 100, 0 );
+
+    // Build the caches for one position, then take the second seat.
+    you.setpos( here, first, false );
+    here.invalidate_map_cache( 0 );
+    here.build_map_cache( 0, false );
+    here.invalidate_visibility_cache();
+    here.update_visibility_cache( you.posz() );
+
+    // Seat activation moves the avatar and marks the shared visibility state
+    // dirty; no draw has run for the new position yet.
+    you.setpos( here, seat, false );
+    here.invalidate_visibility_cache();
+
+    const visibility_variables &vc = here.get_visibility_variables_cache();
+    CHECK( here.access_cache( 0 ).seen_cache[seat.x()][seat.y()] == 0.0f );
+    CHECK( here.apparent_light_at( seat, vc ) == lit_level::BLANK );
+
+    player_context ctx;
+    ctx.slot_index = 0;
+    mp_set_active_context( &ctx );
+    ctx.w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    ctx.ter_view_p = seat;
+
+    // Cell (30, 5) maps to the view centre, i.e. the avatar's own tile at the
+    // new seat. With the previous seat's fog it reads as unseen.
+    const mp_describe_msg msg = mp_describe_reply( 14, 49, 30, 5, 40 );
+    REQUIRE_FALSE( msg.lines.empty() );
+
+    std::string text;
+    for( const mp_log_line &line : msg.lines ) {
+        text += run_text( line );
+    }
+    CHECK( text.find( "Unseen" ) == std::string::npos );
+    CHECK( text.find( "Pavement" ) != std::string::npos );
+
     you.setpos( here, previous_pos, false );
 }
 
