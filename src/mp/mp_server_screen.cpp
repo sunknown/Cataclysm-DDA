@@ -21,6 +21,7 @@
 #include "mp/mp_session.h"
 #include "mp/mp_session_ui.h"
 #include "mp/mp_log.h"
+#include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
 #include "mp/mp_server_mask.h"
 #include "mp/mp_transport.h"
@@ -214,23 +215,24 @@ void mp_server_flush_screen()
     // names: `frame` is this seat's scene sequence as it stands after the
     // scene block above. A seat that left the UI, lost the capability, or
     // never had it loses the request here rather than being served text for a
-    // screen it is not looking at.
+    // screen it is not looking at. Every read and write of the pending request
+    // and the interval goes through the input module's locked helpers: the
+    // world thread dispatches a hover under the same lock, so touching the
+    // fields bare here would be a data race.
     if( !mp_session_can_describe( *s ) ) {
-        s->describe_pending.reset();
+        mp_server_describe_drop_pending( *s );
         return;
     }
-    if( !s->describe_pending ) {
+    if( !mp_server_describe_pending_due( *s ) ) {
+        // Nothing asked, or the previous answer is still inside the interval
+        // that stops a peer from driving the build rate. The request stays
+        // pending for a later flush.
         return;
     }
-    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-    const std::chrono::steady_clock::time_point due = s->describe_last +
-            std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS );
     mp_sched *const sched = mp_active_sched();
-    // The interval is what stops a peer from driving the build rate: a hover
-    // that arrives while the previous answer is fresh waits for the next
-    // flush. The baton check is the same one the scene flush uses -- the join
+    // The baton check is the same one the scene flush uses -- the join
     // loop and the world phase draw for a seat that is not entitled to run.
-    if( now < due || ( sched != nullptr && !sched->holds( s->context_index ) ) ) {
+    if( sched != nullptr && !sched->holds( s->context_index ) ) {
         return;
     }
     if( t->pending_bytes() > MP_SCREEN_BACKLOG_BYTES ) {
@@ -239,12 +241,15 @@ void mp_server_flush_screen()
         // catches up would describe a view that is already gone. The request
         // is dropped rather than deferred; the client asks again on its next
         // hover, and its latest request is the only one either way.
-        s->describe_pending.reset();
+        mp_server_describe_drop_pending( *s );
         return;
     }
-    const mp_describe_request req = *s->describe_pending;
-    s->describe_pending.reset();
-    s->describe_last = now;
+    mp_describe_request req;
+    if( !mp_server_describe_take_due( *s, req ) ) {
+        // A newer request won between the check above and this take and is not
+        // due yet, or another thread consumed it: the next flush decides.
+        return;
+    }
     mp_control msg;
     msg.kind = mp_control_kind::describe;
     msg.describe = mp_describe_reply( req.seq, s->scene_seq, req.x, req.y, req.w );

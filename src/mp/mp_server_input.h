@@ -10,6 +10,7 @@
 
 class mp_transport;
 struct mp_control;
+struct mp_describe_request;
 struct mp_session;
 struct player_context;
 
@@ -84,6 +85,36 @@ bool mp_server_take_resize_request( int &width, int &height );
 // backend tell "the wait ended because the client resized" from an ordinary
 // timeout without consuming the request.
 bool mp_server_resize_pending();
+
+// --- Hover describe state --------------------------------------------------
+//
+// A hover request is written by whichever thread dispatches it (the seat's own
+// input wait or the world's mp_server_take_control) and read by the flush that
+// builds the answer and by the seat's input wait, which sleeps until the
+// request falls due. These threads take turns, not the baton together, so the
+// pending request and the answer timestamp are guarded by the session's
+// inbox_mutex. These functions are the only entry points outside
+// mp_server_input.cpp: the screen flush and the UI leave path use them rather
+// than touching the fields themselves.
+
+// Drops the pending hover and the interval. Leaving the UI calls this: the next
+// entry starts with a clean feed, and a seat that is not looking at a screen is
+// never served its text.
+void mp_server_describe_clear( mp_session &session );
+
+// Drops only the pending request, keeping the last-answer timestamp. The flush
+// uses it when the seat is no longer entitled to an answer or the client is not
+// draining its socket.
+void mp_server_describe_drop_pending( mp_session &session );
+
+// Whether a request is pending and its interval has elapsed. False when
+// nothing is pending, so a caller can skip the rest of the answer path.
+bool mp_server_describe_pending_due( mp_session &session );
+
+// Takes the pending request when it is due, records the answer timestamp and
+// returns true, with the request in `out`. The flush then builds the answer; a
+// request that is not due stays pending for a later pass.
+bool mp_server_describe_take_due( mp_session &session, mp_describe_request &out );
 
 // --- Per-seat readers ------------------------------------------------------
 //

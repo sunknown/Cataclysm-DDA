@@ -1646,6 +1646,99 @@ TEST_CASE( "take_control_consumes_describe_and_resize_and_wakes_the_seat", "[mp]
     CHECK( height == 20 );
 }
 
+TEST_CASE( "a_hover_under_a_blocking_wait_is_answered_at_its_due_instant", "[mp]" )
+{
+    // The production input wait blocks with -1. A hover that lands while the
+    // seat is parked there and inside the answer interval must wake it when
+    // that interval elapses -- nothing notifies the condition variable at the
+    // due instant, so a bare predicate wait would sleep until the next key,
+    // plan or resize. No other input follows here on purpose.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+
+    parked_wait wait( seat.session );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    REQUIRE_FALSE( wait.returned.load() );
+
+    // The interval starts now, so the hover below is recorded but not yet due.
+    const std::chrono::steady_clock::time_point anchor = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock( seat.session->inbox_mutex );
+        seat.session->describe_last = anchor;
+    }
+    send_control( *seat.client, describe_request( 11, 30, 5, 40 ) );
+    REQUIRE( mp_server_wait_for_events( 1000 ) );
+    // The seat has consumed the local control; the request is pending and the
+    // wait must now be sleeping towards the due instant, not to forever.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    REQUIRE_FALSE( wait.returned.load() );
+
+    const bool woke = wait_for_flag( wait.returned, std::chrono::seconds( 5 ) );
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - anchor );
+    if( !woke ) {
+        mp_server_stop_reader( *seat.session );
+    }
+    wait.finish();
+    CHECK( woke );
+    CHECK( wait.type.load() == static_cast<int>( input_event_t::timeout ) );
+    // Woken by the interval, not early and not by the five-second give-up.
+    CHECK( elapsed >= std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS / 2 ) );
+    CHECK( elapsed < std::chrono::milliseconds( 1500 ) );
+    // Waking is not answering: the flush still builds the reply.
+    {
+        std::lock_guard<std::mutex> lock( seat.session->inbox_mutex );
+        REQUIRE( seat.session->describe_pending.has_value() );
+        CHECK( seat.session->describe_pending->seq == 11 );
+    }
+}
+
+TEST_CASE( "leaving_the_ui_clears_a_pending_hover_under_the_seat_lock", "[mp]" )
+{
+    // The world dispatches a hover for a seat while that seat may be leaving
+    // the UI, so the leave path clears the hover through the same locked helper
+    // the flush and the input wait use. The assertion is the observable state:
+    // once leave returns, no helper sees a request or an interval, and the
+    // flush has nothing to take.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.slot_index = 0;
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    const describe_seat seat = prepare_describe_seat();
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+
+    send_control( *seat.client, describe_request( 13, 30, 5, 40 ) );
+    REQUIRE( mp_server_wait_for_events( 1000 ) );
+    // take_control consumes the non-round message through dispatch, which is
+    // the world thread's write of describe_pending.
+    size_t slot = 99;
+    mp_control got;
+    CHECK_FALSE( mp_server_take_control( slot, got ) );
+    {
+        std::lock_guard<std::mutex> lock( seat.session->inbox_mutex );
+        REQUIRE( seat.session->describe_pending.has_value() );
+        CHECK( seat.session->describe_pending->seq == 13 );
+    }
+    REQUIRE( mp_server_describe_pending_due( *seat.session ) );
+
+    mp_session_ui_leave( *seat.session );
+
+    {
+        std::lock_guard<std::mutex> lock( seat.session->inbox_mutex );
+        CHECK_FALSE( seat.session->describe_pending.has_value() );
+        CHECK( seat.session->describe_last == std::chrono::steady_clock::time_point{} );
+    }
+    CHECK_FALSE( mp_server_describe_pending_due( *seat.session ) );
+    mp_describe_request req;
+    CHECK_FALSE( mp_server_describe_take_due( *seat.session, req ) );
+}
+
 TEST_CASE( "a_replacement_wire_is_claimed_by_its_reader_before_it_is_visible", "[mp]" )
 {
     // Reconnect keeps the seat's player thread alive while the wire is swapped.

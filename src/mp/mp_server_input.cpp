@@ -328,10 +328,18 @@ bool resize_pending_of( mp_session &s )
     return s.pending_resize.has_value();
 }
 
+// Whether the pending hover may be answered now. Caller holds inbox_mutex: the
+// input wait's predicate runs under the same lock, so it cannot call the public
+// wrapper below (which would lock again).
+bool describe_pending_due_locked( const mp_session &s )
+{
+    return s.describe_pending && describe_time_left( s ).count() == 0;
+}
+
 bool describe_due_of( mp_session &s )
 {
     std::lock_guard<std::mutex> lock( s.inbox_mutex );
-    return s.describe_pending && describe_time_left( s ).count() == 0;
+    return describe_pending_due_locked( s );
 }
 
 // How long the input wait may still sleep: the caller's budget, shortened by a
@@ -511,13 +519,14 @@ void mp_server_input_reset_for_test()
     }
     // Clear pending resize on the active session if there is one.
     if( mp_session *s = mp_active_session() ) {
-        std::lock_guard<std::mutex> lock( s->inbox_mutex );
-        s->pending_resize.reset();
+        {
+            std::lock_guard<std::mutex> lock( s->inbox_mutex );
+            s->pending_resize.reset();
+        }
         // The hover feed's per-seat state dies with the test's world, exactly
         // as leaving the UI clears it: a stale request or interval must not
         // leak into the next case.
-        s->describe_pending.reset();
-        s->describe_last = {};
+        mp_server_describe_clear( *s );
     }
 }
 
@@ -756,23 +765,35 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
             const auto arrival = [s, &t]() {
                 return !s->input_inbox.empty() || has_local_control_locked( *s ) ||
                        s->pending_resize.has_value() ||
-                       ( s->describe_pending && describe_time_left( *s ).count() == 0 ) ||
+                       describe_pending_due_locked( *s ) ||
                        !t->connected() || !s->reader_running;
             };
             // The remaining time is computed under the same lock the wait
             // releases. Computing it before taking the lock leaves a window in
             // which a hover lands: its predicate is false until the due instant,
             // and with a -1 wait there is no deadline to fall back on.
+            //
+            // A predicate wait is not enough on its own: nothing signals the
+            // cv when the describe interval merely elapses, so a seat parked
+            // with the production's blocking (-1) timeout would sleep until the
+            // next key, plan or resize. Sleep in bounded slices instead --
+            // `wait_remaining_locked` returns the earlier of the caller's
+            // deadline and the hover's due instant -- and recompute the slice
+            // after every spurious wake. A slice of 0 is the caller's deadline
+            // (the due instant itself is an arrival, so it never reaches 0),
+            // which keeps the existing timeout return for finite budgets.
             std::unique_lock<std::mutex> lock( s->inbox_mutex );
-            const int remaining = wait_remaining_locked( *s, timeout_ms, deadline );
-            if( remaining == 0 ) {
-                return make_timeout_event();
-            }
-            if( remaining < 0 ) {
-                s->inbox_cv.wait( lock, arrival );
-            } else {
-                s->inbox_cv.wait_for( lock, std::chrono::milliseconds( remaining ),
-                                      arrival );
+            while( !arrival() ) {
+                const int slice = wait_remaining_locked( *s, timeout_ms, deadline );
+                if( slice == 0 ) {
+                    return make_timeout_event();
+                }
+                if( slice < 0 ) {
+                    s->inbox_cv.wait( lock, arrival );
+                } else {
+                    s->inbox_cv.wait_for( lock, std::chrono::milliseconds( slice ),
+                                          arrival );
+                }
             }
         }
 
@@ -852,6 +873,40 @@ bool mp_server_resize_pending()
         return false;
     }
     return resize_pending_of( *s );
+}
+
+void mp_server_describe_clear( mp_session &session )
+{
+    std::lock_guard<std::mutex> lock( session.inbox_mutex );
+    session.describe_pending.reset();
+    session.describe_last = {};
+}
+
+void mp_server_describe_drop_pending( mp_session &session )
+{
+    std::lock_guard<std::mutex> lock( session.inbox_mutex );
+    session.describe_pending.reset();
+}
+
+bool mp_server_describe_pending_due( mp_session &session )
+{
+    std::lock_guard<std::mutex> lock( session.inbox_mutex );
+    return describe_pending_due_locked( session );
+}
+
+bool mp_server_describe_take_due( mp_session &session, mp_describe_request &out )
+{
+    std::lock_guard<std::mutex> lock( session.inbox_mutex );
+    if( !describe_pending_due_locked( session ) ) {
+        return false;
+    }
+    out = *session.describe_pending;
+    session.describe_pending.reset();
+    // The flush used to stamp this before building the answer; a lock-held
+    // clock read here is the same instant within a fraction of a millisecond
+    // and keeps the timestamp and the take atomic.
+    session.describe_last = clock::now();
+    return true;
 }
 
 #endif // MP_SERVER
