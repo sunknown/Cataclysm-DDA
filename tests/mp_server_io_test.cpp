@@ -1350,4 +1350,101 @@ TEST_CASE( "waiting_for_input_yields_the_baton", "[mp]" )
     mp_sessions_reset_for_test();
 }
 
+// Starts the per-seat reader threads for a test-built session and joins them on
+// the way out. A session whose reader is still joinable terminates the process
+// when its mp_session dies, so every case here that raises readers has to drop
+// them before the sessions go away.
+struct reader_scope {
+    reader_scope() {
+        mp_server_start_readers();
+    }
+    ~reader_scope() {
+        mp_server_stop_readers();
+    }
+    reader_scope( const reader_scope & ) = delete;
+    reader_scope &operator=( const reader_scope & ) = delete;
+};
+
+TEST_CASE( "a_plan_frame_reaches_the_world_without_the_baton", "[mp]" )
+{
+    // No player thread, no baton and no flush: the plan has to travel from the
+    // wire into the world's hands through the seat's reader alone.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+
+    mp_control plan;
+    plan.kind = mp_control_kind::plan;
+    plan.plan.kind = mp_plan_kind::move;
+    plan.plan.seq = 9;
+    send_control( *pair.b, plan );
+
+    REQUIRE( mp_server_wait_for_events( 100 ) );
+
+    size_t slot = 99;
+    mp_control got;
+    REQUIRE( mp_server_take_control( slot, got ) );
+    CHECK( slot == 0 );
+    CHECK( got.kind == mp_control_kind::plan );
+    CHECK( got.plan.seq == 9 );
+    // Taken, not merely observed: the world's next pass has nothing left.
+    CHECK_FALSE( mp_server_take_control( slot, got ) );
+}
+
+TEST_CASE( "a_raw_input_frame_lands_in_the_seat_queue", "[mp]" )
+{
+    // Keystrokes do not go to the world: they belong to the seat that typed
+    // them, and the seat's own input wait is what consumes them.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event.type = input_event_t::keyboard_char;
+    key.event.sequence.push_back( 'x' );
+    send_control( *pair.b, key );
+
+    REQUIRE( mp_server_wait_for_events( 100 ) );
+    CHECK( mp_server_seat_has_input( 0 ) );
+    CHECK_FALSE( mp_server_seat_has_input( 1 ) );
+
+    const input_event got = mp_server_wait_for_input( 1000 );
+    CHECK( got.type == input_event_t::keyboard_char );
+    CHECK( got.sequence == std::vector<int> { 'x' } );
+    CHECK_FALSE( mp_server_seat_has_input( 0 ) );
+}
+
+TEST_CASE( "closing_the_transport_wakes_the_event_wait", "[mp]" )
+{
+    // The world parks in mp_server_wait_for_events() while nobody is typing;
+    // a client that disappears must not leave it there until its timeout. The
+    // reader notices the dead wire and signals, without touching game state --
+    // marking the seat disconnected is the world's job.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+
+    pair.b->close();
+
+    REQUIRE( mp_server_wait_for_events( 1000 ) );
+
+    // Nothing was queued: waking is the whole event.
+    size_t slot = 0;
+    mp_control got;
+    CHECK_FALSE( mp_server_take_control( slot, got ) );
+}
+
 #endif // MP_SERVER

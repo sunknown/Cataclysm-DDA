@@ -31,6 +31,7 @@
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_server_input.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
@@ -239,6 +240,10 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     // Each thread runs its player's join menu first in join mode, and goes
     // straight to its turns otherwise -- which also clears what a previous
     // harness's join phase left behind.
+    //
+    // The readers go up first: a player thread's very first input wait reads
+    // the seat's inbox, and a wire with no reader would never fill it.
+    mp_server_start_readers();
     mp_join_begin( join ? players : 0, world_anchor );
     seated_ = !join;
 
@@ -261,6 +266,9 @@ mp_session_harness::~mp_session_harness()
     // in a menu, which is the case that ordering exists for.
     mp_stop_player_threads( sched_.get() );
     mp_set_active_sched( nullptr );
+    // The readers are the harness's too, and they hold their sessions'
+    // addresses: join them before the roster goes away.
+    mp_server_stop_readers();
     mp_sessions_reset_for_test();
     mp_join_begin( 0, std::nullopt );
     game_test_helper::reset_player_slots();

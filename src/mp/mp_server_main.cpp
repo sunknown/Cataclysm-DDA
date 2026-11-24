@@ -391,6 +391,9 @@ static void drop_seat( const size_t slot )
         if( session->transport ) {
             session->transport->close();
         }
+        // Its reader holds this session's address; it must be joined before the
+        // session leaves the roster.
+        mp_server_stop_reader( *session );
         const auto it = std::find_if( mp_sessions().begin(), mp_sessions().end(),
         [session]( const std::unique_ptr<mp_session> &s ) {
             return s.get() == session;
@@ -762,6 +765,10 @@ void mp_server_reconnected( const size_t slot )
 static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session> fresh )
 {
     cata_assert( fresh != nullptr );
+    // The reader of the wire that just left has to go before its transport is
+    // replaced: it reads the transport it started with, and the events it
+    // queued are the old client's, not this one's. The stop discards them.
+    mp_server_stop_reader( seat );
     // A new terminal's geometry and screen state are not the old client's, and
     // neither is its UI state: leave the retained seat before anything is
     // copied so no stale flag or hover request survives into the newcomer.
@@ -791,6 +798,8 @@ static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session
     seat.log_seq = 0;
     seat.log_hash = 0;
     seat.log_sent_once = false;
+    // The new wire needs its own reader; the old one was joined above.
+    mp_server_start_reader( seat );
 }
 
 bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::string &err )
@@ -930,6 +939,9 @@ void mp_server_seat_client( const size_t slot, std::unique_ptr<mp_session> sessi
     session->context_index = slot;
     const std::string who = session->name;
     mp_sessions().push_back( std::move( session ) );
+    // The new client's wire gets a reader like every other seat's, before the
+    // thread that will read its inbox exists.
+    mp_server_start_reader( *mp_sessions().back() );
     // The seat is the replacement's now: the Quit mark the last occupant left
     // behind must not cancel its menu before it has drawn one.
     sched->clear_quit( slot );
@@ -1302,6 +1314,9 @@ void mp_server_start_player_threads()
     // flags, the open-turn flag and the end request are all about a session
     // that no longer exists.
     mp_turn_reset_all();
+    // The wires have been installed and nobody reads them yet: give every seat
+    // its reader before its player thread can park on the inbox.
+    mp_server_start_readers();
     g_sched = std::make_unique<mp_sched>( mp_sessions().size() );
     mp_set_active_sched( g_sched.get() );
     mp_sched_start_watchdog( *g_sched, MP_WATCHDOG_MS );
@@ -1316,6 +1331,9 @@ void mp_server_end_session()
     mp_set_active_sched( nullptr );
     g_sched.reset();
     g_join_phase = false;
+    // The readers go before the sessions do: each holds its session's address
+    // and must be joined while that session is still alive.
+    mp_server_stop_readers();
     mp_sessions().clear();
     mp_turn_reset_all();
     // Hand main() back the process it started the session in: player 0's

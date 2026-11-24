@@ -2,11 +2,13 @@
 #ifndef CATA_SRC_MP_MP_SERVER_INPUT_H
 #define CATA_SRC_MP_MP_SERVER_INPUT_H
 
+#include <cstddef>
 #include <string>
 
 #include "input_enums.h"
 
 class mp_transport;
+struct mp_control;
 struct mp_session;
 struct player_context;
 
@@ -81,5 +83,56 @@ bool mp_server_take_resize_request( int &width, int &height );
 // backend tell "the wait ended because the client resized" from an ordinary
 // timeout without consuming the request.
 bool mp_server_resize_pending();
+
+// --- Per-seat readers ------------------------------------------------------
+//
+// A session's reader is the only thread that reads its transport. It parses
+// each frame and routes it: keystrokes to the session's input_inbox, every
+// other control message to its control_inbox. It never calls the input
+// dispatcher, never reads game state and never touches a player_context -- a
+// plan or a resize arrives while another player holds the baton, and the game
+// state belongs to that player.
+//
+// Start is idempotent: a session that already has a reader keeps it. Stop is
+// idempotent too, and it is not optional -- a std::thread destroyed joinable
+// terminates the process. Every path that erases a session, replaces its
+// transport or resets the roster stops that session's reader first.
+
+// Starts a reader for every session that has a transport and none yet. Called
+// once the wires are installed and before the player threads run.
+void mp_server_start_readers();
+// Stops and joins every session's reader. Safe to call when none is running.
+void mp_server_stop_readers();
+
+// One session's reader, for the paths that act on a single seat: dropping it
+// from the join phase, or installing a replacement client's wire on it. The
+// single-session stop also discards whatever the previous wire queued -- those
+// events belong to the client that left, not to the one taking the seat.
+void mp_server_start_reader( mp_session &session );
+void mp_server_stop_reader( mp_session &session );
+
+// Parks until some seat has something for somebody: an event was queued, or a
+// reader exited because its wire went away. `timeout_ms` is a negative value
+// for "as long as it takes". Returns true when woken, false on timeout.
+//
+// Wake-ups are edge-triggered: the call returns when something happened since
+// the previous call, so a seat that is permanently dead does not make the
+// world spin -- one wake per reader exit is all a reader that has stopped can
+// produce.
+bool mp_server_wait_for_events( int timeout_ms );
+
+// Takes the oldest message for the round loop off any seat's control queue and
+// reports which seat it belongs to. Only the four plan kinds come back; the
+// describe, resize and bye messages that share the queue are consumed here,
+// through the same handler the seat's input wait uses, so the round loop never
+// sees them. Returns false when no seat has a plan.
+//
+// A seat whose wait state a consumed message changed (a resize, a new hover)
+// is woken so it re-evaluates before its own timeout.
+bool mp_server_take_control( size_t &slot, mp_control &out );
+
+// Whether `slot` has a keystroke waiting. Cheap and non-blocking: it answers
+// "could this seat act now", not "will it".
+bool mp_server_seat_has_input( size_t slot );
 
 #endif // CATA_SRC_MP_MP_SERVER_INPUT_H

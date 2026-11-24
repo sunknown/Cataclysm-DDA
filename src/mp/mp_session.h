@@ -4,12 +4,17 @@
 
 #if defined(MP_SERVER)
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mp/mp_cell.h"
@@ -84,6 +89,45 @@ struct mp_session {
     uint32_t log_seq = 0;
     uint64_t log_hash = 0;
     bool log_sent_once = false;
+
+    // --- The seat's reader and the two queues it feeds ---------------------
+    //
+    // Every frame this seat's wire delivers lands in one of these queues first.
+    // The reader thread parses it and routes it by kind: a keystroke goes to
+    // input_inbox for the seat's own input wait, and everything else -- a plan,
+    // a describe, a resize, a bye, a hello -- goes to control_inbox for the
+    // world loop (mp_server_take_control) and for the seat's input wait, which
+    // handles the non-round ones itself.
+    //
+    // inbox_mutex guards both queues, reader_running and every read or write of
+    // them; inbox_cv is signalled whenever something is enqueued and whenever
+    // the reader exits, so a seat parked in mp_server_wait_for_input_of()
+    // re-evaluates a resize, a due hover or a dead wire instead of sleeping to
+    // its deadline.
+    std::mutex inbox_mutex;
+    std::condition_variable inbox_cv;
+    std::deque<input_event> input_inbox;
+    std::deque<mp_control> control_inbox;
+    // Set by mp_server_stop_reader(). Atomic because the stop is a plain store
+    // from another thread and the reader polls it without taking inbox_mutex.
+    std::atomic<bool> reader_stop{ false };
+    // True between the reader's creation and its join, guarded by inbox_mutex.
+    // The input wait reads it to decide whether it may still read the transport
+    // itself: it may only when no reader owns the socket.
+    bool reader_running = false;
+    // This seat's reader. It is never left joinable: ~mp_session stops it, and
+    // every path that erases a session stops it first (see mp_server_input.h).
+    std::thread reader;
+
+    mp_session() = default;
+    // Stops and joins the reader, so no session can be destroyed with a
+    // joinable thread -- which would call std::terminate. Every explicit erase
+    // path still stops the reader first; this is the backstop for the ones that
+    // are easy to forget.
+    ~mp_session();
+
+    mp_session( const mp_session & ) = delete;
+    mp_session &operator=( const mp_session & ) = delete;
 };
 
 // The sessions of the running server, indexed the same way as game::contexts.

@@ -3,6 +3,7 @@
 #include "mp/mp_session.h"
 
 #include "mp/mp_context.h"
+#include "mp/mp_server_input.h"
 
 namespace
 {
@@ -41,7 +42,19 @@ mp_session *mp_active_session()
 
 void mp_sessions_reset_for_test()
 {
+    // The readers go before the sessions do. A std::thread destroyed joinable
+    // terminates the process, and the reader holds this session's address, so
+    // every reader must be joined while its session is still alive.
+    mp_server_stop_readers();
     g_sessions.clear();
+}
+
+mp_session::~mp_session()
+{
+    // Normally already stopped by the caller that erased the session; this is
+    // the backstop that makes the guarantee structural rather than a rule every
+    // new erase path has to remember.
+    mp_server_stop_reader( *this );
 }
 
 #endif // MP_SERVER
