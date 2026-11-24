@@ -364,20 +364,86 @@ bool npc_can_move( const npc &guy )
 }
 
 // One iteration of an NPC's move loop, shared by the single-player while-loop
-// below and the round step. `real_count` and `count_limit` are the loop's
-// no-progress guard; the return value says whether this iteration counts as a
-// spent turn.
-bool npc_step( npc &guy, int &real_count, const int count_limit )
+// below and the round step. The result carries what the single-player loop's
+// no-progress guard needs; the round step runs one iteration and has no loop
+// to guard.
+struct npc_step_result {
+    // True when npc::move() spent any moves.
+    bool spent_moves = false;
+    // True when the iteration changed the NPC's destination activity.
+    bool changed_destination = false;
+};
+
+npc_step_result npc_step( npc &guy )
 {
     const int moves = guy.get_moves();
     const bool has_destination = guy.has_destination_activity();
     guy.move();
-    if( moves != guy.get_moves() ) {
+    return { moves != guy.get_moves(), has_destination != guy.has_destination_activity() };
+}
+
+// The work that has to happen before a monster's first step of the tick.
+// Returns false for a critter outside the reality bubble: it gets no turn and
+// no alarm, exactly as the old monmove() loop skipped it.
+bool mon_preamble( monster &critter )
+{
+    map &m = get_map();
+    if( !m.inbounds( critter.pos_abs() ) ) {
         return false;
     }
-    // Count every time we exit npc::move() without spending any moves.
-    real_count++;
-    return has_destination == guy.has_destination_activity() || real_count > count_limit;
+    const tripoint_bub_ms critter_pos = critter.pos_bub( m );
+
+    // Critters in impassable tiles get pushed away, unless it's not impassable for them
+    if( !critter.is_dead() && ( m.impassable( critter_pos ) &&
+                                !m.get_impassable_field_at( critter_pos ).has_value() ) &&
+        !critter.can_move_to( critter_pos ) ) {
+        dbg( D_ERROR ) << "game:monmove: " << critter.name()
+                       << " can't move to its location!  (" << critter_pos.x()
+                       << ":" << critter_pos.y() << ":" << critter_pos.z() << "), "
+                       << m.tername( critter_pos );
+        add_msg_debug( debugmode::DF_MONSTER, "%s can't move to its location!  (%d,%d,%d), %s",
+                       critter.name(),
+                       critter_pos.x(), critter_pos.y(), critter_pos.z(), m.tername( critter_pos ) );
+        bool okay = false;
+        for( const tripoint_bub_ms &dest : m.points_in_radius( critter_pos, 3 ) ) {
+            if( critter.can_move_to( dest ) && g->is_empty( dest ) ) {
+                critter.setpos( m, dest );
+                okay = true;
+                break;
+            }
+        }
+        if( !okay ) {
+            // die of "natural" cause (overpopulation is natural)
+            critter.die( &m, nullptr );
+        }
+    }
+
+    if( !critter.is_dead() ) {
+        critter.process_turn();
+    }
+
+    m.creature_in_field( critter );
+    if( calendar::once_every( 1_days ) ) {
+        if( critter.has_flag( mon_flag_MILKABLE ) ) {
+            critter.refill_udders();
+        }
+        critter.try_biosignature();
+        critter.try_reproduce();
+    }
+    return true;
+}
+
+// The per-NPC work that precedes that NPC's move loop for this tick.
+void npc_preamble( npc &guy )
+{
+    map &m = get_map();
+    if( guy.is_mounted() ) {
+        guy.check_mount_is_spooked();
+    }
+    m.creature_in_field( guy );
+    if( !guy.has_effect( effect_npc_suspend ) ) {
+        guy.process_turn();
+    }
 }
 
 void monmove()
@@ -385,7 +451,7 @@ void monmove()
     map &m = get_map();
 
     for( monster &critter : g->all_monsters() ) {
-        if( !m.inbounds( critter.pos_abs() ) ) {
+        if( !mon_preamble( critter ) ) {
             continue;
         }
         while( critter.get_moves() > 0 && !critter.is_dead() &&
@@ -407,12 +473,18 @@ void monmove()
 
     // Now, do active NPCs.
     for( npc &guy : g->all_npcs() ) {
+        npc_preamble( guy );
         int turns = 0;
         int real_count = 0;
         const int count_limit = std::max( 10, guy.get_moves() / 64 );
         while( npc_can_move( guy ) && turns < 10 ) {
-            if( npc_step( guy, real_count, count_limit ) ) {
-                turns++;
+            const npc_step_result step = npc_step( guy );
+            if( !step.spent_moves ) {
+                // Count every time we exit npc::move() without spending any moves.
+                real_count++;
+                if( !step.changed_destination || real_count > count_limit ) {
+                    turns++;
+                }
             }
             // Turn on debug mode when in infinite loop
             // It has to be done before the last turn, otherwise
@@ -484,9 +556,10 @@ void overmap_npc_move()
     }
 }
 
-} // namespace
-
-void mon_tick_pre()
+// The world's own work at the top of a tick: everything that has to happen
+// before any creature is given its turn. Ends by removing the dead, which is
+// where monmove() always started its creature pass.
+void world_tick_block()
 {
     map &m = get_map();
     scent_map &scent = get_scent();
@@ -521,68 +594,77 @@ void mon_tick_pre()
     // consider a stripped down cache just for monsters.
     m.build_map_cache( levz, true );
 
-    // monmove() used to open with this, after the block above had already run.
-    // The dead are removed before any of them is given a turn, which is the
-    // boundary this split has to keep.
     g->cleanup_dead();
+}
 
-    // Per-monster preamble: the out-of-bounds push, the critter's own turn
-    // processing, and the once-a-day bookkeeping.
-    for( monster &critter : g->all_monsters() ) {
-        if( !m.inbounds( critter.pos_abs() ) ) {
-            continue;
-        }
-        const tripoint_bub_ms critter_pos = critter.pos_bub( m );
-
-        // Critters in impassable tiles get pushed away, unless it's not impassable for them
-        if( !critter.is_dead() && ( m.impassable( critter_pos ) &&
-                                    !m.get_impassable_field_at( critter_pos ).has_value() ) &&
-            !critter.can_move_to( critter_pos ) ) {
-            dbg( D_ERROR ) << "game:monmove: " << critter.name()
-                           << " can't move to its location!  (" << critter_pos.x()
-                           << ":" << critter_pos.y() << ":" << critter_pos.z() << "), "
-                           << m.tername( critter_pos );
-            add_msg_debug( debugmode::DF_MONSTER, "%s can't move to its location!  (%d,%d,%d), %s",
-                           critter.name(),
-                           critter_pos.x(), critter_pos.y(), critter_pos.z(), m.tername( critter_pos ) );
-            bool okay = false;
-            for( const tripoint_bub_ms &dest : m.points_in_radius( critter_pos, 3 ) ) {
-                if( critter.can_move_to( dest ) && g->is_empty( dest ) ) {
-                    critter.setpos( m, dest );
-                    okay = true;
-                    break;
-                }
-            }
-            if( !okay ) {
-                // die of "natural" cause (overpopulation is natural)
-                critter.die( &m, nullptr );
-            }
-        }
-
-        if( !critter.is_dead() ) {
-            critter.process_turn();
-        }
-
-        m.creature_in_field( critter );
-        if( calendar::once_every( 1_days ) ) {
-            if( critter.has_flag( mon_flag_MILKABLE ) ) {
-                critter.refill_udders();
-            }
-            critter.try_biosignature();
-            critter.try_reproduce();
+// The world work after the creatures have moved. Single player runs it right
+// after monmove(); a session runs it from world_turn_post_tail() at tick
+// close. It never touches the dead -- both callers own that pass.
+void world_turn_rest()
+{
+    map &m = get_map();
+    if( calendar::once_every( time_between_npc_OM_moves ) ) {
+        overmap_npc_move();
+    }
+    // NPC morale is world work, not per-avatar: an NPC's morale doesn't belong
+    // to any one player slot, so it updates once per turn here rather than once
+    // per avatar_turn_post() call.
+    if( calendar::once_every( 1_minutes ) ) {
+        for( npc &guy : g->all_npcs() ) {
+            guy.update_morale();
+            guy.check_and_recover_morale();
         }
     }
+    m.furniture_terrain_emit_fields();
+    // required after monsters move and fields emit
+    // This runs once for the world half, not once per slot: mon_info_update()
+    // reads game::u, and mp_activate_world() (top of the world half) swaps u
+    // back to slot 0's avatar before switching the ui stack, so this reads a
+    // single, well-defined viewpoint instead of whichever slot the player loop
+    // happened to leave active. A per-slot pass also needs mon_info_update()
+    // to take the avatar as a parameter instead.
+    g->mon_info_update();
 
-    // Per-NPC preamble: what has to happen before the first NPC move of the
-    // tick, in the order monmove() used to do it.
+    // handle_weather_effects() never reads the avatar it's passed: it decays
+    // fields/scent, fills water collectors, wets every player slot, applies
+    // glare to every slot and clears lightning_active, all by looping
+    // g->get_players() internally (see weather.cpp:494 and :114). It runs once
+    // per turn from the world half, not once per avatar. The guard reads
+    // "weather processes unless every player is underwater" rather than a
+    // single avatar's state: weather is world state, so one player diving must
+    // not suspend rain for everybody. At N=1 this is identical to the original
+    // `!ava.is_underwater()` check by construction.
+    const int levz = m.get_abs_sub().z();
+    bool anyone_not_underwater = false;
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        anyone_not_underwater = anyone_not_underwater || !g->player_at( i ).is_underwater();
+    }
+    if( levz >= 0 && anyone_not_underwater ) {
+        handle_weather_effects( get_weather().weather_id );
+    }
+
+    // The visibility cache is shared map state, not tied to a particular
+    // avatar. The progress UI used to be called here too, but it reads and
+    // opens UI for a particular avatar (get_avatar()) and now runs from
+    // avatar_turn_post() instead, in the per-player tail loop -- see the
+    // comment there.
+    m.invalidate_visibility_cache();
+}
+
+} // namespace
+
+void mon_tick_pre()
+{
+    world_tick_block();
+
+    // A session has no whole-tick monmove(): every creature's preamble runs
+    // once here, and its single step waits for a round. Single player never
+    // calls this; monmove() interleaves the same preambles with its loops.
+    for( monster &critter : g->all_monsters() ) {
+        mon_preamble( critter );
+    }
     for( npc &guy : g->all_npcs() ) {
-        if( guy.is_mounted() ) {
-            guy.check_mount_is_spooked();
-        }
-        m.creature_in_field( guy );
-        if( !guy.has_effect( effect_npc_suspend ) ) {
-            guy.process_turn();
-        }
+        npc_preamble( guy );
     }
 }
 
@@ -632,15 +714,13 @@ void mon_round_step()
     }
     g->cleanup_dead();
 
-    // Now one iteration of each NPC's move loop -- the same body the
-    // single-player loop runs, including its no-progress guard.
+    // One iteration of each eligible NPC's move loop. The no-progress guard
+    // belongs to the single-player loop, which runs many iterations; a round
+    // runs exactly one, so there is no loop for it to stop.
     for( npc &guy : g->all_npcs() ) {
-        if( !npc_can_move( guy ) ) {
-            continue;
+        if( npc_can_move( guy ) ) {
+            npc_step( guy );
         }
-        int real_count = 0;
-        const int count_limit = std::max( 10, guy.get_moves() / 64 );
-        npc_step( guy, real_count, count_limit );
     }
     g->cleanup_dead();
 }
@@ -648,62 +728,16 @@ void mon_round_step()
 
 void world_turn_post_tail()
 {
-    map &m = get_map();
-    // The remaining monsters are all alive, but may be outside of the reality bubble.
-    // If so, despawn them. This is not the same as dying, they will be stored for later and the
-    // monster::die function is not called.
+    // The co-op tick close. No monmove() runs in a session, so the pieces it
+    // owns for single player happen here, once per tick: the despawn, the NPC
+    // body updates, and the final removal of the dead.
     g->despawn_nonlocal_monsters();
-
-    if( calendar::once_every( time_between_npc_OM_moves ) ) {
-        overmap_npc_move();
-    }
-    // NPC morale is world work, not per-avatar: an NPC's morale doesn't belong
-    // to any one player slot, so it updates once per turn here rather than once
-    // per avatar_turn_post() call.
-    if( calendar::once_every( 1_minutes ) ) {
-        for( npc &guy : g->all_npcs() ) {
-            guy.update_morale();
-            guy.check_and_recover_morale();
+    for( npc &guy : g->all_npcs() ) {
+        if( !guy.is_dead() ) {
+            guy.npc_update_body();
         }
     }
-    m.furniture_terrain_emit_fields();
-    // required after monsters move and fields emit
-    // This runs once for the world half, not once per slot: mon_info_update()
-    // reads game::u, and mp_activate_world() (top of the world half) swaps u
-    // back to slot 0's avatar before switching the ui stack, so this reads a
-    // single, well-defined viewpoint instead of whichever slot the player loop
-    // happened to leave active. A per-slot pass also needs mon_info_update()
-    // to take the avatar as a parameter instead.
-    g->mon_info_update();
-
-    // handle_weather_effects() never reads the avatar it's passed: it decays
-    // fields/scent, fills water collectors, wets every player slot, applies
-    // glare to every slot and clears lightning_active, all by looping
-    // g->get_players() internally (see weather.cpp:494 and :114). It runs once
-    // per turn from the world half, not once per avatar. The guard reads
-    // "weather processes unless every player is underwater" rather than a
-    // single avatar's state: weather is world state, so one player diving must
-    // not suspend rain for everybody. At N=1 this is identical to the original
-    // `!ava.is_underwater()` check by construction.
-    const int levz = m.get_abs_sub().z();
-    bool anyone_not_underwater = false;
-    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
-        anyone_not_underwater = anyone_not_underwater || !g->player_at( i ).is_underwater();
-    }
-    if( levz >= 0 && anyone_not_underwater ) {
-        handle_weather_effects( get_weather().weather_id );
-    }
-
-    // The visibility cache is shared map state, not tied to a particular
-    // avatar. The progress UI used to be called here too, but it reads and
-    // opens UI for a particular avatar (get_avatar()) and now runs from
-    // avatar_turn_post() instead, in the per-player tail loop -- see the
-    // comment there.
-    m.invalidate_visibility_cache();
-
-    // The round's last pass: the co-op path never enters monmove(), so its
-    // final cleanup has to live here. In single player monmove() has already
-    // removed its dead and this finds nothing.
+    world_turn_rest();
     g->cleanup_dead();
 }
 
@@ -1193,14 +1227,14 @@ bool game::do_turn()
 
 void game::world_turn_post()
 {
-    // The tick's world work, split at the points the co-op round needs: the
-    // opening half ends right before the creatures move, the closing half runs
-    // after them. Single player runs all three back to back with its own
-    // whole-tick monster pass in the middle; a session runs mon_tick_pre() at
-    // tick open, mon_round_step() per round, and the tail at tick close.
-    mon_tick_pre();
+    // Single player: the whole-tick pass, in the order it has always had.
+    // world_tick_block() ends with the cleanup monmove() used to open with, so
+    // the block -> monmove -> rest sequence is the original interleaving.
+    // A session instead runs mon_tick_pre() at tick open, mon_round_step() per
+    // round, and world_turn_post_tail() at tick close.
+    world_tick_block();
     monmove();
-    world_turn_post_tail();
+    world_turn_rest();
 }
 
 void game::avatar_turn_pre( avatar &ava )

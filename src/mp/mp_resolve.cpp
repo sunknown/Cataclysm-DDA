@@ -38,6 +38,19 @@ size_t slot_of( const avatar &ava )
     return no_slot;
 }
 
+// True when another seat stands on `p`. creature_tracker reports only the
+// active avatar, so the slots have to be checked by position as well -- the
+// world phase deactivates every seat but slot 0.
+bool seat_at( const tripoint_bub_ms &p, const size_t except )
+{
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        if( i != except && g->player_at( i ).pos_bub() == p ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Recomputes the plan's cost against the world as it is right now and refuses
 // the action when the seat cannot pay it. A refused action spends nothing and
 // leaves the reason for the party snapshot. `cost` comes back filled either
@@ -127,7 +140,8 @@ bool fail_unwinnable_claims( std::vector<move_claim> &claims )
             }
         }
         if( !vacated &&
-            get_creature_tracker().creature_at<Creature>( claim.target ) != nullptr ) {
+            ( get_creature_tracker().creature_at<Creature>( claim.target ) != nullptr ||
+              seat_at( claim.target, claim.slot ) ) ) {
             fails[i] = true;
         }
         int best_speed = std::numeric_limits<int>::min();
@@ -221,7 +235,9 @@ void resolve_moves( const std::vector<resolution_entry> &entries, const size_t b
                     break;
                 }
             }
-            if( blocked ) {
+            if( blocked ||
+                get_creature_tracker().creature_at<Creature>( claim.target ) != nullptr ||
+                seat_at( claim.target, claim.slot ) ) {
                 continue;
             }
             mp_activate_player( claim.slot );

@@ -6,6 +6,7 @@
 
 #include "avatar.h"
 #include "bodypart.h"
+#include "cata_scope_helpers.h"
 #include "coordinates.h"
 #include "creature.h"
 #include "creature_tracker.h"
@@ -30,6 +31,9 @@ namespace
 // the "100 AP for a step on pavement" arithmetic only holds for a normally
 // shod avatar.
 const itype_id itype_sneakers( "sneakers" );
+// A weapon makes a one-hit kill independent of unarmed damage; the melee
+// fixture only needs the blow to land and do more than a point.
+const itype_id itype_katana( "katana" );
 
 // One seat on plain pavement, the same baseline mp_plan_test.cpp uses. The
 // caller owns the restore_active_state that puts the globals back afterwards.
@@ -99,16 +103,16 @@ void plan_move( const size_t slot, const tripoint_bub_ms &target, const int cost
     REQUIRE( mp_plan_is_ready( slot ) );
 }
 
-void plan_melee( const size_t slot, const tripoint_bub_ms &target )
+void plan_melee( const size_t slot, const tripoint_bub_ms &target, const int cost = 100 )
 {
     avatar &ava = g->player_at( slot );
     ava.set_moves( 1000 );
     mp_plan plan;
     plan.kind = mp_plan_kind::melee;
     plan.target = target;
-    // The client's estimate only orders the group; the server recomputes the
+    // The client's estimate only orders the groups; the server recomputes the
     // attack cost when it resolves.
-    plan.cost = 100;
+    plan.cost = cost;
     std::string err;
     REQUIRE( mp_plan_submit( slot, plan, err ) );
     REQUIRE( mp_plan_ready( slot, err ) );
@@ -137,6 +141,9 @@ TEST_CASE( "the_faster_seat_takes_a_contested_cell", "[mp]" )
     // one stays where it was.
     CHECK( a.pos_bub() == target );
     CHECK( g->player_at( 1 ).pos_bub() == b_start );
+    // The resolver finished its own phase transition; resetting the round is
+    // the tick loop's job, not the resolver's.
+    CHECK( mp_plan_phase() == mp_round_phase::done );
     // A move that lost arbitration still costs the estimate.
     CHECK( g->player_at( 1 ).get_moves() < 1000 );
     CHECK( a.get_moves() < 1000 );
@@ -188,6 +195,54 @@ TEST_CASE( "a_vacated_cell_chain_is_applied_backwards", "[mp]" )
     CHECK( g->player_at( 1 ).pos_bub() == b_start + tripoint_rel_ms::east );
 }
 
+TEST_CASE( "a_move_onto_a_seat_that_is_not_moving_is_refused", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms a_start = a.pos_bub();
+    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms::east;
+    add_second_seat( b_start );
+
+    // Seat 1 has no plan, so nothing will vacate its cell. creature_tracker
+    // only knows the active avatar, so a batch trusting it would stack the two
+    // seats; the seat-position probe has to refuse this step.
+    plan_move( 0, b_start );
+    mp_resolve_round( 2 );
+
+    CHECK( a.pos_bub() == a_start );
+    CHECK( g->player_at( 1 ).pos_bub() == b_start );
+    CHECK( a.get_moves() < 1000 );
+    CHECK( mp_plan_error( 0 ).empty() );
+}
+
+TEST_CASE( "a_chain_whose_tail_cannot_move_keeps_everyone_home", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms a_start = a.pos_bub();
+    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms::east;
+    const tripoint_bub_ms wall = b_start + tripoint_rel_ms::east;
+    add_second_seat( b_start );
+    get_map().ter_set( wall, ter_id( "t_wall" ) );
+
+    // The tail's step fails against the wall, so it never vacates its cell.
+    // The head must not be applied after that failure: an implementation that
+    // only tracks the batch's captured "from" cells, or that trusts the
+    // creature tracker for seats, would land the head on the tail.
+    plan_move( 0, b_start );
+    plan_move( 1, wall );
+    mp_resolve_round( 2 );
+
+    CHECK( a.pos_bub() == a_start );
+    CHECK( g->player_at( 1 ).pos_bub() == b_start );
+    CHECK( a.get_moves() < 1000 );
+    CHECK( g->player_at( 1 ).get_moves() < 1000 );
+}
+
 TEST_CASE( "a_two_cycle_is_refused_and_both_stay", "[mp]" )
 {
     restore_active_state restore;
@@ -221,31 +276,37 @@ TEST_CASE( "a_second_attack_on_a_killed_target_misses", "[mp]" )
     add_second_seat( b_start );
     const tripoint_bub_ms zombie_pos = a_start + tripoint_rel_ms::east;
     monster &zombie = spawn_test_monster( "mon_zombie", zombie_pos );
+    zombie.set_hp( 1 );
 
-    plan_melee( 0, zombie_pos );
-    plan_melee( 1, zombie_pos );
-    const int cost_a = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    // Seat 0's cheaper group resolves first and kills; seat 1's later group
+    // then has only the corpse to attack. A melee hit is a normal roll, but a
+    // monster's dodge roll is deterministic (dodge * 5): raise the dex cap for
+    // this case so the roll cannot land in the miss tail.
+    const int saved_max_dex = character_max_dex;
+    character_max_dex = 1000;
+    a.set_dex_base( 1000 );
+    a.set_wielded_item( item( itype_katana ) );
+    on_out_of_scope restore_dex( [&]() {
+        character_max_dex = saved_max_dex;
+        a.set_dex_base( 8 );
+    } );
+
+    plan_melee( 0, zombie_pos, 10 );
+    plan_melee( 1, zombie_pos, 20 );
     const int cost_b = mp_plan_cost( 1, mp_plan_of( 1 ) );
-    REQUIRE( cost_a > 0 );
     REQUIRE( cost_b > 0 );
-    const int moves_a = a.get_moves();
     const int moves_b = g->player_at( 1 ).get_moves();
-
-    // The first blow lands before this round resolves. Killing it here keeps
-    // the test deterministic: a live melee roll could miss, and the point is
-    // the guard for the plan whose target is already a corpse.
-    zombie.die( &get_map(), nullptr );
-    REQUIRE( zombie.is_dead() );
 
     mp_resolve_round( 2 );
 
-    // A miss is not a refusal: the plan is spent, nobody moves, no error text.
-    CHECK( a.pos_bub() == a_start );
+    // The first attack killed the target and the group cleanup removed the
+    // corpse; the second plan is a miss that spends its own cost and is not
+    // reported as a refusal.
+    CHECK( get_creature_tracker().creature_at<Creature>( zombie_pos ) == nullptr );
     CHECK( g->player_at( 1 ).pos_bub() == b_start );
-    CHECK( a.get_moves() == moves_a - cost_a );
     CHECK( g->player_at( 1 ).get_moves() == moves_b - cost_b );
-    CHECK( mp_plan_error( 0 ).empty() );
     CHECK( mp_plan_error( 1 ).empty() );
+    CHECK( mp_plan_phase() == mp_round_phase::done );
 }
 
 TEST_CASE( "a_dead_actor_does_not_act", "[mp]" )
