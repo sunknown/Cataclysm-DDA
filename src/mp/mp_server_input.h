@@ -3,6 +3,7 @@
 #define CATA_SRC_MP_MP_SERVER_INPUT_H
 
 #include <cstddef>
+#include <memory>
 #include <string>
 
 #include "input_enums.h"
@@ -108,7 +109,14 @@ void mp_server_stop_readers();
 // from the join phase, or installing a replacement client's wire on it. The
 // single-session stop also discards whatever the previous wire queued -- those
 // events belong to the client that left, not to the one taking the seat.
-void mp_server_start_reader( mp_session &session );
+//
+// The start takes an optional replacement wire: when one is supplied it is
+// adopted and claimed for the new reader under the same lock, so no other
+// thread can observe the session's new transport while reader_running still
+// says "nobody owns it". Pass nothing to start a reader on the wire the session
+// already has.
+void mp_server_start_reader( mp_session &session,
+                             std::shared_ptr<mp_transport> transport = nullptr );
 void mp_server_stop_reader( mp_session &session );
 
 // Parks until some seat has something for somebody: an event was queued, or a
@@ -118,7 +126,9 @@ void mp_server_stop_reader( mp_session &session );
 // Wake-ups are edge-triggered: the call returns when something happened since
 // the previous call, so a seat that is permanently dead does not make the
 // world spin -- one wake per reader exit is all a reader that has stopped can
-// produce.
+// produce. A caller therefore must drain after every wake, calling
+// mp_server_take_control() until it returns false, and must not assume one wake
+// means one message: several can be queued before the wait returns.
 bool mp_server_wait_for_events( int timeout_ms );
 
 // Takes the oldest message for the round loop off any seat's control queue and

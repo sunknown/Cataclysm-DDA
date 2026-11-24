@@ -2,8 +2,10 @@
 
 #if defined(MP_SERVER)
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <thread>
@@ -1445,6 +1447,243 @@ TEST_CASE( "closing_the_transport_wakes_the_event_wait", "[mp]" )
     size_t slot = 0;
     mp_control got;
     CHECK_FALSE( mp_server_take_control( slot, got ) );
+}
+
+// Whether the thread blocked in a wait for up to `limit` has returned yet.
+static bool wait_for_flag( const std::atomic<bool> &flag,
+                           const std::chrono::milliseconds limit )
+{
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while( !flag.load() && std::chrono::steady_clock::now() < deadline ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+    }
+    return flag.load();
+}
+
+// Runs one blocking seat wait on its own thread and reports whether it got back.
+struct parked_wait {
+    std::atomic<bool> returned{ false };
+    std::atomic<int> type{ -1 };
+    std::thread thread;
+
+    explicit parked_wait( mp_session *const seat ) {
+        thread = std::thread( [this, seat]() {
+            const input_event ev = mp_server_wait_for_input_of( seat, &test_input_ctx, -1 );
+            type.store( static_cast<int>( ev.type ) );
+            returned.store( true );
+        } );
+    }
+    parked_wait( const parked_wait & ) = delete;
+    parked_wait &operator=( const parked_wait & ) = delete;
+    ~parked_wait() {
+        if( thread.joinable() ) {
+            thread.detach();
+        }
+    }
+    // Joins after the wait came back; on a failure the caller must unblock it
+    // first (see the tests) so a broken build cannot hang the binary.
+    void finish() {
+        if( thread.joinable() ) {
+            thread.join();
+        }
+    }
+};
+
+TEST_CASE( "a_closed_wire_wakes_a_blocking_seat_wait", "[mp]" )
+{
+    // The production input wait uses -1 (block until something happens). A
+    // client that quits while its player is parked there must wake the seat:
+    // before the reader dropped reader_running on exit, and with no transport
+    // check in the predicate, the notification was swallowed and the thread
+    // slept forever.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+    mp_session *const seat = mp_active_session();
+    REQUIRE( seat != nullptr );
+
+    parked_wait wait( seat );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+    REQUIRE_FALSE( wait.returned.load() );
+
+    pair.b->close();
+
+    if( !wait_for_flag( wait.returned, std::chrono::seconds( 5 ) ) ) {
+        // Unblock the waiter so the failure is a CHECK, not a hung binary.
+        mp_server_stop_reader( *seat );
+    }
+    wait.finish();
+    CHECK( wait.returned.load() );
+    CHECK( wait.type.load() == static_cast<int>( input_event_t::timeout ) );
+}
+
+TEST_CASE( "a_queued_plan_does_not_spin_the_seat_input_wait", "[mp]" )
+{
+    // A plan belongs to the world; the seat leaves it in the queue. If the seat
+    // treated it as an arrival it would return from the wait immediately, loop,
+    // and burn its thread until the world drained the plan -- and a -1 wait
+    // would instead be one sleep.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+    mp_session *const seat = mp_active_session();
+    REQUIRE( seat != nullptr );
+
+    mp_control plan;
+    plan.kind = mp_control_kind::plan;
+    plan.plan.kind = mp_plan_kind::move;
+    plan.plan.seq = 3;
+    send_control( *pair.b, plan );
+    REQUIRE( mp_server_wait_for_events( 1000 ) );
+
+    timespec before {};
+    timespec after {};
+    REQUIRE( clock_gettime( CLOCK_THREAD_CPUTIME_ID, &before ) == 0 );
+    const input_event ev = mp_server_wait_for_input_of( seat, &test_input_ctx, 300 );
+    REQUIRE( clock_gettime( CLOCK_THREAD_CPUTIME_ID, &after ) == 0 );
+    const double cpu_ms = ( after.tv_sec - before.tv_sec ) * 1000.0 +
+                          ( after.tv_nsec - before.tv_nsec ) / 1000000.0;
+
+    CHECK( ev.type == input_event_t::timeout );
+    // A spin spends the whole budget on this thread. A sleeping wait spends
+    // almost nothing, so anything under a third of it cannot be the bug.
+    CHECK( cpu_ms < 100.0 );
+
+    // The seat did not eat the plan: the world still gets it.
+    size_t slot = 99;
+    mp_control got;
+    REQUIRE( mp_server_take_control( slot, got ) );
+    CHECK( slot == 0 );
+    CHECK( got.kind == mp_control_kind::plan );
+    CHECK( got.plan.seq == 3 );
+}
+
+TEST_CASE( "take_control_consumes_describe_and_resize_and_wakes_the_seat", "[mp]" )
+{
+    // Ruling 2 hands describe/resize/bye to mp_server_take_control, so the
+    // world is what turns a hover or resize into seat state. The seat may be
+    // parked in a -1 wait, so consuming the message must also wake it -- even
+    // when the message was queued without the reader's own doorbell, which is
+    // exactly the case here.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+    mp_session *const seat = mp_active_session();
+    REQUIRE( seat != nullptr );
+    seat->caps = MP_CAP_DESCRIBE;
+    mp_session_ui_enter( *seat );
+
+    size_t slot = 99;
+    mp_control got;
+
+    // --- describe ---
+    parked_wait hover( seat );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+    REQUIRE_FALSE( hover.returned.load() );
+    {
+        std::lock_guard<std::mutex> lock( seat->inbox_mutex );
+        mp_control msg;
+        msg.kind = mp_control_kind::describe;
+        msg.describe.seq = 7;
+        msg.describe.w = 4;
+        seat->control_inbox.push_back( msg );
+    }
+    CHECK_FALSE( mp_server_take_control( slot, got ) );
+    if( !wait_for_flag( hover.returned, std::chrono::seconds( 5 ) ) ) {
+        mp_server_stop_reader( *seat );
+    }
+    hover.finish();
+    CHECK( hover.returned.load() );
+    CHECK( hover.type.load() == static_cast<int>( input_event_t::timeout ) );
+    {
+        std::lock_guard<std::mutex> lock( seat->inbox_mutex );
+        REQUIRE( seat->describe_pending.has_value() );
+        CHECK( seat->describe_pending->seq == 7 );
+        // Due at once (the interval starts from the epoch in a fresh session),
+        // which is what the seat's predicate saw.
+        const auto due = seat->describe_last +
+                         std::chrono::milliseconds( MP_DESCRIBE_MIN_INTERVAL_MS );
+        CHECK( std::chrono::steady_clock::now() >= due );
+        seat->describe_pending.reset();
+    }
+
+    // --- resize ---
+    parked_wait resize( seat );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+    REQUIRE_FALSE( resize.returned.load() );
+    {
+        std::lock_guard<std::mutex> lock( seat->inbox_mutex );
+        mp_control msg;
+        msg.kind = mp_control_kind::resize;
+        msg.resize.width = 60;
+        msg.resize.height = 20;
+        seat->control_inbox.push_back( msg );
+    }
+    CHECK_FALSE( mp_server_take_control( slot, got ) );
+    if( !wait_for_flag( resize.returned, std::chrono::seconds( 5 ) ) ) {
+        mp_server_stop_reader( *seat );
+    }
+    resize.finish();
+    CHECK( resize.returned.load() );
+    CHECK( resize.type.load() == static_cast<int>( input_event_t::timeout ) );
+
+    int width = 0;
+    int height = 0;
+    REQUIRE( mp_server_take_resize_request( width, height ) );
+    CHECK( width == 60 );
+    CHECK( height == 20 );
+}
+
+TEST_CASE( "a_replacement_wire_is_claimed_by_its_reader_before_it_is_visible", "[mp]" )
+{
+    // Reconnect keeps the seat's player thread alive while the wire is swapped.
+    // If the fresh transport were published while reader_running was still
+    // false, the seat's input wait could read the wire itself and then race the
+    // new reader for the same frames -- mp_transport::recv is not reentrant.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    const reader_scope readers;
+    mp_session *const seat = mp_active_session();
+    REQUIRE( seat != nullptr );
+
+    // Exactly the sequence install_client_on_seat uses.
+    mp_server_stop_reader( *seat );
+    mp_loopback_pair fresh = mp_make_loopback_pair();
+    mp_server_start_reader( *seat, fresh.a );
+    {
+        std::lock_guard<std::mutex> lock( seat->inbox_mutex );
+        CHECK( seat->reader_running );
+        CHECK( seat->transport == fresh.a );
+    }
+
+    // One consumer only: the reader delivers the key, and the seat's wait sees
+    // it as a queued event.
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event.type = input_event_t::keyboard_char;
+    key.event.sequence.push_back( 'z' );
+    send_control( *fresh.b, key );
+    REQUIRE( mp_server_wait_for_events( 1000 ) );
+
+    const input_event got = mp_server_wait_for_input_of( seat, &test_input_ctx, 2000 );
+    CHECK( got.type == input_event_t::keyboard_char );
+    CHECK( got.sequence == std::vector<int> { 'z' } );
 }
 
 #endif // MP_SERVER

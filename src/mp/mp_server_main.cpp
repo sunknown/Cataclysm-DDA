@@ -774,13 +774,23 @@ static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session
     // copied so no stale flag or hover request survives into the newcomer.
     mp_native_log_clear_rect();
     mp_session_ui_leave( seat );
-    seat.transport = std::move( fresh->transport );
+    // The replacement wire is held back until the end: it is published and its
+    // reader claimed in one step (mp_server_start_reader), so the seat's input
+    // wait can never see a live fresh transport while reader_running still says
+    // nobody owns it -- which would let it read the wire the new reader reads.
+    std::shared_ptr<mp_transport> fresh_wire = std::move( fresh->transport );
     seat.grid = std::move( fresh->grid );
     seat.cursor_x = fresh->cursor_x;
     seat.cursor_y = fresh->cursor_y;
     seat.cursor_visible = fresh->cursor_visible;
     seat.cursor_changed = fresh->cursor_changed;
-    seat.pending_resize = std::move( fresh->pending_resize );
+    {
+        // The seat's input wait reads this in its predicate; no reader is
+        // running, but the player thread is alive, and the write must not race
+        // its read.
+        std::lock_guard<std::mutex> lock( seat.inbox_mutex );
+        seat.pending_resize = std::move( fresh->pending_resize );
+    }
     seat.name = std::move( fresh->name );
     seat.card_save_id = std::move( fresh->card_save_id );
     seat.card_world = std::move( fresh->card_world );
@@ -798,8 +808,9 @@ static void install_client_on_seat( mp_session &seat, std::unique_ptr<mp_session
     seat.log_seq = 0;
     seat.log_hash = 0;
     seat.log_sent_once = false;
-    // The new wire needs its own reader; the old one was joined above.
-    mp_server_start_reader( seat );
+    // The new wire needs its own reader; the old one was joined above. The wire
+    // becomes visible to the seat only together with the claim on it.
+    mp_server_start_reader( seat, std::move( fresh_wire ) );
 }
 
 bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::string &err )

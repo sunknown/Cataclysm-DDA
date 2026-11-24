@@ -110,6 +110,11 @@ void dispatch( const mp_control &msg, mp_session *const s, player_context *const
             // any caller that bypasses dispatch (e.g. resize_term).
             if( msg.resize.width <= MP_MAX_TERMINAL_WIDTH &&
                 msg.resize.height <= MP_MAX_TERMINAL_HEIGHT ) {
+                // Written under inbox_mutex: the seat's input wait reads it in
+                // its predicate, and the world thread is the one dispatching.
+                // The lock is released before this function returns, and every
+                // caller notifies the seat afterwards.
+                std::lock_guard<std::mutex> lock( s->inbox_mutex );
                 s->pending_resize = msg.resize;
             }
             break;
@@ -121,13 +126,19 @@ void dispatch( const mp_control &msg, mp_session *const s, player_context *const
             // with empty lines, so the client always gets its seq back. The
             // answer itself is built in the flush, which is the only place the
             // baton and the game state are available.
-            if( mp_session_can_describe( *s ) ) {
+            {
                 mp_describe_request req;
                 req.seq = msg.describe.seq;
                 req.x = msg.describe.x;
                 req.y = msg.describe.y;
                 req.w = msg.describe.w;
-                s->describe_pending = req;
+                // Same mutex as the seat's input wait: describe_pending is part
+                // of its predicate, and this write comes from whichever thread
+                // dispatched the message (the seat itself or the world).
+                std::lock_guard<std::mutex> lock( s->inbox_mutex );
+                if( mp_session_can_describe( *s ) ) {
+                    s->describe_pending = req;
+                }
             }
             break;
         case mp_control_kind::bye:
@@ -226,8 +237,13 @@ void reader_main( mp_session *const s )
 {
     // The wire this reader was started for. A replacement client installs a new
     // transport on the same session and gets a fresh reader; this one must not
-    // follow the session's transport pointer to it.
-    const std::shared_ptr<mp_transport> t = s->transport;
+    // follow the session's transport pointer to it. Read under the mutex that
+    // the install path holds while it swaps the wire in.
+    std::shared_ptr<mp_transport> t;
+    {
+        std::lock_guard<std::mutex> lock( s->inbox_mutex );
+        t = s->transport;
+    }
     while( !s->reader_stop.load() ) {
         if( !t ) {
             break;
@@ -261,6 +277,15 @@ void reader_main( mp_session *const s )
         s->inbox_cv.notify_all();
         signal_events();
     }
+    // A reader that exits on its own -- a dead wire, or a stop -- must drop
+    // reader_running under the inbox mutex before waking anybody. The seat's
+    // input wait is parked on a predicate that includes this flag, and with the
+    // production's blocking (-1) timeout a stale `true` would keep it asleep
+    // forever when the client quits while its player is waiting for input.
+    {
+        std::lock_guard<std::mutex> lock( s->inbox_mutex );
+        s->reader_running = false;
+    }
     // Wake both audiences: the seat may be parked in its input wait and the
     // world may be parked in mp_server_wait_for_events(). A deliberate stop is
     // the teardown's own business and is not an event the world must handle.
@@ -274,6 +299,73 @@ bool session_reader_running( mp_session &s )
 {
     std::lock_guard<std::mutex> lock( s.inbox_mutex );
     return s.reader_running;
+}
+
+std::shared_ptr<mp_transport> session_transport( mp_session &s )
+{
+    std::lock_guard<std::mutex> lock( s.inbox_mutex );
+    return s.transport;
+}
+
+// Whether the control queue holds a message the seat handles itself. Round
+// controls are deliberately excluded: a queued plan stays until the world
+// takes it, so counting it as an arrival would make the input wait return at
+// once on every pass and burn the seat's thread until the plan was drained.
+// Caller holds inbox_mutex.
+bool has_local_control_locked( const mp_session &s )
+{
+    for( const mp_control &msg : s.control_inbox ) {
+        if( !is_round_control( msg.kind ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool resize_pending_of( mp_session &s )
+{
+    std::lock_guard<std::mutex> lock( s.inbox_mutex );
+    return s.pending_resize.has_value();
+}
+
+bool describe_due_of( mp_session &s )
+{
+    std::lock_guard<std::mutex> lock( s.inbox_mutex );
+    return s.describe_pending && describe_time_left( s ).count() == 0;
+}
+
+// How long the input wait may still sleep: the caller's budget, shortened by a
+// hover answer that falls due earlier. A negative value means "no limit".
+// Caller holds inbox_mutex.
+int wait_remaining_locked( const mp_session &s, const int timeout_ms,
+                           const clock::time_point deadline )
+{
+    int remaining = -1;
+    if( timeout_ms >= 0 ) {
+        remaining = static_cast<int>( std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          deadline - clock::now() ).count() );
+        if( remaining < 0 ) {
+            remaining = 0;
+        }
+    }
+    // The hover feed's own deadline: a request that is due must be built by the
+    // caller's next flush, so the wait may not sleep past the interval even when
+    // the caller asked for longer. It only ever shortens the caller's budget,
+    // never extends it -- a seat that lost its clock must not turn a brief wait
+    // into a long one.
+    if( s.describe_pending ) {
+        const int until_due = static_cast<int>( describe_time_left( s ).count() );
+        if( remaining < 0 || until_due < remaining ) {
+            remaining = until_due;
+        }
+    }
+    return remaining;
+}
+
+int wait_remaining( mp_session &s, const int timeout_ms, const clock::time_point deadline )
+{
+    std::lock_guard<std::mutex> lock( s.inbox_mutex );
+    return wait_remaining_locked( s, timeout_ms, deadline );
 }
 
 // Moves everything the reader collected into the player's own queue, which is
@@ -419,6 +511,7 @@ void mp_server_input_reset_for_test()
     }
     // Clear pending resize on the active session if there is one.
     if( mp_session *s = mp_active_session() ) {
+        std::lock_guard<std::mutex> lock( s->inbox_mutex );
         s->pending_resize.reset();
         // The hover feed's per-seat state dies with the test's world, exactly
         // as leaving the UI clears it: a stale request or interval must not
@@ -428,15 +521,30 @@ void mp_server_input_reset_for_test()
     }
 }
 
-void mp_server_start_reader( mp_session &s )
+void mp_server_start_reader( mp_session &s, std::shared_ptr<mp_transport> transport )
 {
     std::lock_guard<std::mutex> lock( s.inbox_mutex );
+    // A replacement wire is adopted and its reader claimed under this one lock.
+    // The seat's input wait checks reader_running to decide whether it may read
+    // the wire itself, so publishing a live fresh transport while that flag was
+    // still false would let the seat read it -- and mp_transport::recv is not
+    // reentrant, so the reader this function is about to start would corrupt
+    // the frame stream.
+    if( transport ) {
+        s.transport = std::move( transport );
+    }
     if( s.reader_running || s.reader.joinable() || !s.transport ) {
         return;
     }
     s.reader_stop.store( false );
     s.reader_running = true;
-    s.reader = std::thread( reader_main, &s );
+    try {
+        s.reader = std::thread( reader_main, &s );
+    } catch( ... ) {
+        // Do not leave the seat believing a reader owns its wire when none does.
+        s.reader_running = false;
+        throw;
+    }
 }
 
 void mp_server_stop_reader( mp_session &s )
@@ -598,11 +706,11 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
     // them touches the game -- so it is handled here rather than waiting for
     // the world: a busy world must not make a resize unresponsive.
     handle_local_controls( *s );
-    if( s->pending_resize || ( s->describe_pending && describe_time_left( *s ).count() == 0 ) ) {
+    if( resize_pending_of( *s ) || describe_due_of( *s ) ) {
         return make_timeout_event();
     }
 
-    const std::shared_ptr<mp_transport> t = s->transport;
+    const std::shared_ptr<mp_transport> t = session_transport( *s );
     if( !t || !t->connected() ) {
         // No wire at all, or the peer closed it: there is nothing to wait
         // on, so the game sees a timeout event rather than a spin or a
@@ -619,32 +727,12 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
             return make_timeout_event();
         }
 
-        // A negative timeout means "wait as long as it takes".
-        int remaining = -1;
-        if( timeout_ms >= 0 ) {
-            remaining = static_cast<int>( std::chrono::duration_cast<std::chrono::milliseconds>(
-                                              deadline - clock::now() ).count() );
-            if( remaining < 0 ) {
-                remaining = 0;
-            }
-        }
-        // The hover feed's own deadline: a request that is due must be built
-        // by the caller's next flush, so the wait may not sleep past the
-        // interval even when the caller asked for longer. It only ever
-        // shortens the caller's budget, never extends it -- a seat that lost
-        // its clock must not turn a brief wait into a long one.
-        if( s->describe_pending ) {
-            const int until_due = static_cast<int>( describe_time_left( *s ).count() );
-            if( remaining < 0 || until_due < remaining ) {
-                remaining = until_due;
-            }
-        }
-
         if( !session_reader_running( *s ) ) {
             // No reader owns this wire -- the input module's own tests, and any
             // single-seat path that built a session directly -- so this call is
             // the only consumer and reads it as it always did. With a reader,
             // parsing here would race it for the frame.
+            const int remaining = wait_remaining( *s, timeout_ms, deadline );
             const std::optional<std::vector<uint8_t>> msg = t->recv( remaining );
             if( !msg ) {
                 // Either the wait expired or the transport went away; both read
@@ -653,20 +741,33 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
             }
             dispatch_frame( *msg, s, ctx );
         } else {
+            // The predicate is what makes this wait impossible to miss: it is
+            // evaluated under inbox_mutex, the same lock every enqueue and every
+            // wait-state write takes, so an event that landed between the drain
+            // above and this lock is still seen. A bare wait() would sleep past
+            // it -- and with the negative (blocking) timeout the seat would then
+            // stay asleep until some other frame arrived, swallowing the
+            // keystroke entirely.
+            //
+            // Only a message the seat can actually consume counts as an arrival.
+            // The round controls (plan*) are deliberately left for the world, so
+            // counting them here would make every pass return at once and spin
+            // this thread until the world drained the plan.
+            const auto arrival = [s, &t]() {
+                return !s->input_inbox.empty() || has_local_control_locked( *s ) ||
+                       s->pending_resize.has_value() ||
+                       ( s->describe_pending && describe_time_left( *s ).count() == 0 ) ||
+                       !t->connected() || !s->reader_running;
+            };
+            // The remaining time is computed under the same lock the wait
+            // releases. Computing it before taking the lock leaves a window in
+            // which a hover lands: its predicate is false until the due instant,
+            // and with a -1 wait there is no deadline to fall back on.
+            std::unique_lock<std::mutex> lock( s->inbox_mutex );
+            const int remaining = wait_remaining_locked( *s, timeout_ms, deadline );
             if( remaining == 0 ) {
                 return make_timeout_event();
             }
-            // The predicate is what makes this wait impossible to miss: it is
-            // evaluated under inbox_mutex, the same lock every enqueue takes,
-            // so an event that landed between the drain above and this lock is
-            // still seen. A bare wait() would sleep past it -- and with the
-            // negative (blocking) timeout the seat would then stay asleep until
-            // some other frame arrived, swallowing the keystroke entirely.
-            const auto arrival = [s]() {
-                return !s->input_inbox.empty() || !s->control_inbox.empty() ||
-                       s->pending_resize || !s->reader_running;
-            };
-            std::unique_lock<std::mutex> lock( s->inbox_mutex );
             if( remaining < 0 ) {
                 s->inbox_cv.wait( lock, arrival );
             } else {
@@ -684,7 +785,7 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
             return buffered;
         }
         handle_local_controls( *s );
-        if( s->pending_resize ) {
+        if( resize_pending_of( *s ) ) {
             // A resize is not a keystroke, but it still has to end the wait:
             // the curses backend applies it on the way back in, redraws at the
             // new size and flushes that redraw. Blocking on here would leave
@@ -694,7 +795,7 @@ input_event mp_server_wait_for_input_of( mp_session *const s, player_context *co
             // keystroke; the request stays recorded for the backend to take.
             return make_timeout_event();
         }
-        if( s->describe_pending && describe_time_left( *s ).count() == 0 ) {
+        if( describe_due_of( *s ) ) {
             // The hover answer is due and the caller's flush builds it under
             // the baton. Waking rather than answering keeps game state out of
             // this path; input and a resize above still win this wake, so a
@@ -719,10 +820,11 @@ void mp_server_pump()
         // a frame, and half a frame is worse than a later one.
         return;
     }
-    if( !s->transport || !s->transport->connected() ) {
+    const std::shared_ptr<mp_transport> t = session_transport( *s );
+    if( !t || !t->connected() ) {
         return;
     }
-    while( const std::optional<std::vector<uint8_t>> msg = s->transport->recv( 0 ) ) {
+    while( const std::optional<std::vector<uint8_t>> msg = t->recv( 0 ) ) {
         dispatch_frame( *msg, s, ctx );
     }
 }
@@ -730,7 +832,11 @@ void mp_server_pump()
 bool mp_server_take_resize_request( int &width, int &height )
 {
     mp_session *const s = mp_active_session();
-    if( !s || !s->pending_resize ) {
+    if( !s ) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock( s->inbox_mutex );
+    if( !s->pending_resize ) {
         return false;
     }
     width = s->pending_resize->width;
@@ -745,7 +851,7 @@ bool mp_server_resize_pending()
     if( !s ) {
         return false;
     }
-    return s->pending_resize.has_value();
+    return resize_pending_of( *s );
 }
 
 #endif // MP_SERVER
