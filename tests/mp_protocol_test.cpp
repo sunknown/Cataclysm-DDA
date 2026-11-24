@@ -420,6 +420,111 @@ TEST_CASE( "mp_control_accepts_a_describe_at_the_limits", "[mp]" )
     CHECK( got.describe.lines[0].runs[0].text.size() == 16u * 1024u );
 }
 
+TEST_CASE( "mp_control_round_trips_a_plan", "[mp]" )
+{
+    mp_control sent;
+    sent.kind = mp_control_kind::plan;
+    sent.plan.seq = 7;
+    sent.plan.kind = mp_plan_kind::melee;
+    sent.plan.x = 33;
+    sent.plan.y = 44;
+    sent.plan.z = -1;
+    sent.plan.cost = 65;
+    sent.plan.label = "zombie";
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::plan );
+    CHECK( got.plan.seq == 7 );
+    CHECK( got.plan.kind == mp_plan_kind::melee );
+    CHECK( got.plan.x == 33 );
+    CHECK( got.plan.y == 44 );
+    CHECK( got.plan.z == -1 );
+    CHECK( got.plan.cost == 65 );
+    CHECK( got.plan.label == "zombie" );
+}
+
+TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
+{
+    mp_control sent;
+    sent.kind = mp_control_kind::party;
+    sent.party.phase = 1;
+    mp_party_seat a;
+    a.slot = 0; a.moves = 120; a.speed = 120; a.ready = true;
+    a.plan = mp_plan_kind::move; a.px = 10; a.py = 11; a.pcost = 100; a.menu = "inventory";
+    a.name = "Alice";
+    mp_party_seat b;
+    b.slot = 1; b.moves = 0; b.speed = 100; b.passed = true; b.connected = true;
+    b.name = "Bob";
+    b.error = "needs 100 AP, you have 65";
+    sent.party.seats = { a, b };
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::party );
+    CHECK( got.party.phase == 1 );
+    REQUIRE( got.party.seats.size() == 2 );
+    CHECK( got.party.seats[0].slot == 0 );
+    CHECK( got.party.seats[0].moves == 120 );
+    CHECK( got.party.seats[0].speed == 120 );
+    CHECK( got.party.seats[0].ready );
+    CHECK_FALSE( got.party.seats[0].passed );
+    CHECK_FALSE( got.party.seats[0].connected );
+    CHECK_FALSE( got.party.seats[0].away );
+    CHECK( got.party.seats[0].plan == mp_plan_kind::move );
+    CHECK( got.party.seats[0].px == 10 );
+    CHECK( got.party.seats[0].py == 11 );
+    CHECK( got.party.seats[0].pcost == 100 );
+    CHECK( got.party.seats[0].menu == "inventory" );
+    CHECK( got.party.seats[0].name == "Alice" );
+    CHECK( got.party.seats[0].error.empty() );
+    CHECK( got.party.seats[1].passed );
+    CHECK( got.party.seats[1].connected );
+    CHECK( got.party.seats[1].name == "Bob" );
+    CHECK( got.party.seats[1].error == "needs 100 AP, you have 65" );
+}
+
+TEST_CASE( "mp_control_round_trips_plan_ready_and_phase", "[mp]" )
+{
+    // plan_cancel, plan_ready and plan_pass carry only the client sequence.
+    for( const mp_control_kind kind :
+         { mp_control_kind::plan_cancel, mp_control_kind::plan_ready,
+           mp_control_kind::plan_pass } ) {
+        mp_control sent;
+        sent.kind = kind;
+        sent.plan.seq = 19;
+
+        mp_control got;
+        REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+        CHECK( got.kind == kind );
+        CHECK( got.plan.seq == 19 );
+    }
+
+    mp_control sent;
+    sent.kind = mp_control_kind::phase;
+    sent.phase = 2;
+
+    mp_control got;
+    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    CHECK( got.kind == mp_control_kind::phase );
+    CHECK( got.phase == 2 );
+}
+
+TEST_CASE( "mp_control_rejects_an_unknown_plan_kind", "[mp]" )
+{
+    mp_control got;
+    CHECK_FALSE( mp_control_from_json(
+                     R"({"t":"plan","seq":1,"kind":"nonsense","x":0,"y":0,"z":0,"cost":0,"label":""})",
+                     got ) );
+    // The party seats carry the same enum, so an unknown value must fail there
+    // too rather than falling back to none.
+    CHECK_FALSE( mp_control_from_json(
+                     R"({"t":"party","phase":1,"seats":[{"slot":0,"moves":0,"speed":0,"ready":false,)"
+                     R"("passed":false,"connected":false,"away":false,"plan":"nonsense",)"
+                     R"("px":0,"py":0,"pcost":0,"menu":"","name":"","error":""}]})",
+                     got ) );
+}
+
 TEST_CASE( "mp_control_from_json_ignores_an_unknown_describe_member", "[mp]" )
 {
     mp_control got;

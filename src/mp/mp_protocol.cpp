@@ -69,6 +69,18 @@ const char *kind_to_string( const mp_control_kind kind )
             return "log";
         case mp_control_kind::describe:
             return "describe";
+        case mp_control_kind::plan:
+            return "plan";
+        case mp_control_kind::plan_cancel:
+            return "plan_cancel";
+        case mp_control_kind::plan_ready:
+            return "plan_ready";
+        case mp_control_kind::plan_pass:
+            return "plan_pass";
+        case mp_control_kind::party:
+            return "party";
+        case mp_control_kind::phase:
+            return "phase";
     }
     return "bye";
 }
@@ -93,6 +105,64 @@ bool string_to_kind( const std::string &text, mp_control_kind &out )
         out = mp_control_kind::log;
     } else if( text == "describe" ) {
         out = mp_control_kind::describe;
+    } else if( text == "plan" ) {
+        out = mp_control_kind::plan;
+    } else if( text == "plan_cancel" ) {
+        out = mp_control_kind::plan_cancel;
+    } else if( text == "plan_ready" ) {
+        out = mp_control_kind::plan_ready;
+    } else if( text == "plan_pass" ) {
+        out = mp_control_kind::plan_pass;
+    } else if( text == "party" ) {
+        out = mp_control_kind::party;
+    } else if( text == "phase" ) {
+        out = mp_control_kind::phase;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+// The plans are their own enum but share the wire with the control kinds: a
+// lowercase name per enumerator, refused when unknown rather than defaulted,
+// because defaulting to none would silently drop a peer's intent.
+const char *plan_kind_to_string( const mp_plan_kind kind )
+{
+    switch( kind ) {
+        case mp_plan_kind::none:
+            return "none";
+        case mp_plan_kind::move:
+            return "move";
+        case mp_plan_kind::melee:
+            return "melee";
+        case mp_plan_kind::ranged:
+            return "ranged";
+        case mp_plan_kind::use_item:
+            return "use_item";
+        case mp_plan_kind::interact:
+            return "interact";
+        case mp_plan_kind::pass:
+            return "pass";
+    }
+    return "none";
+}
+
+bool string_to_plan_kind( const std::string &text, mp_plan_kind &out )
+{
+    if( text == "none" ) {
+        out = mp_plan_kind::none;
+    } else if( text == "move" ) {
+        out = mp_plan_kind::move;
+    } else if( text == "melee" ) {
+        out = mp_plan_kind::melee;
+    } else if( text == "ranged" ) {
+        out = mp_plan_kind::ranged;
+    } else if( text == "use_item" ) {
+        out = mp_plan_kind::use_item;
+    } else if( text == "interact" ) {
+        out = mp_plan_kind::interact;
+    } else if( text == "pass" ) {
+        out = mp_plan_kind::pass;
     } else {
         return false;
     }
@@ -273,6 +343,47 @@ std::string mp_control_to_json( const mp_control &msg )
             jo.member( "w", static_cast<int>( msg.describe.w ) );
             write_lines( jo, "lines", msg.describe.lines );
             break;
+        case mp_control_kind::plan:
+            jo.member( "seq", static_cast<int>( msg.plan.seq ) );
+            jo.member( "kind", std::string( plan_kind_to_string( msg.plan.kind ) ) );
+            jo.member( "x", msg.plan.x );
+            jo.member( "y", msg.plan.y );
+            jo.member( "z", msg.plan.z );
+            jo.member( "cost", msg.plan.cost );
+            jo.member( "label", msg.plan.label );
+            break;
+        case mp_control_kind::plan_cancel:
+        case mp_control_kind::plan_ready:
+        case mp_control_kind::plan_pass:
+            jo.member( "seq", static_cast<int>( msg.plan.seq ) );
+            break;
+        case mp_control_kind::party:
+            jo.member( "phase", static_cast<int>( msg.party.phase ) );
+            jo.member( "seats" );
+            jo.start_array();
+            for( const mp_party_seat &seat : msg.party.seats ) {
+                jo.start_object();
+                jo.member( "slot", static_cast<int>( seat.slot ) );
+                jo.member( "moves", seat.moves );
+                jo.member( "speed", seat.speed );
+                jo.member( "ready", seat.ready );
+                jo.member( "passed", seat.passed );
+                jo.member( "connected", seat.connected );
+                jo.member( "away", seat.away );
+                jo.member( "plan", std::string( plan_kind_to_string( seat.plan ) ) );
+                jo.member( "px", seat.px );
+                jo.member( "py", seat.py );
+                jo.member( "pcost", seat.pcost );
+                jo.member( "menu", seat.menu );
+                jo.member( "name", seat.name );
+                jo.member( "error", seat.error );
+                jo.end_object();
+            }
+            jo.end_array();
+            break;
+        case mp_control_kind::phase:
+            jo.member( "phase", static_cast<int>( msg.phase ) );
+            break;
     }
     jo.end_object();
     return stream.str();
@@ -395,6 +506,66 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 }
                 break;
             }
+            case mp_control_kind::plan:
+                if( !obj.has_string( "kind" ) ) {
+                    return false;
+                }
+                if( !string_to_plan_kind( obj.get_string( "kind" ), msg.plan.kind ) ) {
+                    // An intent this build does not understand must not be
+                    // guessed at: defaulting to none would drop a real plan.
+                    return false;
+                }
+                msg.plan.seq = static_cast<uint32_t>( std::max( 0, obj.get_int( "seq" ) ) );
+                msg.plan.x = obj.get_int( "x" );
+                msg.plan.y = obj.get_int( "y" );
+                msg.plan.z = obj.get_int( "z" );
+                msg.plan.cost = obj.get_int( "cost" );
+                msg.plan.label = obj.get_string( "label" );
+                break;
+            case mp_control_kind::plan_cancel:
+            case mp_control_kind::plan_ready:
+            case mp_control_kind::plan_pass:
+                msg.plan.seq = static_cast<uint32_t>( std::max( 0, obj.get_int( "seq" ) ) );
+                break;
+            case mp_control_kind::party: {
+                const auto byte = []( const int value ) {
+                    return static_cast<uint8_t>( std::clamp( value, 0, 255 ) );
+                };
+                msg.party.phase = byte( obj.get_int( "phase" ) );
+                JsonArray seats = obj.get_array( "seats" );
+                msg.party.seats.reserve( seats.size() );
+                for( size_t i = 0; i < seats.size(); i++ ) {
+                    JsonObject seat = seats.get_object( i );
+                    // Same reasoning as the outer object: an early refusal
+                    // below must not leave members unread, which would raise a
+                    // debugmsg triggered by remote input.
+                    seat.allow_omitted_members();
+                    mp_party_seat out_seat;
+                    out_seat.slot = byte( seat.get_int( "slot" ) );
+                    out_seat.moves = seat.get_int( "moves" );
+                    out_seat.speed = seat.get_int( "speed" );
+                    out_seat.ready = seat.get_bool( "ready" );
+                    out_seat.passed = seat.get_bool( "passed" );
+                    out_seat.connected = seat.get_bool( "connected" );
+                    out_seat.away = seat.get_bool( "away" );
+                    if( !seat.has_string( "plan" ) ||
+                        !string_to_plan_kind( seat.get_string( "plan" ), out_seat.plan ) ) {
+                        return false;
+                    }
+                    out_seat.px = seat.get_int( "px" );
+                    out_seat.py = seat.get_int( "py" );
+                    out_seat.pcost = seat.get_int( "pcost" );
+                    out_seat.menu = seat.get_string( "menu" );
+                    out_seat.name = seat.get_string( "name" );
+                    out_seat.error = seat.get_string( "error" );
+                    msg.party.seats.push_back( std::move( out_seat ) );
+                }
+                break;
+            }
+            case mp_control_kind::phase:
+                msg.phase = static_cast<uint8_t>(
+                                std::clamp( obj.get_int( "phase" ), 0, 255 ) );
+                break;
         }
         out = msg;
         return true;

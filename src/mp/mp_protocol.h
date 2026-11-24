@@ -11,7 +11,7 @@
 // Version of the wire protocol. Sent in the client's first message; a
 // mismatch is refused with an explanation rather than tolerated, because the
 // failure mode of a silent mismatch is a garbled screen.
-constexpr int MP_PROTOCOL_VERSION = 2;
+constexpr int MP_PROTOCOL_VERSION = 3;
 
 // Capability bits. A client asks for streams in its hello; the server answers
 // with the set it can serve in the hello_ack, so a client never waits for a
@@ -48,6 +48,12 @@ enum class mp_control_kind {
     character_card,
     log,
     describe,
+    plan,
+    plan_cancel,
+    plan_ready,
+    plan_pass,
+    party,
+    phase,
 };
 
 struct mp_hello {
@@ -150,6 +156,65 @@ struct mp_describe_msg {
     std::vector<mp_log_line> lines;
 };
 
+// What a client intends to do this round. The plan is ephemeral: it lives in
+// the round state on the server and is never saved. `cost` is the client's own
+// estimate for its overlay only -- the server recomputes it and the client
+// never decides what it can afford.
+enum class mp_plan_kind : uint8_t {
+    none,
+    move,
+    melee,
+    ranged,
+    use_item,
+    interact,
+    pass,
+};
+
+struct mp_plan_msg {
+    // Client sequence number, echoed in the party snapshot so a client can tell
+    // which of its plans the server accepted.
+    uint32_t seq = 0;
+    mp_plan_kind kind = mp_plan_kind::none;
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    int cost = 0;
+    // Display label: the creature or item the plan names, empty for plain
+    // movement.
+    std::string label;
+};
+
+// One seat's public round state in the party snapshot. `moves` is the seat's
+// current AP, `pcost` the server's cost of its plan (0 when it has none).
+struct mp_party_seat {
+    uint8_t slot = 0;
+    int moves = 0;
+    int speed = 0;
+    bool ready = false;
+    bool passed = false;
+    bool connected = false;
+    // Set while the seat is in a menu, so the client can draw the menu label
+    // and forward raw keys instead of mapping them to plans.
+    bool away = false;
+    mp_plan_kind plan = mp_plan_kind::none;
+    int px = 0;
+    int py = 0;
+    int pcost = 0;
+    // The menu label while the seat is in one, empty otherwise.
+    std::string menu;
+    // The seat's character name, for the party panel.
+    std::string name;
+    // The last rejection text for this seat, empty when none: the client shows
+    // it instead of guessing why a plan was refused.
+    std::string error;
+};
+
+// Server to client: the whole party's round state, sent whenever it changes.
+struct mp_party_msg {
+    uint8_t phase = 0;
+    std::vector<mp_party_seat> seats;
+};
+
 // One control message. Only the member matching `kind` is meaningful; this is
 // a plain struct rather than a variant so that adding a message type later is
 // a local edit.
@@ -164,6 +229,11 @@ struct mp_control {
     mp_character_card_msg character_card;
     mp_log_msg log;
     mp_describe_msg describe;
+    // plan and its three siblings (cancel/ready/pass) carry only the sequence.
+    mp_plan_msg plan;
+    mp_party_msg party;
+    // The round phase, meaningful for the `phase` message.
+    uint8_t phase = 0;
 };
 
 std::string mp_control_to_json( const mp_control &msg );
