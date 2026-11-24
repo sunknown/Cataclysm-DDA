@@ -1,0 +1,95 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "coordinates.h"
+#include "mp/mp_protocol.h"
+
+// The round state of a co-op session: what each seat intends to do, whether it
+// has committed to that intent, and where the round as a whole is. Called only
+// by the world thread while it holds the baton -- like the rest of the turn
+// machinery, there is no locking here because there is only one writer.
+//
+// Plans are ephemeral. They live in the process, are never saved, and are
+// cleared between rounds, because a plan names a tile and a creature in the
+// world as it is now; restoring one into a different world would be a lie.
+
+// Where the round is. `planning` collects plans; `resolving` executes them and
+// refuses anything new; `done` is the moment between a finished resolution and
+// the next round's planning phase. The orchestrator drives the transitions.
+enum class mp_round_phase : uint8_t {
+    planning,
+    resolving,
+    done,
+};
+
+// One seat's intent. `cost` is the client's own estimate for its overlay only:
+// the server recomputes the cost from the world (see mp_plan_cost) and the
+// client never decides what it can afford.
+struct mp_plan {
+    mp_plan_kind kind = mp_plan_kind::none;
+    tripoint_bub_ms target;
+    int cost = 0;
+    uint32_t seq = 0;
+    std::string label;
+};
+
+// Forgets every plan, readiness and pass in every seat. A session start (or a
+// test) calls this; the phase goes back to planning.
+void mp_plan_reset_all();
+
+// Forgets this round's plans, readiness and passes, keeping the phase: the
+// resolver decides when the round moves on, and reset_all is the one that
+// starts afresh.
+void mp_plan_reset_round();
+
+// Stores a seat's plan after validating it against the world. On refusal
+// `error` says why in words a player can read, and the previous plan (if any)
+// is left alone. On success the seat is no longer ready or passed: a new
+// intent means it has to be committed again.
+bool mp_plan_submit( size_t slot, const mp_plan &plan, std::string &error );
+
+// The server's estimate of what a plan costs in AP. Negative means the plan
+// cannot be costed (an unsupported or empty plan), which mp_plan_ready()
+// refuses. The client's `plan.cost` is never trusted.
+int mp_plan_cost( size_t slot, const mp_plan &plan );
+
+// Drops a seat's plan, readiness and pass. A cancelled pass does not get its
+// AP back: passing already spent it.
+void mp_plan_cancel( size_t slot );
+
+// Commits a seat's plan for this round, gated on the seat actually having the
+// AP. On refusal `error` says why; a negative cost is refused as an invalid
+// plan.
+bool mp_plan_ready( size_t slot, std::string &error );
+
+// Spends everything the seat has left and marks it done for this round.
+void mp_plan_pass( size_t slot );
+
+bool mp_plan_is_ready( size_t slot );
+bool mp_plan_is_passed( size_t slot );
+
+// A seat's stored plan, or a default-constructed plan when it has none.
+//
+// The result refers into the slot table, so it is valid only while that table
+// keeps its storage. The table grows when the number of player slots has grown
+// since the last call -- that is how a player joining mid-round is first seen,
+// and the growth happens inside the next call here, including a submit for the
+// new seat -- and mp_plan_reset_all() rebuilds it. The value behind a live
+// reference also changes whenever that seat's plan changes (submit, cancel,
+// pass, reset_round).
+//
+// Supported pattern: copy the plan and keep the copy. Any reference obtained
+// across a call that can grow or rebuild the table is dangling, and any
+// reference meant to keep a *value* across a plan change is stale.
+const mp_plan &mp_plan_of( size_t slot );
+
+// True when every eligible seat is ready or passed. Ineligible seats are
+// ignored, and an empty eligible set is vacuously complete.
+bool mp_plan_round_complete( const std::vector<bool> &eligible );
+
+mp_round_phase mp_plan_phase();
+void mp_plan_set_phase( mp_round_phase phase );
