@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "avatar.h"
@@ -21,6 +22,7 @@ struct mp_plan_slot {
     mp_plan plan;
     bool ready = false;
     bool passed = false;
+    std::string error;
 };
 
 // One entry per player slot, grown lazily because a seat can be added
@@ -65,6 +67,7 @@ void mp_plan_reset_round()
         slot.plan = mp_plan();
         slot.ready = false;
         slot.passed = false;
+        slot.error.clear();
     }
 }
 
@@ -113,6 +116,8 @@ bool mp_plan_submit( const size_t slot, const mp_plan &plan, std::string &error 
     entry.plan = plan;
     entry.ready = false;
     entry.passed = false;
+    // A new intent supersedes the last refusal reason.
+    entry.error.clear();
     return true;
 }
 
@@ -157,6 +162,7 @@ void mp_plan_cancel( const size_t slot )
     entry.plan = mp_plan();
     entry.ready = false;
     entry.passed = false;
+    entry.error.clear();
 }
 
 bool mp_plan_ready( const size_t slot, std::string &error )
@@ -193,6 +199,7 @@ void mp_plan_pass( const size_t slot )
     entry.passed = true;
     entry.plan = mp_plan();
     entry.ready = false;
+    entry.error.clear();
     g->player_at( slot ).set_moves( 0 );
 }
 
@@ -230,6 +237,25 @@ bool mp_plan_round_complete( const std::vector<bool> &eligible )
         }
     }
     return true;
+}
+
+const std::string &mp_plan_error( const size_t slot )
+{
+    static const std::string empty;
+    ensure_sized();
+    if( !seat_exists( slot ) ) {
+        return empty;
+    }
+    return g_slots[slot].error;
+}
+
+void mp_plan_set_error( const size_t slot, std::string error )
+{
+    ensure_sized();
+    if( !seat_exists( slot ) ) {
+        return;
+    }
+    g_slots[slot].error = std::move( error );
 }
 
 mp_round_phase mp_plan_phase()

@@ -91,5 +91,16 @@ const mp_plan &mp_plan_of( size_t slot );
 // ignored, and an empty eligible set is vacuously complete.
 bool mp_plan_round_complete( const std::vector<bool> &eligible );
 
+// The reason this seat's last plan was refused or could not run, in words a
+// player can read; empty when there is none. The resolver sets it when it
+// refuses a committed action (an unaffordable step, a kind this phase cannot
+// run), and the party broadcast carries it to the client. Accepting a new
+// intent for the seat -- submit, cancel, pass, reset_round -- clears it.
+//
+// Like mp_plan_of, the result refers into the slot table: copy it to keep the
+// text across a call that can grow or rebuild the table.
+const std::string &mp_plan_error( size_t slot );
+void mp_plan_set_error( size_t slot, std::string error );
+
 mp_round_phase mp_plan_phase();
 void mp_plan_set_phase( mp_round_phase phase );
