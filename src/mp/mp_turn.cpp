@@ -214,12 +214,15 @@ void mp_set_away( const size_t slot, const bool away )
     if( slot < g_away.size() ) {
         g_away[slot] = away;
     }
+    // A committed plan belongs to a player who is still at the table. The pool
+    // is left alone here: the positive part is burned at the tick's tail, on
+    // the world thread, and a debt stays. Plans exist only in co-op, so the
+    // single-player build has nothing to cancel.
+#if defined( MULTIPLAYER )
     if( away ) {
-        // A committed plan belongs to a player who is still at the table. The
-        // pool is left alone here: the positive part is burned at the tick's
-        // tail, on the world thread, and a debt stays.
         mp_plan_cancel( slot );
     }
+#endif
 }
 
 bool mp_player_is_away( const size_t slot )
