@@ -1146,6 +1146,16 @@ bool game::do_turn()
         mp_control control;
         while( mp_server_take_control( control_slot, control ) ) {
             ++controls_handled;
+            // A round control is a player back at the keyboard. In the planning
+            // phase the map keys a client sends are plans, not raw actions, so
+            // without this nothing the seat presses can reach handle_action()
+            // and away would be a one-way trap.
+            if( mp_coop_active() && mp_player_is_away( control_slot ) &&
+                ( control.kind == mp_control_kind::plan ||
+                  control.kind == mp_control_kind::plan_ready ||
+                  control.kind == mp_control_kind::plan_pass ) ) {
+                mp_return_from_away( control_slot );
+            }
             switch( control.kind ) {
                 case mp_control_kind::plan: {
                     if( control.plan.kind == mp_plan_kind::pass ) {

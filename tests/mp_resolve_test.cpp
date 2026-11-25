@@ -535,6 +535,25 @@ TEST_CASE( "an_engine_charge_beyond_the_plan_s_price_stands_as_debt", "[mp][ap_d
     CHECK( mp_plan_error( 0 ).empty() );
 }
 
+TEST_CASE( "a_resolved_step_keeps_the_seat_scene_on_the_avatar", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    REQUIRE( !g->contexts.empty() );
+    // The scene centre only moves when look_around runs, so it lags a step
+    // behind until the resolver puts it back on the avatar.
+    g->contexts[0].ter_view_p = start;
+
+    plan_move( 0, start + tripoint_rel_ms::east );
+    mp_resolve_round( 1 );
+
+    CHECK( a.pos_bub() == start + tripoint_rel_ms::east );
+    CHECK( g->contexts[0].ter_view_p == a.pos_bub() );
+}
+
 TEST_CASE( "a_ready_plan_is_dropped_when_the_seat_can_no_longer_start", "[mp][ap_debt]" )
 {
     restore_active_state restore;

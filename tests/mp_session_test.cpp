@@ -3207,6 +3207,29 @@ TEST_CASE( "mp_session_ui", "[mp]" )
     }
 }
 
+TEST_CASE( "a_round_control_brings_an_away_seat_back", "[mp][coop][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const std::optional<point> cell =
+        plan_cell_for( 0, g->player_at( 0 ).pos_bub() + tripoint_rel_ms::east );
+    REQUIRE( cell );
+
+    mp_set_away( 0, true );
+    REQUIRE( mp_player_is_away( 0 ) );
+
+    // In the planning phase the map keys a client sends are round controls,
+    // not raw actions, so one of those has to be what brings the seat back:
+    // otherwise away is a one-way trap.
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return !mp_player_is_away( 0 );
+    }, 50 ) );
+    CHECK( !mp_player_is_away( 0 ) );
+}
+
 TEST_CASE( "a_diagonal_step_above_the_turn_grant_resolves_in_a_session", "[mp][coop][ap_debt]" )
 {
     restore_active_state restore;

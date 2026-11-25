@@ -91,6 +91,17 @@ std::string no_action_reason( const size_t slot, const avatar &ava )
     return mp_action_availability_refusal( mp_turn_player_availability( slot ) );
 }
 
+// Keeps a seat's scene on its character after the character moves: the scene
+// frame is built around the context's ter_view_p, and only look_around moves
+// that on its own, so without this the view stays where the character stood
+// before the step that just resolved.
+void center_view_on_avatar( const size_t slot, const avatar &ava )
+{
+    if( slot != no_slot && slot < g->contexts.size() ) {
+        g->contexts[slot].ter_view_p = ava.pos_bub();
+    }
+}
+
 // Steps the avatar one tile. A step the map refuses (a creature in the way, an
 // effect that stopped the move) still costs the round's move when nothing was
 // spent on it -- an arbitrated move is a commitment, not a retry. A step whose
@@ -294,7 +305,10 @@ void resolve_moves( const std::vector<resolution_entry> &entries, const size_t b
                 continue;
             }
             mp_activate_player( claim.slot );
-            step( g->player_at( claim.slot ), claim.target, claim.cost );
+            avatar &mover = g->player_at( claim.slot );
+            if( step( mover, claim.target, claim.cost ) ) {
+                center_view_on_avatar( claim.slot, mover );
+            }
             mp_activate_world();
             claim.applied = true;
             --remaining;
@@ -358,7 +372,9 @@ void mp_apply_plan( avatar &ava, const mp_plan &plan )
             // A pass already spent everything when it was made.
             return;
         case mp_plan_kind::move:
-            step( ava, plan.target, plan_price( slot, plan ) );
+            if( step( ava, plan.target, plan_price( slot, plan ) ) ) {
+                center_view_on_avatar( slot, ava );
+            }
             return;
         case mp_plan_kind::melee:
             attack( ava, plan, plan_price( slot, plan ) );
