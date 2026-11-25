@@ -183,6 +183,16 @@ BUILD_DIR = $(CURDIR)
 SRC_DIR = src
 IMGUI_DIR = $(SRC_DIR)/third-party/imgui
 IMTUI_DIR = $(SRC_DIR)/third-party/imtui
+# Every source header, made a prerequisite of every object below. A header edit
+# changes struct layouts, and one stale object linked beside a fresh one is a
+# heap corruption no test necessarily catches: field offsets disagree and a
+# destructor frees memory that was never the buffer it expects. The compiler's
+# own -MMD output would say the same thing, but .d files are written per object
+# and a build interrupted mid-compile leaves one truncated (a 75-byte do_turn.d
+# instead of 1.3 kB), which silently drops that dependency for good. This list
+# is read from the Makefile every run and cannot be truncated.
+SOURCE_HDRS = $(wildcard $(SRC_DIR)/*.h) $(wildcard $(SRC_DIR)/*/*.h) \
+              $(wildcard $(SRC_DIR)/*/*/*.h)
 LOCALIZE = 1
 ASTYLE_BINARY = astyle
 
@@ -1370,7 +1380,7 @@ $(ODIR)/third-party/%.o: $(SRC_DIR)/third-party/%.cc
 $(ODIR)/third-party/%.o: $(SRC_DIR)/third-party/%.c
 	$(COMPILE.c) $(OUTPUT_OPTION) -x c $(CFLAGS) -w -MMD -MP $<
 
-$(ODIR)/%.o: $(SRC_DIR)/%.cpp $(PCH_P)
+$(ODIR)/%.o: $(SRC_DIR)/%.cpp $(PCH_P) $(SOURCE_HDRS)
 	$(COMPILE.cc) $(OUTPUT_OPTION) $(PCHFLAGS) -MMD -MP $<
 
 $(ODIR)/%.o: $(SRC_DIR)/%.c
