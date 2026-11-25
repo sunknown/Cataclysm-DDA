@@ -32,17 +32,6 @@ constexpr size_t no_slot = static_cast<size_t>( -1 );
 // none can be asked while the world thread resolves.
 constexpr const char *interactive_choice_error = "needs an interactive choice";
 
-// The one place a player's AP is allowed to stop being negative: the engine
-// charges some special moves (a swim, a mount, a blind bump) more than any
-// plan could price, so after the call the seat is put back at zero. Single
-// player never runs the resolver and so never reaches this.
-void clamp_moves( avatar &ava )
-{
-    if( ava.get_moves() < 0 ) {
-        ava.set_moves( 0 );
-    }
-}
-
 // The seat whose avatar this is, or no_slot for an avatar the game does not
 // own as a player (mp_apply_plan is usable with one, the error storage is not).
 size_t slot_of( const avatar &ava )
@@ -68,19 +57,38 @@ bool seat_at( const tripoint_bub_ms &p, const size_t except )
     return false;
 }
 
-// Recomputes the plan's cost against the world as it is right now and refuses
-// the action when the seat cannot pay it. A refused action spends nothing and
-// leaves the reason for the party snapshot. `cost` comes back filled either
-// way, so the caller charges what the gate checked and never subtracts AP
-// twice.
-bool affordable( const size_t slot, const avatar &ava, const mp_plan &plan, int &cost )
+// True when the seat may start its action now. The plan's estimate is not an
+// entry ticket: any remaining AP starts the action, the engine charges the full
+// cost when it runs, and a negative balance is the seat's debt. Only a seat the
+// availability rule calls `available` may start, and a direct caller's avatar
+// (not one of the game's seats) is judged by its own pool.
+bool can_start( const size_t slot, const avatar &ava )
 {
-    cost = slot == no_slot ? 0 : std::max( 0, mp_plan_cost( slot, plan ) );
-    if( slot == no_slot || ava.get_moves() >= cost ) {
-        return true;
+    if( ava.is_dead_state() ) {
+        return false;
     }
-    mp_plan_set_error( slot, string_format( "needs %d AP, you have %d", cost, ava.get_moves() ) );
-    return false;
+    if( slot == no_slot ) {
+        return ava.get_moves() > 0;
+    }
+    return mp_turn_player_availability( slot ) == mp_action_availability::available;
+}
+
+// What the round charges for the plan: the server's own figure, never negative
+// and never the client's estimate. Zero for an avatar the game does not own as
+// a player, which is the direct-caller case.
+int plan_price( const size_t slot, const mp_plan &plan )
+{
+    return slot == no_slot ? 0 : std::max( 0, mp_plan_cost( slot, plan ) );
+}
+
+// What to tell a seat whose committed action cannot start: the pool is empty,
+// or the seat stopped being able to act at all.
+std::string no_action_reason( const size_t slot, const avatar &ava )
+{
+    if( slot == no_slot ) {
+        return ava.get_moves() <= 0 ? "no AP left" : "cannot act right now";
+    }
+    return mp_action_availability_refusal( mp_turn_player_availability( slot ) );
 }
 
 // Steps the avatar one tile. A step the map refuses (a creature in the way, an
@@ -107,17 +115,14 @@ bool step( avatar &ava, const tripoint_bub_ms &target, const int cost )
         if( ava.pos_bub() == from ) {
             ava.set_moves( moves_before );
         }
-        clamp_moves( ava );
         return ava.pos_bub() != from;
     }
-    clamp_moves( ava );
     if( ava.pos_bub() != from ) {
         return true;
     }
     if( ava.get_moves() == moves_before ) {
         ava.mod_moves( -cost );
     }
-    clamp_moves( ava );
     return false;
 }
 
@@ -130,7 +135,6 @@ void attack( avatar &ava, const mp_plan &plan, const int cost )
     Creature *const target = get_creature_tracker().creature_at<Creature>( plan.target );
     if( target == nullptr || target->is_dead_state() || !ava.is_adjacent( target, false ) ) {
         ava.mod_moves( -cost );
-        clamp_moves( ava );
         return;
     }
     ava.melee_attack( *target, true );
@@ -141,7 +145,6 @@ void attack( avatar &ava, const mp_plan &plan, const int cost )
             mp_plan_set_error( slot, interactive_choice_error );
         }
     }
-    clamp_moves( ava );
 }
 
 // One plan in a round's cost group, with the order the round sorted it by.
@@ -244,21 +247,21 @@ void resolve_moves( const std::vector<resolution_entry> &entries, const size_t b
         claim.from = ava.pos_bub();
         claim.target = entries[i].plan.target;
         claim.speed = entries[i].speed;
+        if( !can_start( slot, ava ) ) {
+            // The pool emptied or the seat stopped being able to act between
+            // the commit and the resolution: the plan does not run and spends
+            // nothing. The seat is told why.
+            mp_plan_set_error( slot, no_action_reason( slot, ava ) );
+            continue;
+        }
         if( claim.from.z() != claim.target.z() ||
             rl_dist( claim.from, claim.target ) != 1 ) {
             // The tile is no longer one step away: the world moved under the
-            // plan. It costs what it would have cost, unless the seat cannot
-            // pay that either -- then it is refused like any other action.
-            int cost = 0;
-            if( affordable( slot, ava, entries[i].plan, cost ) ) {
-                ava.mod_moves( -cost );
-            }
+            // plan. It costs what it would have cost.
+            ava.mod_moves( -plan_price( slot, entries[i].plan ) );
             continue;
         }
-        if( !affordable( slot, ava, entries[i].plan, claim.cost ) ) {
-            // Not a move this round: no AP spent, and no claim to a cell.
-            continue;
-        }
+        claim.cost = plan_price( slot, entries[i].plan );
         claims.push_back( claim );
     }
 
@@ -341,23 +344,24 @@ void mp_apply_plan( avatar &ava, const mp_plan &plan )
         return;
     }
     const size_t slot = slot_of( ava );
-    int cost = 0;
+    // A committed plan still has to be startable when the round reaches it:
+    // the pool may have emptied in between. Nothing is spent when it is not.
+    if( !can_start( slot, ava ) ) {
+        if( slot != no_slot ) {
+            mp_plan_set_error( slot, no_action_reason( slot, ava ) );
+        }
+        return;
+    }
     switch( plan.kind ) {
         case mp_plan_kind::none:
         case mp_plan_kind::pass:
             // A pass already spent everything when it was made.
             return;
         case mp_plan_kind::move:
-            if( !affordable( slot, ava, plan, cost ) ) {
-                return;
-            }
-            step( ava, plan.target, cost );
+            step( ava, plan.target, plan_price( slot, plan ) );
             return;
         case mp_plan_kind::melee:
-            if( !affordable( slot, ava, plan, cost ) ) {
-                return;
-            }
-            attack( ava, plan, cost );
+            attack( ava, plan, plan_price( slot, plan ) );
             return;
         case mp_plan_kind::ranged:
         case mp_plan_kind::use_item:
@@ -394,6 +398,13 @@ bool mp_resolve_round( const size_t player_count )
             // Defense in depth: mp_server_mark_disconnected() cancels the plan
             // when the wire dies, and a seat with nobody behind it must not act
             // even if one slipped through.
+            continue;
+        }
+        if( !can_start( slot, ava ) ) {
+            // Ready is not a promise that the seat can still start: AP can be
+            // spent, or the seat can stop being able to act, before the round
+            // resolves.
+            mp_plan_set_error( slot, no_action_reason( slot, ava ) );
             continue;
         }
         // Copy: the plan table can grow between reads, and this round works

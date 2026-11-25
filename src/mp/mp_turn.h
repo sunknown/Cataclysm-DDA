@@ -323,6 +323,28 @@ void mp_advance_hurry_for_test( int ms );
 // All of them run on the world thread while it holds the baton, never from a
 // player thread.
 
+// Why a seat can or cannot start a new action. One answer for the barrier, the
+// resolver and the party snapshot: `available` is the only state that may start
+// an action, and `recovering` -- an empty pool or a debt -- is the ordinary
+// state between an expensive action and the ticks that pay for it, not a fault.
+// `busy` is a running activity or a travel destination; an open menu changes
+// nothing here.
+enum class mp_action_availability {
+    available,
+    recovering,
+    passed,
+    busy,
+    away,
+    disconnected,
+    dead,
+    unavailable
+};
+
+mp_action_availability mp_turn_player_availability( size_t slot );
+
+// The player-facing reason for a state other than `available`.
+const char *mp_action_availability_refusal( mp_action_availability availability );
+
 // Whether `slot` can still take part in a round: alive, connected, not away,
 // with moves to spend, no running activity, no travel destination -- and not
 // passed. Only such a seat holds a round open; everybody else is done for the

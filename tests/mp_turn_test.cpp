@@ -879,4 +879,69 @@ TEST_CASE( "a_seat_with_no_moves_or_activity_does_not_hold_the_round", "[mp]" )
     tear_down_two_planning_seats();
 }
 
+TEST_CASE( "mp_turn_availability_says_why_a_seat_cannot_act", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    // One source of truth for the barrier, the resolver and the party
+    // snapshot: `available` is the only state that may start a new action.
+    CHECK( mp_turn_player_availability( 0 ) == mp_action_availability::available );
+    CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::available );
+    // No such seat.
+    CHECK( mp_turn_player_availability( 2 ) == mp_action_availability::unavailable );
+
+    SECTION( "an empty pool" ) {
+        g->player_at( 1 ).set_moves( 0 );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::recovering );
+    }
+    SECTION( "a debt" ) {
+        g->player_at( 1 ).set_moves( -150 );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::recovering );
+    }
+    SECTION( "an activity" ) {
+        g->player_at( 1 ).activity = player_activity( activity_id( "ACT_HACKING" ), 500, 0 );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::busy );
+    }
+    SECTION( "a destination" ) {
+        avatar &b = g->player_at( 1 );
+        b.set_destination( { b.pos_bub() + tripoint_rel_ms::east }, player_activity() );
+        REQUIRE( b.has_destination() );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::busy );
+        b.clear_destination();
+    }
+    SECTION( "away" ) {
+        mp_set_away( 1, true );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::away );
+        mp_set_away( 1, false );
+    }
+    SECTION( "disconnected" ) {
+        mp_set_disconnected( 1, true );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::disconnected );
+        mp_set_disconnected( 1, false );
+    }
+    SECTION( "dead" ) {
+        g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+        REQUIRE( g->player_at( 1 ).is_dead_state() );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::dead );
+    }
+    SECTION( "passed" ) {
+        mp_plan_pass( 1 );
+        // Passing spends the AP. Give it back so the flag, not the empty pool,
+        // is what this state is about.
+        g->player_at( 1 ).set_moves( 100 );
+        REQUIRE( mp_plan_is_passed( 1 ) );
+        CHECK( mp_turn_player_availability( 1 ) == mp_action_availability::passed );
+    }
+    SECTION( "available is the only state that may act" ) {
+        g->player_at( 1 ).set_moves( 0 );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        g->player_at( 1 ).set_moves( 1 );
+        CHECK( mp_turn_player_can_act( 1 ) );
+    }
+
+    tear_down_two_planning_seats();
+}
+
 #endif // defined(MULTIPLAYER)

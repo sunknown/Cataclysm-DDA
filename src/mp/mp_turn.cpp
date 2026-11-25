@@ -571,19 +571,68 @@ bool mp_action_is_free( const action_id act )
 #if defined( MULTIPLAYER )
 // --- A planning tick -------------------------------------------------------
 
-bool mp_turn_player_can_act( const size_t slot )
+mp_action_availability mp_turn_player_availability( const size_t slot )
 {
     if( slot >= g->player_slot_count() ) {
-        return false;
+        return mp_action_availability::unavailable;
     }
     const avatar &ava = g->player_at( slot );
-    // Every clause is a way of being done for the tick. The activity and the
-    // destination say the turn will be spent without the player touching a key;
-    // away, disconnected and dead say there is nobody to wait for; a pass says
-    // the player has already said so. Only what is left holds the round open.
-    return !ava.is_dead_state() && !mp_player_is_disconnected( slot ) &&
-           !mp_player_is_away( slot ) && ava.get_moves() > 0 && !ava.activity &&
-           !ava.has_destination() && !mp_plan_is_passed( slot );
+    // Dead first: nothing else about a corpse matters, and the resolver must
+    // never run its plan.
+    if( ava.is_dead_state() ) {
+        return mp_action_availability::dead;
+    }
+    // Then the flags with no keyboard behind them -- away before disconnected,
+    // as everywhere else: stepping away is the player's own choice.
+    if( mp_player_is_away( slot ) ) {
+        return mp_action_availability::away;
+    }
+    if( mp_player_is_disconnected( slot ) ) {
+        return mp_action_availability::disconnected;
+    }
+    if( mp_plan_is_passed( slot ) ) {
+        return mp_action_availability::passed;
+    }
+    // Occupied: an activity or a destination will spend the tick without the
+    // player touching a key.
+    if( ava.activity || ava.has_destination() ) {
+        return mp_action_availability::busy;
+    }
+    // An empty or negative pool: the debt is paid back by ticks, not actions.
+    if( ava.get_moves() <= 0 ) {
+        return mp_action_availability::recovering;
+    }
+    return mp_action_availability::available;
+}
+
+const char *mp_action_availability_refusal( const mp_action_availability availability )
+{
+    switch( availability ) {
+        case mp_action_availability::available:
+            return "";
+        case mp_action_availability::recovering:
+            return "no AP left";
+        case mp_action_availability::passed:
+            return "already passed";
+        case mp_action_availability::busy:
+            return "busy";
+        case mp_action_availability::away:
+            return "away";
+        case mp_action_availability::disconnected:
+            return "disconnected";
+        case mp_action_availability::dead:
+            return "dead";
+        case mp_action_availability::unavailable:
+            return "no such seat";
+    }
+    return "";
+}
+
+bool mp_turn_player_can_act( const size_t slot )
+{
+    // Every state but `available` is a way of being done for the tick; only
+    // what is left holds the round open.
+    return mp_turn_player_availability( slot ) == mp_action_availability::available;
 }
 
 bool mp_turn_round_complete()

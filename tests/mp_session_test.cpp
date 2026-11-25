@@ -1638,48 +1638,43 @@ TEST_CASE( "a_cancel_returns_the_round_to_planning", "[mp]" )
     CHECK( mp_plan_phase() == mp_round_phase::planning );
 }
 
-TEST_CASE( "a_plan_that_costs_more_than_ap_is_refused", "[mp]" )
+TEST_CASE( "a_plan_above_the_seat_s_ap_resolves", "[mp][ap_debt]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
     prepare_two_seat_round( harness, 1000 );
 
     const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
-    const std::optional<point> cell = plan_cell_for( 0, start + tripoint_rel_ms::east );
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    const std::optional<point> cell = plan_cell_for( 0, target );
     REQUIRE( cell );
 
+    // The user's case: a 100 AP step with 65 AP in the pool was refused and the
+    // seat could not move at all.
     g->player_at( 0 ).set_moves( 65 );
-    // Seat 1 has nothing; the refusal is seat 0's alone.
+    // Seat 1 has nothing; the round is seat 0's alone.
     g->player_at( 1 ).set_moves( 0 );
 
-    // Submitting a plan costs nothing, so it is accepted; the commit is where
-    // the AP is checked.
     harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
     REQUIRE( harness.run_until( []() {
         return mp_plan_of( 0 ).kind == mp_plan_kind::move;
     }, 10 ) );
     REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) == 100 );
 
+    // Any positive balance may start the action; the engine charges in full.
     harness.send_ready( 0, 2 );
-    REQUIRE( harness.run_until( []() {
-        return !mp_plan_error( 0 ).empty();
-    }, 10 ) );
+    REQUIRE( harness.run_until( [&]() {
+        return g->player_at( 0 ).pos_bub() == target;
+    }, 100 ) );
 
-    // The refusal is the resolver's own text, unchanged, and the seat kept
-    // every point of AP it had.
-    CHECK( mp_plan_error( 0 ) == "needs 100 AP, you have 65" );
-    CHECK( g->player_at( 0 ).get_moves() == 65 );
-    CHECK_FALSE( mp_plan_is_ready( 0 ) );
-    CHECK( mp_turn_is_open() );
-    CHECK( mp_plan_phase() == mp_round_phase::planning );
+    CHECK( g->player_at( 0 ).pos_bub() == target );
+    CHECK( mp_plan_error( 0 ).empty() );
 
     // The client is told by the party snapshot, not left to guess.
     mp_party_msg party;
     REQUIRE( harness.wait_party( 0, 1000, party ) );
     REQUIRE( party.seats.size() == 2 );
-    CHECK( party.seats[0].error == "needs 100 AP, you have 65" );
-    CHECK( party.seats[0].plan == mp_plan_kind::move );
-    CHECK( party.seats[0].pcost == 100 );
+    CHECK( party.seats[0].error.empty() );
 }
 
 TEST_CASE( "a_seat_with_no_moves_does_not_hold_the_round", "[mp]" )

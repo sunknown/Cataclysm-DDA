@@ -1,6 +1,7 @@
 #if defined( MULTIPLAYER )
 
 #include "mp/mp_plan.h"
+#include "mp/mp_turn.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -14,7 +15,6 @@
 #include "game.h"
 #include "item.h"
 #include "map.h"
-#include "string_formatter.h"
 #include "vehicle.h"
 #include "vpart_position.h"
 
@@ -217,9 +217,13 @@ bool mp_plan_ready( const size_t slot, std::string &error )
         error = "invalid plan";
         return false;
     }
-    avatar &ava = g->player_at( slot );
-    if( ava.get_moves() < cost ) {
-        error = string_format( "needs %d AP, you have %d", cost, ava.get_moves() );
+    // The price is not an entry ticket: any remaining AP may start the action,
+    // and the engine charges the full cost when it runs. A negative balance is
+    // the seat's debt, paid back a tick at a time. What stops a commit is the
+    // seat not being able to start anything at all.
+    const mp_action_availability availability = mp_turn_player_availability( slot );
+    if( availability != mp_action_availability::available ) {
+        error = mp_action_availability_refusal( availability );
         return false;
     }
     mp_plan_slot &entry = g_slots[slot];

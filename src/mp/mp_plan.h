@@ -63,9 +63,11 @@ int mp_plan_cost( size_t slot, const mp_plan &plan );
 // AP back: passing already spent it.
 void mp_plan_cancel( size_t slot );
 
-// Commits a seat's plan for this round, gated on the seat actually having the
-// AP. On refusal `error` says why; a negative cost is refused as an invalid
-// plan.
+// Commits a seat's plan for this round, gated on the seat being able to start
+// an action (see mp_turn_player_availability). The plan's price is not part of
+// the gate: any positive balance starts the action and the engine charges in
+// full, so the commit does not have to cover the estimate. On refusal `error`
+// says why; a negative cost is refused as an invalid plan.
 bool mp_plan_ready( size_t slot, std::string &error );
 
 // Spends everything the seat has left and marks it done for this round.

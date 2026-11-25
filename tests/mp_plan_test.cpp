@@ -10,9 +10,11 @@
 #include "game_test_helper.h"
 #include "item.h"
 #include "map.h"
+#include "map_helpers.h"
 #include "map_helpers_tests.h"
 #include "mp/mp_context.h"
 #include "mp/mp_plan.h"
+#include "mp/mp_resolve.h"
 #include "mp/mp_turn.h"
 #include "player_helpers.h"
 #include "string_formatter.h"
@@ -33,6 +35,9 @@ void setup_plan_test()
 {
     mp_ensure_player_context();
     clear_avatar();
+    // A creature left by an earlier case would make a melee plan valid and a
+    // tile entrant, so the fixture starts empty and stays that way.
+    clear_creatures();
     build_test_map( ter_id( "t_pavement" ) );
     get_avatar().wear_item( item( itype_sneakers ) );
     game_test_helper::reset_player_slots();
@@ -42,28 +47,119 @@ void setup_plan_test()
 }
 } // namespace
 
-TEST_CASE( "mp_plan_ready_is_gated_by_ap", "[mp]" )
+TEST_CASE( "mp_plan_ready_accepts_a_step_above_the_current_ap", "[mp][ap_debt]" )
 {
     restore_active_state restore;
     setup_plan_test();
 
     avatar &u = g->player_at( 0 );
-    u.set_moves( 64 );
+    const tripoint_bub_ms start = u.pos_bub();
+    const tripoint_bub_ms target = start + tripoint::north_east;
+    // The step goes north of the loaded bubble, so the map shifts under the
+    // avatar and bub coordinates restart: the absolute cell is what proves the
+    // step landed.
+    const tripoint_abs_ms abs_target = u.pos_abs() + tripoint::north_east;
+    mp_plan p;
+    p.kind = mp_plan_kind::move;
+    p.target = target;
+    std::string err;
+    REQUIRE( mp_plan_submit( 0, p, err ) );
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    // The case the user hit: a diagonal step whose price is above the 100 AP a
+    // turn grants. The old contract refused it and the seat could not move at
+    // all.
+    REQUIRE( cost > 100 );
+
+    u.set_moves( 100 );
+    REQUIRE( mp_plan_ready( 0, err ) );
+    CHECK( err.empty() );
+    CHECK( mp_plan_is_ready( 0 ) );
+    // Committing spends nothing; the engine charges when the action runs.
+    CHECK( u.get_moves() == 100 );
+
+    mp_apply_plan( u, mp_plan_of( 0 ) );
+
+    CHECK( u.pos_abs() == abs_target );
+    // The engine's full charge stands and the remainder is the seat's debt.
+    CHECK( u.get_moves() == 100 - cost );
+}
+
+TEST_CASE( "a_plan_starts_with_any_moves_left", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_plan_test();
+
+    avatar &u = g->player_at( 0 );
     mp_plan p;
     p.kind = mp_plan_kind::move;
     p.target = u.pos_bub() + tripoint::east;
     std::string err;
     REQUIRE( mp_plan_submit( 0, p, err ) );
+
+    // One point is enough to start: the price is not the entry ticket.
+    u.set_moves( 1 );
+    CHECK( mp_plan_ready( 0, err ) );
+    CHECK( err.empty() );
+    mp_plan_cancel( 0 );
+    REQUIRE( mp_plan_submit( 0, p, err ) );
+
+    // Zero and below are the recovery states: the seat cannot start anything.
+    u.set_moves( 0 );
     CHECK_FALSE( mp_plan_ready( 0, err ) );
     CHECK_FALSE( err.empty() );
-    CHECK( err == "needs 100 AP, you have 64" );
     CHECK_FALSE( mp_plan_is_ready( 0 ) );
-    // A refused ready must not touch the seat's AP.
-    CHECK( u.get_moves() == 64 );
+    CHECK( u.get_moves() == 0 );
 
-    u.set_moves( 100 );
+    u.set_moves( -1 );
+    CHECK_FALSE( mp_plan_ready( 0, err ) );
+    CHECK_FALSE( err.empty() );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    CHECK( u.get_moves() == -1 );
+}
+
+TEST_CASE( "a_melee_plan_starts_with_one_move_left", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_plan_test();
+
+    avatar &u = g->player_at( 0 );
+    spawn_test_monster( "mon_zombie", u.pos_bub() + tripoint::east );
+    mp_plan p;
+    p.kind = mp_plan_kind::melee;
+    p.target = u.pos_bub() + tripoint::east;
+    std::string err;
+    REQUIRE( mp_plan_submit( 0, p, err ) );
+    REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) > 1 );
+
+    u.set_moves( 1 );
     CHECK( mp_plan_ready( 0, err ) );
+    CHECK( err.empty() );
     CHECK( mp_plan_is_ready( 0 ) );
+    CHECK( u.get_moves() == 1 );
+}
+
+TEST_CASE( "a_ready_plan_does_not_run_once_the_ap_is_gone", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_plan_test();
+
+    avatar &u = g->player_at( 0 );
+    const tripoint_bub_ms start = u.pos_bub();
+    u.set_moves( 100 );
+    mp_plan p;
+    p.kind = mp_plan_kind::move;
+    p.target = start + tripoint::east;
+    std::string err;
+    REQUIRE( mp_plan_submit( 0, p, err ) );
+    REQUIRE( mp_plan_ready( 0, err ) );
+
+    // Something else spent the pool between the commit and the resolution.
+    u.set_moves( 0 );
+    mp_apply_plan( u, mp_plan_of( 0 ) );
+
+    CHECK( u.pos_bub() == start );
+    CHECK( u.get_moves() == 0 );
+    CHECK_FALSE( mp_plan_error( 0 ).empty() );
 }
 
 TEST_CASE( "mp_plan_pass_spends_all_moves", "[mp]" )
@@ -204,16 +300,17 @@ TEST_CASE( "a_plan_into_a_closed_door_is_priced_at_the_opening", "[mp]" )
     CHECK( mp_plan_cost( 0, mp_plan_of( 0 ) ) == u.get_speed() );
 
     u.set_moves( 50 );
-    CHECK_FALSE( mp_plan_ready( 0, err ) );
-    CHECK( err == string_format( "needs %d AP, you have 50", u.get_speed() ) );
-    CHECK_FALSE( mp_plan_is_ready( 0 ) );
-    // A refused commit opens nothing and spends nothing.
-    CHECK( get_map().ter( target ) == ter_id( "t_door_c" ) );
-    CHECK( u.get_moves() == 50 );
+    // Fifty is enough to start; the opening's full charge lands as debt.
+    REQUIRE( mp_plan_ready( 0, err ) );
+    CHECK( err.empty() );
 
-    u.set_moves( u.get_speed() );
-    CHECK( mp_plan_ready( 0, err ) );
-    CHECK( mp_plan_is_ready( 0 ) );
+    mp_apply_plan( u, mp_plan_of( 0 ) );
+
+    // Opened in place: the opening is the action, the avatar stays put and pays
+    // the character's whole speed.
+    CHECK( get_map().ter( target ) == ter_id( "t_door_o" ) );
+    CHECK( u.pos_bub() != target );
+    CHECK( u.get_moves() == 50 - u.get_speed() );
 }
 
 TEST_CASE( "mp_plan_of_reads_are_copied_to_outlive_the_slot_table", "[mp]" )

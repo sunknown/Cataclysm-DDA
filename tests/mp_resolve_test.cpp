@@ -161,6 +161,37 @@ TEST_CASE( "the_faster_seat_takes_a_contested_cell", "[mp]" )
     CHECK( a.get_moves() < 1000 );
 }
 
+TEST_CASE( "a_contested_move_is_paid_once_and_can_create_debt", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms a_start = a.pos_bub();
+    const tripoint_bub_ms target = a_start + tripoint_rel_ms::east;
+    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms( 2, 0, 0 );
+    add_second_seat( b_start );
+    set_speed( a, 200 );
+    set_speed( g->player_at( 1 ), 100 );
+
+    plan_move( 0, target );
+    plan_move( 1, target );
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    REQUIRE( cost == mp_plan_cost( 1, mp_plan_of( 1 ) ) );
+
+    // Both seats can start (one point each) but neither can cover the step.
+    a.set_moves( 1 );
+    g->player_at( 1 ).set_moves( 1 );
+    mp_resolve_round( 2 );
+
+    // The winner walks and pays; the loser stays and pays the same price for
+    // the step it was not allowed to take. Neither is charged twice.
+    CHECK( a.pos_bub() == target );
+    CHECK( g->player_at( 1 ).pos_bub() == b_start );
+    CHECK( a.get_moves() == 1 - cost );
+    CHECK( g->player_at( 1 ).get_moves() == 1 - cost );
+}
+
 TEST_CASE( "equal_speed_contested_cell_blocks_both", "[mp]" )
 {
     restore_active_state restore;
@@ -358,7 +389,7 @@ TEST_CASE( "a_dead_actor_does_not_act", "[mp]" )
     CHECK( g->player_at( 1 ).pos_bub() == b_target );
 }
 
-TEST_CASE( "a_plan_the_seat_cannot_pay_for_is_refused", "[mp]" )
+TEST_CASE( "a_plan_below_its_price_still_runs_and_pays_in_full", "[mp][ap_debt]" )
 {
     restore_active_state restore;
     setup_resolve_test();
@@ -369,14 +400,15 @@ TEST_CASE( "a_plan_the_seat_cannot_pay_for_is_refused", "[mp]" )
     const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
     REQUIRE( cost > 0 );
 
-    // The world can take AP away after a plan was committed. The resolver has
-    // to recompute the cost and refuse rather than spend into the negative.
+    // The world can take AP away after a plan was committed. The step still
+    // starts -- one point is enough -- and the engine charges the whole price;
+    // the remainder is the seat's debt, not a reason to cancel the action.
     a.set_moves( cost - 1 );
     mp_resolve_round( 1 );
 
-    CHECK( a.pos_bub() == a_start );
-    CHECK( a.get_moves() == cost - 1 );
-    CHECK( mp_plan_error( 0 ) == string_format( "needs %d AP, you have %d", cost, cost - 1 ) );
+    CHECK( a.pos_bub() == a_start + tripoint_rel_ms::east );
+    CHECK( a.get_moves() == -1 );
+    CHECK( mp_plan_error( 0 ).empty() );
 }
 
 TEST_CASE( "an_unsupported_plan_is_refused_with_not_in_this_phase", "[mp]" )
@@ -472,10 +504,9 @@ TEST_CASE( "a_planned_door_step_pays_the_opening_and_opens_it", "[mp]" )
     CHECK( here.ter( target ) == ter_id( "t_door_o" ) );
     CHECK( a.pos_bub() == start );
     CHECK( a.get_moves() == moves - a.get_speed() );
-    CHECK( a.get_moves() >= 0 );
 }
 
-TEST_CASE( "an_engine_charge_beyond_the_plan_s_price_is_clamped_at_zero", "[mp]" )
+TEST_CASE( "an_engine_charge_beyond_the_plan_s_price_stands_as_debt", "[mp][ap_debt]" )
 {
     restore_active_state restore;
     setup_resolve_test();
@@ -487,9 +518,7 @@ TEST_CASE( "an_engine_charge_beyond_the_plan_s_price_is_clamped_at_zero", "[mp]"
 
     // A blind bump spends the character's whole speed, which no terrain price
     // can see. The wall's own move cost is zero, so the plan is priced well
-    // below that charge; the affordability gate passes at exactly the price,
-    // the engine then spends more, and the post-condition is what keeps the
-    // seat at zero instead of negative.
+    // below that charge; the engine spends it anyway and the full cost stands.
     plan_move( 0, wall );
     const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
     REQUIRE( cost > 0 );
@@ -500,9 +529,30 @@ TEST_CASE( "an_engine_charge_beyond_the_plan_s_price_is_clamped_at_zero", "[mp]"
     mp_resolve_round( 1 );
 
     CHECK( a.pos_bub() == start );
-    CHECK( a.get_moves() == 0 );
+    CHECK( a.get_moves() == cost - a.get_speed() );
+    CHECK( a.get_moves() < 0 );
     // Not a refusal: the engine's own invalid move is still the round's move.
     CHECK( mp_plan_error( 0 ).empty() );
+}
+
+TEST_CASE( "a_ready_plan_is_dropped_when_the_seat_can_no_longer_start", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    plan_move( 0, start + tripoint_rel_ms::east );
+    REQUIRE( mp_plan_is_ready( 0 ) );
+
+    // The pool emptied between the commit and the resolution: the seat is in
+    // recovery, so the round does not run its plan and spends nothing.
+    a.set_moves( 0 );
+    mp_resolve_round( 1 );
+
+    CHECK( a.pos_bub() == start );
+    CHECK( a.get_moves() == 0 );
+    CHECK_FALSE( mp_plan_error( 0 ).empty() );
 }
 
 TEST_CASE( "a_disconnected_seat_s_plan_is_not_executed", "[mp]" )

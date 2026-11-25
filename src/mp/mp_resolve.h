@@ -33,15 +33,14 @@ bool mp_resolve_round( size_t player_count );
 
 // Runs one seat's plan under the seat's own context: `move`, `melee` and
 // `pass` are supported in this phase; `ranged`, `use_item` and `interact` are
-// refused with "not in this phase" and spend nothing. The cost is recomputed
-// from the world immediately before the action and the action is refused (with
-// "needs N AP, you have M") when the seat cannot pay it. A move or attack that
-// the world has invalidated -- the target died, somebody took the tile -- is
-// still charged as a miss; a dead seat acts not at all. An action that reaches
-// a menu gets no interactive answer: the plan fizzles with "needs an
-// interactive choice" and spends nothing. The engine's own charge is clamped
-// at zero, so a priced move the character actually spends more on cannot leave
-// a player with negative AP.
+// refused with "not in this phase" and spend nothing. Starting the action needs
+// only a seat the availability rule calls `available` -- an empty or negative
+// pool refuses the start -- and the engine then charges its own full price, so
+// the action can leave the seat in debt. A move or attack that the world has
+// invalidated -- the target died, somebody took the tile -- is still charged as
+// a miss; a dead seat acts not at all. An action that reaches a menu gets no
+// interactive answer: the plan fizzles with "needs an interactive choice" and
+// spends nothing.
 void mp_apply_plan( avatar &ava, const mp_plan &plan );
 
 // The three pieces game::world_turn_post() was decomposed into, so a co-op
