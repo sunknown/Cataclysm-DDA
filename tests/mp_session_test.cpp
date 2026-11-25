@@ -1406,6 +1406,11 @@ TEST_CASE( "a_tick_runs_a_round_to_resolution_and_closes", "[mp]" )
     REQUIRE( cell );
     queue_plan( 0, mp_plan_kind::ranged, cell->x, cell->y, 2 );
     queue_plan_ready( 0 );
+    // The commit has to be observed before the cancel, or a refused
+    // mp_plan_ready would satisfy every assertion below the same way.
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_is_ready( 0 );
+    }, 5 ) );
     queue_plan_cancel( 0 );
     harness.run_until( []() {
         return false;
@@ -1434,6 +1439,23 @@ TEST_CASE( "a_tick_runs_a_round_to_resolution_and_closes", "[mp]" )
     }, 5 ) );
     CHECK( mp_plan_phase() == mp_round_phase::done );
     CHECK( to_turn<int>( calendar::turn ) == tick_turn + 1 );
+
+    // A pass may also arrive as a plan of kind pass on the wire. It is the same
+    // act as the pass control: it spends what the seat has left, so the round
+    // settles instead of leaving an eligible seat behind.
+    REQUIRE( harness.run_until( []() {
+        return mp_turn_is_open() && mp_plan_phase() == mp_round_phase::planning;
+    }, 5 ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    queue_plan( 0, mp_plan_kind::pass, 0, 0, 4 );
+    queue_plan( 1, mp_plan_kind::pass, 0, 0, 5 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_turn_is_open();
+    }, 5 ) );
+    CHECK( g->player_at( 0 ).get_moves() > 0 );
+    CHECK( g->player_at( 1 ).get_moves() > 0 );
+    CHECK( mp_plan_phase() == mp_round_phase::done );
 }
 
 // Temporary Phase 1 rule: outside a menu, a time-costing key is refused while

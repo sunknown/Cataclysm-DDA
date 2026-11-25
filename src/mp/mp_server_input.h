@@ -188,4 +188,12 @@ bool mp_server_seat_has_input( size_t slot );
 // session.
 void mp_server_set_input_in_hand( size_t slot, bool in_hand );
 
+// Whether `slot` has local control work the world owes it the baton for even
+// though it holds no key: a resize waiting to be applied, or a hover request
+// that has fallen due. Both are this seat's own business (the seat's input wait
+// consumes them), but a seat parked on the baton never reaches that wait, so
+// the world must grant it. A hover that is pending but not yet due does not
+// count -- the world's next poll covers the due instant.
+bool mp_server_seat_needs_local_service( size_t slot );
+
 #endif // CATA_SRC_MP_MP_SERVER_INPUT_H

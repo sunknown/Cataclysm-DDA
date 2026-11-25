@@ -535,10 +535,13 @@ bool mp_action_is_free( const action_id act )
         case ACTION_WIELD:
         case ACTION_WEAR:
         case ACTION_TAKE_OFF:
-        case ACTION_EAT:
-        case ACTION_READ:
         case ACTION_UNLOAD:
         case ACTION_ITEMACTION:
+        // ACTION_EAT and ACTION_READ are deliberately absent: neither always
+        // opens a menu. A RUMINANT/GRAZER on an edible tile eats from the map
+        // and mutates terrain with no menu, and reading a shell from an opening
+        // starts the reading activity the same way. Both are phase-1
+        // limitations, restored when menu actions become plans.
         // Client-side and bookkeeping.
         case ACTION_OPTIONS:
         case ACTION_HELP:

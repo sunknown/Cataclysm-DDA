@@ -1106,19 +1106,27 @@ bool game::do_turn()
         }
 
         // Pacing: one tick's time per tick, and a key never pays a poll
-        // interval. A queued key means grant it now; a round somebody is still
-        // planning in sleeps until a plan, a key or a dead wire arrives; a tick
-        // that opens with nobody planning in it still takes a tick (the
-        // single-player busy poll); and a continuation round -- the tick is
-        // already open, the round is settled, nobody holds a key -- runs back to
-        // back, which is what gives a 200-AP monster its later rounds.
+        // interval. A queued key -- or local control work the seat owns, a
+        // resize to apply or a hover answer that is due -- means grant it now;
+        // a round somebody is still planning in sleeps until a plan, a key or a
+        // dead wire arrives; a tick that opens with nobody planning in it still
+        // takes a tick (the single-player busy poll); and a continuation round
+        // -- the tick is already open, the round is settled, nobody holds a key
+        // -- runs back to back, which is what gives a 200-AP monster its later
+        // rounds.
         bool any_seat_has_input = false;
         for( size_t i = 0; i < player_slot_count(); ++i ) {
-            any_seat_has_input = any_seat_has_input || mp_server_seat_has_input( i );
+            any_seat_has_input = any_seat_has_input || mp_server_seat_has_input( i ) ||
+                                 mp_server_seat_needs_local_service( i );
         }
         if( !any_seat_has_input && ( !mp_turn_round_complete() || opened_tick ) ) {
             mp_sched_trace_phase( "poll-begin" );
+            // The world holds the baton on purpose across this wait: without
+            // saying so, a round open on a thinking player for longer than the
+            // watchdog's threshold logs as a stalled participant.
+            sched->set_world_waiting( true );
             mp_server_wait_for_events( MP_POLL_MS );
+            sched->set_world_waiting( false );
         }
 
         // Round controls become plan state. The drain runs to the end on every
@@ -1129,6 +1137,14 @@ bool game::do_turn()
         while( mp_server_take_control( control_slot, control ) ) {
             switch( control.kind ) {
                 case mp_control_kind::plan: {
+                    if( control.plan.kind == mp_plan_kind::pass ) {
+                        // A pass on the wire is the pass control: the resolver's
+                        // empty round does not spend anything, so a merely ready
+                        // pass would leave the seat eligible and the tick could
+                        // never close.
+                        mp_plan_pass( control_slot );
+                        break;
+                    }
                     mp_plan plan;
                     plan.kind = control.plan.kind;
                     plan.cost = control.plan.cost;
@@ -1198,7 +1214,7 @@ bool game::do_turn()
                 continue;
             }
             if( mp_server_seat_has_input( i ) || mp_player_needs_replacement( i ) ||
-                sched->quit_requested( i ) ) {
+                sched->quit_requested( i ) || mp_server_seat_needs_local_service( i ) ) {
                 sched->yield_to( mp_sched::world, i );
             }
         }

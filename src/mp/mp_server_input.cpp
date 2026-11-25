@@ -570,9 +570,12 @@ void mp_server_stop_reader( mp_session &s )
         s.reader_running = false;
         // A stopped reader has no wire worth delivering: whatever it queued
         // belonged to the transport this stop is about to leave behind, and the
-        // next client must not receive the last one's keys or plans.
+        // next client must not receive the last one's keys or plans. The
+        // in-hand flag is the same debt: a key taken before the wire died must
+        // not follow the seat into the reconnect and buy it a grant.
         s.input_inbox.clear();
         s.control_inbox.clear();
+        s.input_in_hand = false;
     }
     // A seat parked in its input wait may have seen reader_running true and
     // gone back to sleep; the stop has to reach it too.
@@ -681,6 +684,18 @@ void mp_server_set_input_in_hand( const size_t slot, const bool in_hand )
     }
     std::lock_guard<std::mutex> lock( s->inbox_mutex );
     s->input_in_hand = in_hand;
+}
+
+bool mp_server_seat_needs_local_service( const size_t slot )
+{
+    mp_session *const s = mp_session_of_slot( slot );
+    if( s == nullptr ) {
+        return false;
+    }
+    // The same two conditions the seat's own input-wait arrival predicate uses:
+    // a resize waiting to be applied and a hover answer that is due now. Both
+    // are read through the locked helpers, never bare.
+    return resize_pending_of( *s ) || describe_due_of( *s );
 }
 
 bool mp_server_seat_has_input( const size_t slot )
