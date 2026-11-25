@@ -167,6 +167,10 @@ void prepare_two_seat_round( mp_session_harness &harness, const int moves )
     REQUIRE( seat0_pos != seat1_pos );
     clear_fields( 0 );
     build_test_map( ter_id( "t_pavement" ) );
+    // Another case may have left a vehicle on the pavement: build_test_map
+    // rebuilds terrain and items but not vehicles, and a bicycle wheel under
+    // the target tile would change what a step costs.
+    clear_vehicles();
     for( size_t slot = 0; slot < 2; ++slot ) {
         clear_character( g->player_at( slot ) );
         g->player_at( slot ).setpos( get_map(), slot == 0 ? seat0_pos : seat1_pos );
@@ -3201,6 +3205,84 @@ TEST_CASE( "mp_session_ui", "[mp]" )
         CHECK( mp_session_ui_active( seat ) );
         CHECK_FALSE( mp_session_can_describe( seat ) );
     }
+}
+
+TEST_CASE( "a_diagonal_step_above_the_turn_grant_resolves_in_a_session", "[mp][coop][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // The tick's own grant, not an artificial pool: the point is that the
+    // session plays with the AP it really has.
+    prepare_two_seat_round( harness, 100 );
+
+    const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
+    const tripoint_abs_ms abs_start = g->player_at( 0 ).pos_abs();
+    const std::optional<point> cell =
+        plan_cell_for( 0, start + tripoint_rel_ms( 1, 1, 0 ) );
+    REQUIRE( cell );
+
+    g->player_at( 0 ).set_moves( 100 );
+    // Seat 1 has nothing; the round is seat 0's alone.
+    g->player_at( 1 ).set_moves( 0 );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    // A diagonal step on open pavement costs more than the 100 AP a turn
+    // grants -- the case that used to be refused outright.
+    REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) > 100 );
+
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( [&]() {
+        // The step crosses into the next bubble, so the absolute cell is what
+        // proves it landed.
+        return g->player_at( 0 ).pos_abs() == abs_start + tripoint::south_east;
+    }, 100 ) );
+
+    CHECK( mp_plan_error( 0 ).empty() );
+}
+
+TEST_CASE( "a_tick_runs_a_second_round_without_granting_ap", "[mp][coop][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Two steps' worth of AP in one tick: the first round spends half, and the
+    // seat is still able to act, so the tick must stay open.
+    prepare_two_seat_round( harness, 200 );
+    g->player_at( 1 ).set_moves( 0 );
+
+    const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
+    const std::optional<point> first = plan_cell_for( 0, start + tripoint_rel_ms::east );
+    REQUIRE( first );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, first->x, first->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( [&]() {
+        return g->player_at( 0 ).pos_bub() == start + tripoint_rel_ms::east;
+    }, 100 ) );
+
+    // The tick did not close and the pool was not refilled: the second round
+    // runs on what the first left behind.
+    CHECK( mp_turn_is_open() );
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+    CHECK( g->player_at( 0 ).get_moves() == 100 );
+
+    const tripoint_bub_ms second_start = g->player_at( 0 ).pos_bub();
+    const std::optional<point> second = plan_cell_for( 0, second_start + tripoint_rel_ms::east );
+    REQUIRE( second );
+    harness.send_plan( 0, 2, mp_plan_kind::move, second->x, second->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    harness.send_ready( 0, 3 );
+    REQUIRE( harness.run_until( [&]() {
+        return g->player_at( 0 ).pos_bub() == second_start + tripoint_rel_ms::east;
+    }, 100 ) );
+    CHECK( mp_plan_error( 0 ).empty() );
 }
 
 #endif // MP_SERVER
