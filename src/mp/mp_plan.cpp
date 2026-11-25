@@ -95,13 +95,30 @@ void mp_plan_reset_round()
     for( mp_plan_slot &slot : g_slots ) {
         slot.plan = mp_plan();
         slot.ready = false;
-        slot.passed = false;
-        // `error` deliberately survives: a refusal the resolver stored is what
-        // the post-resolve party broadcast carries to the client, and the tick
-        // loop resets the round before it broadcasts. The seat's next submit,
-        // cancel or pass clears it, and mp_plan_reset_all() clears it with the
-        // rest of the session.
+        // `passed` and `error` deliberately survive: a pass is a decision for
+        // the whole tick, and a refusal the resolver stored is what the
+        // post-resolve party broadcast carries to the client (the tick loop
+        // resets the round before it broadcasts). The seat's next submit,
+        // cancel or pass clears the text; mp_plan_reset_tick() starts the next
+        // tick and forgets the pass.
     }
+}
+
+void mp_plan_reset_tick()
+{
+    mp_plan_reset_round();
+    for( mp_plan_slot &slot : g_slots ) {
+        slot.passed = false;
+    }
+}
+
+void mp_plan_reset_seat( const size_t slot )
+{
+    ensure_sized();
+    if( !seat_exists( slot ) ) {
+        return;
+    }
+    g_slots[slot] = mp_plan_slot();
 }
 
 bool mp_plan_submit( const size_t slot, const mp_plan &plan, std::string &error )
@@ -110,6 +127,12 @@ bool mp_plan_submit( const size_t slot, const mp_plan &plan, std::string &error 
     ensure_sized();
     if( !seat_exists( slot ) ) {
         error = "no such seat";
+        return false;
+    }
+    if( g_slots[slot].passed ) {
+        // A pass ends the seat's part of the tick: only the next tick opens it
+        // again.
+        error = "already passed this tick";
         return false;
     }
 
@@ -200,7 +223,8 @@ void mp_plan_cancel( const size_t slot )
     mp_plan_slot &entry = g_slots[slot];
     entry.plan = mp_plan();
     entry.ready = false;
-    entry.passed = false;
+    // `passed` stays: the pass already spent the remainder and ended the
+    // seat's part of the tick. Cancelling an intent refunds nothing.
     entry.error.clear();
 }
 
@@ -243,7 +267,10 @@ void mp_plan_pass( const size_t slot )
     entry.plan = mp_plan();
     entry.ready = false;
     entry.error.clear();
-    g->player_at( slot ).set_moves( 0 );
+    avatar &ava = g->player_at( slot );
+    // A pass ends the seat's part of the tick: the positive remainder is gone,
+    // a debt stays as debt. Ticks pay the debt back, not the pass.
+    ava.set_moves( std::min( 0, ava.get_moves() ) );
 }
 
 bool mp_plan_is_ready( const size_t slot )

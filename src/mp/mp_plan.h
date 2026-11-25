@@ -41,12 +41,23 @@ struct mp_plan {
 // test) calls this; the phase goes back to planning.
 void mp_plan_reset_all();
 
-// Forgets this round's plans, readiness and passes, keeping the phase and any
-// refusal text: the resolver decides when the round moves on, and reset_all is
-// the one that starts afresh. The text must outlive the reset by one broadcast,
-// because that is how the client learns why a committed plan did not run; the
-// seat's next submit, cancel or pass clears it.
+// Forgets this round's plans and readiness, keeping the phase, any refusal text
+// and any pass. A pass is a decision for the whole tick, so an intermediate
+// round does not undo it; the text must outlive the reset by one broadcast,
+// because that is how the client learns why a committed plan did not run. The
+// seat's next submit, cancel or pass clears the text, and mp_plan_reset_tick()
+// starts the next tick.
 void mp_plan_reset_round();
+
+// Forgets the last tick's plans and passes at the tick's opening, keeping the
+// phase and any refusal text: a pass ends with the tick that took it. Called
+// once per opened tick, never between the tick's rounds.
+void mp_plan_reset_tick();
+
+// Forgets everything about one seat -- plan, readiness, pass and refusal text
+// -- for a new identity in a reused seat. A reconnect is not a new identity and
+// does not call this.
+void mp_plan_reset_seat( size_t slot );
 
 // Stores a seat's plan after validating it against the world. On refusal
 // `error` says why in words a player can read, and the previous plan (if any)
@@ -59,8 +70,9 @@ bool mp_plan_submit( size_t slot, const mp_plan &plan, std::string &error );
 // refuses. The client's `plan.cost` is never trusted.
 int mp_plan_cost( size_t slot, const mp_plan &plan );
 
-// Drops a seat's plan, readiness and pass. A cancelled pass does not get its
-// AP back: passing already spent it.
+// Drops a seat's plan and readiness. A pass already taken stays: it spent the
+// remainder and ended the seat's part of the tick, and cancelling an intent
+// refunds nothing.
 void mp_plan_cancel( size_t slot );
 
 // Commits a seat's plan for this round, gated on the seat being able to start

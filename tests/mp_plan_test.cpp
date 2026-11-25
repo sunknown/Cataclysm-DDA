@@ -162,22 +162,75 @@ TEST_CASE( "a_ready_plan_does_not_run_once_the_ap_is_gone", "[mp][ap_debt]" )
     CHECK_FALSE( mp_plan_error( 0 ).empty() );
 }
 
-TEST_CASE( "mp_plan_pass_spends_all_moves", "[mp]" )
+TEST_CASE( "mp_plan_pass_spends_the_positive_remainder_only", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    setup_plan_test();
+
+    avatar &u = g->player_at( 0 );
+    mp_plan pass;
+    pass.kind = mp_plan_kind::pass;
+    CHECK( mp_plan_cost( 0, pass ) == 0 );
+
+    SECTION( "a positive pool" ) {
+        u.set_moves( 120 );
+        mp_plan_pass( 0 );
+        CHECK( u.get_moves() == 0 );
+    }
+    SECTION( "an empty pool" ) {
+        u.set_moves( 0 );
+        mp_plan_pass( 0 );
+        CHECK( u.get_moves() == 0 );
+    }
+    SECTION( "a debt" ) {
+        u.set_moves( -50 );
+        mp_plan_pass( 0 );
+        // The pass ends the tick's actions; it does not pay off the debt.
+        CHECK( u.get_moves() == -50 );
+    }
+    SECTION( "a repeated pass" ) {
+        u.set_moves( 120 );
+        mp_plan_pass( 0 );
+        mp_plan_pass( 0 );
+        CHECK( u.get_moves() == 0 );
+    }
+
+    CHECK( mp_plan_is_passed( 0 ) );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    CHECK( mp_plan_of( 0 ).kind == mp_plan_kind::none );
+}
+
+TEST_CASE( "a_cancel_keeps_the_pass_and_its_price", "[mp][ap_debt]" )
 {
     restore_active_state restore;
     setup_plan_test();
 
     avatar &u = g->player_at( 0 );
     u.set_moves( 120 );
-    mp_plan pass;
-    pass.kind = mp_plan_kind::pass;
-    CHECK( mp_plan_cost( 0, pass ) == 0 );
-
     mp_plan_pass( 0 );
+    REQUIRE( mp_plan_is_passed( 0 ) );
+    REQUIRE( u.get_moves() == 0 );
+
+    // The pass already ended the seat's part of the tick and spent the
+    // remainder; cancelling an intent does not refund it.
+    mp_plan_cancel( 0 );
     CHECK( mp_plan_is_passed( 0 ) );
-    CHECK_FALSE( mp_plan_is_ready( 0 ) );
-    CHECK( mp_plan_of( 0 ).kind == mp_plan_kind::none );
     CHECK( u.get_moves() == 0 );
+
+    // A new intent after a pass is refused until the next tick.
+    mp_plan p;
+    p.kind = mp_plan_kind::move;
+    p.target = u.pos_bub() + tripoint::east;
+    std::string err;
+    CHECK_FALSE( mp_plan_submit( 0, p, err ) );
+    CHECK_FALSE( err.empty() );
+    CHECK( mp_plan_is_passed( 0 ) );
+
+    // The next tick hands the moves back and forgets the pass.
+    u.set_moves( 100 );
+    mp_plan_reset_tick();
+    CHECK_FALSE( mp_plan_is_passed( 0 ) );
+    CHECK( mp_plan_submit( 0, p, err ) );
 }
 
 TEST_CASE( "mp_plan_round_completes_only_for_eligible_seats", "[mp]" )
@@ -354,7 +407,7 @@ TEST_CASE( "mp_plan_of_reads_are_copied_to_outlive_the_slot_table", "[mp]" )
     CHECK( first.seq == 1 );
 }
 
-TEST_CASE( "mp_plan_resets_keep_round_and_session_scopes_apart", "[mp]" )
+TEST_CASE( "mp_plan_resets_keep_round_tick_and_seat_scopes_apart", "[mp][ap_debt]" )
 {
     restore_active_state restore;
     setup_plan_test();
@@ -367,17 +420,38 @@ TEST_CASE( "mp_plan_resets_keep_round_and_session_scopes_apart", "[mp]" )
     std::string err;
     REQUIRE( mp_plan_submit( 0, p, err ) );
     REQUIRE( mp_plan_ready( 0, err ) );
-
+    mp_plan_set_error( 0, "refused: test" );
     mp_plan_set_phase( mp_round_phase::resolving );
-    CHECK( mp_plan_phase() == mp_round_phase::resolving );
 
     mp_plan_reset_round();
     CHECK( mp_plan_of( 0 ).kind == mp_plan_kind::none );
     CHECK_FALSE( mp_plan_is_ready( 0 ) );
-    CHECK_FALSE( mp_plan_is_passed( 0 ) );
+    // The refusal outlives the reset by one broadcast: that is how the client
+    // learns why a committed plan did not run.
+    CHECK( mp_plan_error( 0 ) == "refused: test" );
     // A round reset keeps the phase; the resolver decides when the round moves
     // on, and reset_all is the one that starts a fresh session.
     CHECK( mp_plan_phase() == mp_round_phase::resolving );
+
+    // A pass spans the rest of the tick, so an intermediate round keeps it.
+    mp_plan_pass( 0 );
+    REQUIRE( mp_plan_is_passed( 0 ) );
+    mp_plan_reset_round();
+    CHECK( mp_plan_is_passed( 0 ) );
+
+    // The next tick opens: the pass is over, the refusal text is kept until
+    // the seat's own next intent clears it.
+    mp_plan_set_error( 0, "refused: test" );
+    mp_plan_reset_tick();
+    CHECK_FALSE( mp_plan_is_passed( 0 ) );
+    CHECK( mp_plan_error( 0 ) == "refused: test" );
+    CHECK( mp_plan_of( 0 ).kind == mp_plan_kind::none );
+
+    // A reused seat for a new identity starts completely clean.
+    mp_plan_reset_seat( 0 );
+    CHECK( mp_plan_error( 0 ).empty() );
+    CHECK_FALSE( mp_plan_is_passed( 0 ) );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
 
     mp_plan_set_phase( mp_round_phase::done );
     mp_plan_reset_all();

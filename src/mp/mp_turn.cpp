@@ -647,6 +647,9 @@ bool mp_turn_round_complete()
 void mp_turn_open_tick()
 {
     mp_turn_reset(); // once per opened tick, not once per poll
+    // The new tick forgets the last tick's passes; the round phase is planned
+    // below, and any refusal text stays for the party broadcast that follows.
+    mp_plan_reset_tick();
     g->world_turn_pre();
     // The session's whole-tick monster work. Single player's world_turn_post()
     // keeps interleaving it with the move loop; a tick takes it up front and

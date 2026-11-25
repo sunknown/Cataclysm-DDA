@@ -944,4 +944,57 @@ TEST_CASE( "mp_turn_availability_says_why_a_seat_cannot_act", "[mp][ap_debt]" )
     tear_down_two_planning_seats();
 }
 
+TEST_CASE( "a_debt_is_paid_back_by_ticks", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    avatar &a = g->player_at( 0 );
+    avatar &b = g->player_at( 1 );
+    a.set_moves( -150 );
+    b.set_moves( 0 );
+
+    // An empty pool or a debt is a recovery state, not a decision: nobody
+    // holds the round and no manual pass is needed.
+    CHECK_FALSE( mp_turn_player_can_act( 0 ) );
+    CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+    CHECK( mp_turn_round_complete() );
+
+    // The real tick tail hands the moves back, exactly once per tick.
+    mp_turn_close_tick();
+    CHECK( a.get_moves() == -150 + a.get_speed() );
+    CHECK( b.get_moves() == 0 + b.get_speed() );
+    CHECK( mp_turn_player_can_act( 1 ) );
+
+    mp_turn_close_tick();
+    CHECK( a.get_moves() == -50 + a.get_speed() );
+    CHECK( a.get_moves() == 50 );
+    CHECK( mp_turn_player_can_act( 0 ) );
+
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "a_new_tick_clears_the_pass", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    g->player_at( 0 ).set_moves( 120 );
+    mp_plan_pass( 0 );
+    REQUIRE( mp_plan_is_passed( 0 ) );
+
+    mp_turn_open_tick();
+
+    // The pass ends with the tick that took it. AP is granted by the tick's
+    // tail, not by the opening, so the pool is still empty here -- what
+    // changed is that the seat may plan again once the next tail pays it.
+    CHECK_FALSE( mp_plan_is_passed( 0 ) );
+    CHECK( mp_turn_is_open() );
+    CHECK( g->player_at( 0 ).get_moves() == 0 );
+
+    tear_down_two_planning_seats();
+}
+
 #endif // defined(MULTIPLAYER)
