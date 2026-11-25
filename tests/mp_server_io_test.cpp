@@ -17,13 +17,19 @@
 #include "game_constants.h"
 #include "game_test_helper.h"
 #include "input_enums.h"
+#include "map.h"
+#include "map_helpers.h"
+#include "map_helpers_tests.h"
 #include "mp/mp_cell.h"
 #include "mp/mp_context.h"
 #include "mp/mp_describe.h"
 #include "mp/mp_loopback_transport.h"
+#include "mp/mp_plan.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
 #include "mp/mp_screen_codec.h"
 #include "mp/mp_server_input.h"
+#include "mp/mp_server_main.h"
 #include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_sched.h"
@@ -33,7 +39,10 @@
 #include "cata_scope_helpers.h"
 #include "input.h"
 #include "panels.h"
+#include "player_activity.h"
 #include "player_helpers.h"
+#include "type_id.h"
+#include "ui_manager.h"
 
 // Server input lives in the active player context (its input_queue), so every
 // test must set one before any input call or reset. Static, not a stack local,
@@ -1777,6 +1786,205 @@ TEST_CASE( "a_replacement_wire_is_claimed_by_its_reader_before_it_is_visible", "
     const input_event got = mp_server_wait_for_input_of( seat, &test_input_ctx, 2000 );
     CHECK( got.type == input_event_t::keyboard_char );
     CHECK( got.sequence == std::vector<int> { 'z' } );
+}
+
+TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    clear_creatures();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &second = g->add_player_slot();
+    second.set_body();
+    mp_sync_context_count();
+    // Both avatars on the test map: a fresh slot starts at the blank sentinel,
+    // which has no scene and no usable bubble position.
+    g->player_at( 0 ).setpos( get_map(), tripoint_bub_ms( 65, 65, 0 ) );
+    g->player_at( 1 ).setpos( get_map(), tripoint_bub_ms( 66, 65, 0 ) );
+    mp_turn_reset_all();
+    mp_plan_reset_all();
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        g->player_at( i ).set_moves( 100 );
+        g->player_at( i ).activity = player_activity();
+    }
+    mp_activate_player( 0 );
+
+    // Seat 0 has a map window, so its scene origin is known. Seat 1 has none --
+    // a context can be between resizes -- and its body must say so instead of
+    // carrying a meaningless (0,0).
+    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub();
+    g->contexts[0].w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    g->contexts[1].ter_view_p = g->player_at( 1 ).pos_bub();
+    g->contexts[1].w_terrain = catacurses::window();
+
+    mp_sessions_reset_for_test();
+    mp_loopback_pair first_pair = mp_make_loopback_pair();
+    mp_loopback_pair second_pair = mp_make_loopback_pair();
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions().push_back( std::make_unique<mp_session>() );
+    mp_sessions()[0]->transport = first_pair.a;
+    mp_sessions()[0]->context_index = 0;
+    mp_sessions()[1]->transport = second_pair.a;
+    mp_sessions()[1]->context_index = 1;
+
+    // Seat 0 plans a ranged action, so plan/cost/target are all non-default;
+    // ranged accepts any target without a map lookup.
+    mp_plan plan;
+    plan.kind = mp_plan_kind::ranged;
+    plan.target = g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 3, -2, 0 );
+    std::string err;
+    REQUIRE( mp_plan_submit( 0, plan, err ) );
+    REQUIRE( err.empty() );
+    REQUIRE( mp_plan_ready( 0, err ) );
+    REQUIRE( err.empty() );
+
+    // Seat 1 passed, went away, lost its client, and carries the refusal text
+    // that is the last thing the client shows it.
+    mp_plan_pass( 1 );
+    mp_plan_set_error( 1, "needs 100 AP, you have 65" );
+    mp_set_away( 1, true );
+    mp_set_disconnected( 1, true );
+    mp_plan_set_phase( mp_round_phase::resolving );
+
+    // The expected anchor for seat 0, from the same rect the broadcast reads.
+    mp_scene_rect rect0;
+    REQUIRE( mp_scene_mask_map_rect( rect0 ) );
+    CHECK( rect0.w == 40 );
+    CHECK( rect0.h == 10 );
+    CHECK( rect0.x == 10 );
+    CHECK( rect0.y == 0 );
+    const tripoint_bub_ms origin0 = mp_scene_origin( rect0, g->contexts[0].ter_view_p );
+
+    {
+        // Seat 1 is inside a menu: its base main-UI adaptor plus the menu's.
+        // The adaptors must be destroyed under their own stack, so the seat is
+        // reactivated after the broadcast, which ends in the world phase.
+        mp_activate_player( 1 );
+        ui_adaptor base_ui;
+        ui_adaptor menu_ui;
+        REQUIRE( g->contexts[1].ui_stack.size() == 2 );
+        mp_server_broadcast_party();
+        mp_activate_player( 1 );
+    }
+    mp_activate_world();
+
+    const std::vector<io_frame> first_frames = drain_frames( *first_pair.b );
+    const std::vector<io_frame> second_frames = drain_frames( *second_pair.b );
+    REQUIRE( first_frames.size() == 1 );
+    REQUIRE( second_frames.size() == 1 );
+    REQUIRE( first_frames[0].kind == mp_msg_kind::control );
+    REQUIRE( second_frames[0].kind == mp_msg_kind::control );
+    mp_control to_first;
+    mp_control to_second;
+    REQUIRE( mp_control_from_json(
+                 std::string( first_frames[0].body.begin(), first_frames[0].body.end() ),
+                 to_first ) );
+    REQUIRE( mp_control_from_json(
+                 std::string( second_frames[0].body.begin(), second_frames[0].body.end() ),
+                 to_second ) );
+    CHECK( to_first.kind == mp_control_kind::party );
+    CHECK( to_second.kind == mp_control_kind::party );
+
+    CHECK( to_first.party.phase == static_cast<uint8_t>( mp_round_phase::resolving ) );
+    CHECK( to_second.party.phase == static_cast<uint8_t>( mp_round_phase::resolving ) );
+
+    // Every recipient's header is its own: its slot and its own scene origin.
+    CHECK( to_first.party.you == 0 );
+    CHECK( to_first.party.view_known );
+    CHECK( to_first.party.vx == origin0.x() );
+    CHECK( to_first.party.vy == origin0.y() );
+    CHECK( to_second.party.you == 1 );
+    CHECK_FALSE( to_second.party.view_known );
+    CHECK( to_second.party.vx == 0 );
+    CHECK( to_second.party.vy == 0 );
+
+    // The seats are the same body for everyone.
+    REQUIRE( to_first.party.seats.size() == 2 );
+    REQUIRE( to_second.party.seats.size() == 2 );
+    for( size_t i = 0; i < 2; ++i ) {
+        const mp_party_seat &a = to_first.party.seats[i];
+        const mp_party_seat &b = to_second.party.seats[i];
+        CHECK( a.slot == b.slot );
+        CHECK( a.name == b.name );
+        CHECK( a.moves == b.moves );
+        CHECK( a.speed == b.speed );
+        CHECK( a.ready == b.ready );
+        CHECK( a.passed == b.passed );
+        CHECK( a.connected == b.connected );
+        CHECK( a.away == b.away );
+        CHECK( a.plan == b.plan );
+        CHECK( a.px == b.px );
+        CHECK( a.py == b.py );
+        CHECK( a.pcost == b.pcost );
+        CHECK( a.menu == b.menu );
+        CHECK( a.error == b.error );
+    }
+
+    const mp_party_seat &seat0 = to_first.party.seats[0];
+    CHECK( seat0.slot == 0 );
+    CHECK( seat0.name == g->player_at( 0 ).get_name() );
+    CHECK( seat0.moves == 100 );
+    CHECK( seat0.speed == g->player_at( 0 ).get_speed() );
+    CHECK( seat0.ready );
+    CHECK_FALSE( seat0.passed );
+    CHECK( seat0.connected );
+    CHECK_FALSE( seat0.away );
+    CHECK( seat0.plan == mp_plan_kind::ranged );
+    // Bubble tiles, not scene cells: the target the seat submitted.
+    CHECK( seat0.px == plan.target.x() );
+    CHECK( seat0.py == plan.target.y() );
+    CHECK( seat0.pcost == 0 );
+    CHECK( seat0.menu.empty() );
+    CHECK( seat0.error.empty() );
+
+    const mp_party_seat &seat1 = to_first.party.seats[1];
+    CHECK( seat1.slot == 1 );
+    CHECK( seat1.name == g->player_at( 1 ).get_name() );
+    CHECK( seat1.moves == 0 );
+    CHECK( seat1.speed == g->player_at( 1 ).get_speed() );
+    CHECK_FALSE( seat1.ready );
+    CHECK( seat1.passed );
+    CHECK_FALSE( seat1.connected );
+    CHECK( seat1.away );
+    CHECK( seat1.plan == mp_plan_kind::none );
+    CHECK( seat1.px == 0 );
+    CHECK( seat1.py == 0 );
+    CHECK( seat1.pcost == 0 );
+    CHECK( seat1.menu == "menu" );
+    CHECK( seat1.error == "needs 100 AP, you have 65" );
+
+    // The phase goes to every session too, and carries the same value.
+    mp_server_broadcast_phase();
+    const std::vector<io_frame> first_phase_frames = drain_frames( *first_pair.b );
+    const std::vector<io_frame> second_phase_frames = drain_frames( *second_pair.b );
+    REQUIRE( first_phase_frames.size() == 1 );
+    REQUIRE( second_phase_frames.size() == 1 );
+    mp_control phase_to_first;
+    mp_control phase_to_second;
+    REQUIRE( mp_control_from_json(
+                 std::string( first_phase_frames[0].body.begin(),
+                              first_phase_frames[0].body.end() ), phase_to_first ) );
+    REQUIRE( mp_control_from_json(
+                 std::string( second_phase_frames[0].body.begin(),
+                              second_phase_frames[0].body.end() ), phase_to_second ) );
+    CHECK( phase_to_first.kind == mp_control_kind::phase );
+    CHECK( phase_to_second.kind == mp_control_kind::phase );
+    CHECK( phase_to_first.phase == static_cast<uint8_t>( mp_round_phase::resolving ) );
+    CHECK( phase_to_second.phase == static_cast<uint8_t>( mp_round_phase::resolving ) );
+
+    // Nothing else went out: each broadcast sent exactly one frame per seat.
+    CHECK_FALSE( first_pair.b->recv( 0 ).has_value() );
+    CHECK_FALSE( second_pair.b->recv( 0 ).has_value() );
+
+    mp_sessions_reset_for_test();
+    mp_plan_reset_all();
+    mp_turn_reset_all();
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 #endif // MP_SERVER

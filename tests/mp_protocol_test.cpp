@@ -449,6 +449,10 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     mp_control sent;
     sent.kind = mp_control_kind::party;
     sent.party.phase = 1;
+    sent.party.you = 1;
+    sent.party.view_known = true;
+    sent.party.vx = -37;
+    sent.party.vy = 42;
     mp_party_seat a;
     a.slot = 0; a.moves = 120; a.speed = 120; a.ready = true;
     a.plan = mp_plan_kind::move; a.px = 10; a.py = 11; a.pcost = 100; a.menu = "inventory";
@@ -463,6 +467,10 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
     CHECK( got.kind == mp_control_kind::party );
     CHECK( got.party.phase == 1 );
+    CHECK( got.party.you == 1 );
+    CHECK( got.party.view_known );
+    CHECK( got.party.vx == -37 );
+    CHECK( got.party.vy == 42 );
     REQUIRE( got.party.seats.size() == 2 );
     CHECK( got.party.seats[0].slot == 0 );
     CHECK( got.party.seats[0].moves == 120 );
@@ -482,6 +490,20 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     CHECK( got.party.seats[1].connected );
     CHECK( got.party.seats[1].name == "Bob" );
     CHECK( got.party.seats[1].error == "needs 100 AP, you have 65" );
+}
+
+TEST_CASE( "mp_control_party_without_the_header_defaults_to_no_anchor", "[mp]" )
+{
+    // Bodies from before the header existed carry no you/view_known/vx/vy.
+    // The decoder must default them rather than refuse the message: a client
+    // (or an older peer) with no anchor simply does not place plans.
+    mp_control got;
+    REQUIRE( mp_control_from_json( R"({"t":"party","phase":2,"seats":[]})", got ) );
+    CHECK( got.party.phase == 2 );
+    CHECK( got.party.you == -1 );
+    CHECK_FALSE( got.party.view_known );
+    CHECK( got.party.vx == 0 );
+    CHECK( got.party.vy == 0 );
 }
 
 TEST_CASE( "mp_control_round_trips_plan_ready_and_phase", "[mp]" )

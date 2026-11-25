@@ -31,10 +31,13 @@
 #include "mp/mp_join_menu.h"
 #include "mp/mp_log.h"
 #include "mp/mp_placement.h"
+#include "mp/mp_plan.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_session_ui.h"
@@ -256,6 +259,111 @@ static void send_character_card( mp_session &session, const avatar &ava )
     // the matcher has nothing to find and that character can never return.
     session.card_save_id = msg.character_card.save_id;
     session.card_world = world_name;
+}
+
+// Every seat's public round state, built once and copied into each recipient's
+// body. Each field is read into a local: the plan table reallocates when a seat
+// is added, so a reference from mp_plan_of() or mp_plan_error() must not be
+// kept across the next call into that module.
+static std::vector<mp_party_seat> party_seats()
+{
+    const size_t slot_count = g->player_slot_count();
+    std::vector<mp_party_seat> seats;
+    seats.reserve( slot_count );
+    for( size_t slot = 0; slot < slot_count; ++slot ) {
+        const bool ready = mp_plan_is_ready( slot );
+        const bool passed = mp_plan_is_passed( slot );
+        const mp_plan plan = mp_plan_of( slot );
+        const int cost = mp_plan_cost( slot, plan );
+        const std::string error = mp_plan_error( slot );
+        avatar &ava = g->player_at( slot );
+
+        mp_party_seat seat;
+        seat.slot = static_cast<uint8_t>( slot );
+        seat.name = ava.get_name();
+        seat.moves = ava.get_moves();
+        seat.speed = ava.get_speed();
+        seat.ready = ready;
+        seat.passed = passed;
+        seat.connected = !mp_player_is_disconnected( slot );
+        seat.away = mp_player_is_away( slot );
+        seat.plan = plan.kind;
+        if( plan.kind != mp_plan_kind::none ) {
+            // A plan's target is stored in bubble coordinates -- the client's
+            // own cells were translated when the plan arrived -- and that is
+            // what the recipient places through its header anchor.
+            seat.px = plan.target.x();
+            seat.py = plan.target.y();
+        }
+        // A cost is negative for a plan that cannot be costed; the wire's
+        // display field has no such value.
+        seat.pcost = std::max( 0, cost );
+        // Phase 1 has one seat in a menu at most, and the depth of its UI
+        // stack is the only evidence the world has. The base main-UI adaptor
+        // is depth 1. Specific labels are plan 2; the client treats any
+        // non-empty value as "in a menu, forward raw keys".
+        seat.menu = slot < g->contexts.size() && g->contexts[slot].ui_stack.size() > 1 ?
+                    "menu" : std::string();
+        seat.error = error;
+        seats.push_back( std::move( seat ) );
+    }
+    return seats;
+}
+
+void mp_server_broadcast_party()
+{
+    const std::vector<mp_party_seat> seats = party_seats();
+    for( const std::unique_ptr<mp_session> &holder : mp_sessions() ) {
+        if( !holder ) {
+            continue;
+        }
+        mp_session &session = *holder;
+        const size_t slot = session.context_index;
+        const bool has_slot = slot < g->player_slot_count() && slot < g->contexts.size();
+        bool view_known = false;
+        int vx = 0;
+        int vy = 0;
+        if( has_slot ) {
+            // The anchor is the recipient's own scene origin: its rect and view
+            // centre, in the coordinates the seats' plan targets use. Every
+            // recipient's body therefore differs here even though the seats do
+            // not.
+            mp_activate_player( slot );
+            mp_scene_rect rect;
+            if( mp_scene_mask_map_rect( rect ) && rect.w != 0 && rect.h != 0 ) {
+                const tripoint_bub_ms origin = mp_scene_origin( rect,
+                                                mp_active_context().ter_view_p );
+                vx = origin.x();
+                vy = origin.y();
+                view_known = true;
+            }
+        }
+        // Called by the world: do not leave a seat's context active whether or
+        // not this recipient had one.
+        mp_activate_world();
+
+        mp_control msg;
+        msg.kind = mp_control_kind::party;
+        msg.party.phase = static_cast<uint8_t>( mp_plan_phase() );
+        msg.party.you = has_slot ? static_cast<int8_t>( slot ) : static_cast<int8_t>( -1 );
+        msg.party.view_known = view_known;
+        msg.party.vx = vx;
+        msg.party.vy = vy;
+        msg.party.seats = seats;
+        send_control( session, msg );
+    }
+}
+
+void mp_server_broadcast_phase()
+{
+    mp_control msg;
+    msg.kind = mp_control_kind::phase;
+    msg.phase = static_cast<uint8_t>( mp_plan_phase() );
+    for( const std::unique_ptr<mp_session> &holder : mp_sessions() ) {
+        if( holder ) {
+            send_control( *holder, msg );
+        }
+    }
 }
 
 // The world's most recently written character save: whose game state a session

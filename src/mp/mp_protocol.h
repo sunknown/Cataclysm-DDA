@@ -210,8 +210,22 @@ struct mp_party_seat {
 };
 
 // Server to client: the whole party's round state, sent whenever it changes.
+//
+// A scene cell exists only in its sender's rect -- each seat's frame is
+// centred on that seat's own view and window -- so a partner's plan cannot be
+// placed by cell index. The header therefore carries the receiver's own frame:
+// `you` is its slot, and `vx`/`vy` are that seat's scene origin in bubble
+// coordinates. Every seat's `px`/`py` are bubble tiles, and the client maps
+// them through its own anchor. Each recipient gets its own body; the seats are
+// shared.
 struct mp_party_msg {
     uint8_t phase = 0;
+    // The recipient's slot, or -1 when it has no context behind it.
+    int8_t you = -1;
+    // Whether `vx`/`vy` are this recipient's scene origin, or merely 0.
+    bool view_known = false;
+    int vx = 0;
+    int vy = 0;
     std::vector<mp_party_seat> seats;
 };
 

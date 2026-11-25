@@ -277,6 +277,20 @@ bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::stri
 // mp_server_accept_new_client directly.
 void mp_server_poll_new_clients();
 
+// The party snapshot: every seat's public round state, one body per session
+// because the header carries the receiver's own frame (its slot `you` and its
+// scene origin `vx`/`vy`, in bubble coordinates). Every seat's `px`/`py` are
+// the plan target in the same bubble coordinates -- a plan reaches the wire as
+// scene cells and is translated to the world's own map frame on receipt, so no
+// client can place it by cell index. The `menu` label is phase 1's generic
+// "menu" while the seat is inside one. Call from the world holding the baton,
+// once per poll, after something the client can see has changed.
+void mp_server_broadcast_party();
+
+// The round phase, sent to every session. Same baton and cadence rules as
+// mp_server_broadcast_party().
+void mp_server_broadcast_phase();
+
 // Ends the server session cleanly. Called by the mp curses backend when a
 // client disconnects, so the game does not spin on timeout events from a
 // dead transport. Defined in main.cpp, which owns the game's exit path; this

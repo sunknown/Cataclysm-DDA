@@ -273,9 +273,11 @@ void mp_server_flush_scene()
         // No baton exists in single player or in a legacy session.
         return;
     }
-    if( !sched->holds( s->context_index ) ) {
-        // The join loop draws for a player while the world still holds the
-        // baton; only the acting seat may send a scene.
+    if( !sched->holds( mp_sched::world ) && !sched->holds( s->context_index ) ) {
+        // Only the baton holder may send a frame for the active context: the
+        // seat itself, or the world building every seat's frame in
+        // mp_server_flush_scenes_all(). Anything else is drawing for a seat
+        // that is not entitled to run.
         return;
     }
 
@@ -337,6 +339,30 @@ void mp_server_flush_scene()
     s->scene_sent_once = true;
     // A completed build consumes the blit, sent or skipped.
     s->scene_terrain_dirty = false;
+}
+
+void mp_server_flush_scenes_all()
+{
+    mp_sched *const sched = mp_active_sched();
+    if( sched == nullptr ) {
+        // No baton exists in single player or in a legacy session, and there
+        // is nobody parked to send for.
+        return;
+    }
+    // One seat at a time, each under its own context: a frame's rect and view
+    // centre belong to the seat it is sent to, and a parked seat has no thread
+    // of its own running to build it. The per-seat dirty/hash gate inside
+    // mp_server_flush_scene() keeps a round with no visual change silent.
+    for( size_t slot = 0; slot < g->player_slot_count(); ++slot ) {
+        if( mp_session_of_slot( slot ) == nullptr ) {
+            continue;
+        }
+        mp_activate_player( slot );
+        mp_server_flush_scene();
+    }
+    // The caller is the world: put the process back in the phase it entered
+    // this function in, never on the last seat visited.
+    mp_activate_world();
 }
 
 void mp_server_reset_for_test()

@@ -61,6 +61,7 @@
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_mask.h"
+#include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_tether.h"
 #include "mp/mp_transport.h"
@@ -1092,6 +1093,12 @@ bool game::do_turn()
         const bool opened_tick = !mp_turn_is_open();
         if( opened_tick ) {
             mp_turn_open_tick();
+            // The client's own view of the new tick: the phase is planning and
+            // each seat's AP is back, before the pacing wait below -- so it is
+            // there before any key can arrive, not after the first event.
+            mp_server_broadcast_party();
+            mp_server_broadcast_phase();
+            mp_server_flush_scenes_all();
         }
 
         // A lost wire is a server-side fact. A seat parked in a menu notices it
@@ -1131,10 +1138,14 @@ bool game::do_turn()
 
         // Round controls become plan state. The drain runs to the end on every
         // poll: the event wait above is edge-triggered, so a single take per
-        // poll would strand the rest until the next event.
+        // poll would strand the rest until the next event. Every one of them --
+        // accepted or refused -- changes the party snapshot, so one broadcast
+        // follows the whole drain rather than one per message.
+        size_t controls_handled = 0;
         size_t control_slot = 0;
         mp_control control;
         while( mp_server_take_control( control_slot, control ) ) {
+            ++controls_handled;
             switch( control.kind ) {
                 case mp_control_kind::plan: {
                     if( control.plan.kind == mp_plan_kind::pass ) {
@@ -1198,6 +1209,14 @@ bool game::do_turn()
                     break;
             }
         }
+        if( controls_handled > 0 ) {
+            // The snapshot carries the new plans and any refusal text the loop
+            // just stored. The scenes keep their own dirty gate inside the
+            // flush and are not sent here: a plan changes the party panel,
+            // not the map.
+            mp_server_broadcast_party();
+            mp_server_broadcast_phase();
+        }
 
         // A parked seat is owed the baton when it has an event to deliver, a
         // replacement to choose, or a quit to unwind. Those are the three
@@ -1242,6 +1261,15 @@ bool game::do_turn()
                 mp_turn_close_tick();
                 mp_sched_trace_phase( "tail-end" );
             }
+            // The round as it now stands, with the phase either back to
+            // planning or still the resolver's `done`, and each seat's map
+            // after the actions. This one site covers every round of a chain,
+            // a monster-only round included, and a close in the same poll --
+            // the state the client gets is the final one, with the moves the
+            // close handed back.
+            mp_server_broadcast_party();
+            mp_server_broadcast_phase();
+            mp_server_flush_scenes_all();
         }
         return false;
 #else

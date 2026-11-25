@@ -359,6 +359,10 @@ std::string mp_control_to_json( const mp_control &msg )
             break;
         case mp_control_kind::party:
             jo.member( "phase", static_cast<int>( msg.party.phase ) );
+            jo.member( "you", static_cast<int>( msg.party.you ) );
+            jo.member( "view_known", msg.party.view_known );
+            jo.member( "vx", msg.party.vx );
+            jo.member( "vy", msg.party.vy );
             jo.member( "seats" );
             jo.start_array();
             for( const mp_party_seat &seat : msg.party.seats ) {
@@ -532,6 +536,14 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                     return static_cast<uint8_t>( std::clamp( value, 0, 255 ) );
                 };
                 msg.party.phase = byte( obj.get_int( "phase" ) );
+                // Absent in a body from before the header existed: the default
+                // -1/false/0 tells the client it has no anchor and must not
+                // place plans.
+                msg.party.you = static_cast<int8_t>(
+                                    std::clamp( obj.get_int( "you", -1 ), -1, 127 ) );
+                msg.party.view_known = obj.get_bool( "view_known", false );
+                msg.party.vx = obj.get_int( "vx", 0 );
+                msg.party.vy = obj.get_int( "vy", 0 );
                 JsonArray seats = obj.get_array( "seats" );
                 msg.party.seats.reserve( seats.size() );
                 for( size_t i = 0; i < seats.size(); i++ ) {

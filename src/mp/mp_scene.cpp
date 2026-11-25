@@ -175,15 +175,16 @@ uint16_t vehicle_heading_65536( const vehicle &veh )
                std::lround( units::to_degrees( veh.face.dir() ) * 65536.0 / 360.0 ) & 0xFFFF );
 }
 
-// Top-left map cell of a w by h rect centred on `view`. Keeping this in one
-// place is what stops a later cell lookup from disagreeing with the frame the
-// builder sends.
-tripoint_bub_ms scene_origin( const tripoint_bub_ms &view, int w, int h )
-{
-    return view + tripoint_rel_ms( -( w / 2 ), -( h / 2 ), 0 );
-}
-
 } // namespace
+
+tripoint_bub_ms mp_scene_origin( const mp_scene_rect &rect,
+                                 const tripoint_bub_ms &view_centre )
+{
+    // Top-left map cell of a w by h rect centred on `view`. Keeping this in one
+    // place is what stops a later cell lookup from disagreeing with the frame
+    // the builder sends.
+    return view_centre + tripoint_rel_ms( -( rect.w / 2 ), -( rect.h / 2 ), 0 );
+}
 
 std::optional<tripoint_bub_ms> mp_scene_tile_at( const mp_scene_rect &rect,
         const tripoint_bub_ms &view_centre, int cell_x, int cell_y )
@@ -192,7 +193,7 @@ std::optional<tripoint_bub_ms> mp_scene_tile_at( const mp_scene_rect &rect,
         cell_x >= rect.x + rect.w || cell_y >= rect.y + rect.h ) {
         return std::nullopt;
     }
-    return scene_origin( view_centre, rect.w, rect.h ) +
+    return mp_scene_origin( rect, view_centre ) +
            tripoint_rel_ms( cell_x - rect.x, cell_y - rect.y, 0 );
 }
 
@@ -204,7 +205,10 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
     scene.tiles_h = static_cast<uint16_t>( std::max( 0, tiles_h ) );
     const int width = scene.tiles_w;
     const int height = scene.tiles_h;
-    const tripoint_bub_ms origin = scene_origin( view_centre, width, height );
+    mp_scene_rect frame_rect;
+    frame_rect.w = scene.tiles_w;
+    frame_rect.h = scene.tiles_h;
+    const tripoint_bub_ms origin = mp_scene_origin( frame_rect, view_centre );
     scene.view_dx = static_cast<int16_t>( origin.x() - view_centre.x() );
     scene.view_dy = static_cast<int16_t>( origin.y() - view_centre.y() );
 

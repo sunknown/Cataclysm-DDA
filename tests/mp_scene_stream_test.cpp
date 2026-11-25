@@ -380,36 +380,91 @@ TEST_CASE( "mp_scene_stream_unchanged_scene_does_not_advance_frame_seq", "[mp]" 
     CHECK_FALSE( session->scene_terrain_dirty );
 }
 
-TEST_CASE( "mp_scene_stream_scene_is_not_sent_without_the_baton", "[mp]" )
+TEST_CASE( "a_waiting_seat_gets_its_own_scene", "[mp]" )
 {
     restore_active_state restore;
-    prepare_stream_world( stream_ctx0, 40, 10, point( 10, 0 ) );
-    std::shared_ptr<mp_transport> wire = install_session( 0 );
-    mp_session *const session = mp_session_of_slot( 0 );
-    REQUIRE( session != nullptr );
-    session->caps = 1;
-    mp_server_set_terminal_size( 80, 24 );
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    clear_creatures();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &second = g->add_player_slot();
+    second.set_body();
+    mp_sync_context_count();
+    // Both avatars on the test map: a fresh slot starts at the blank sentinel,
+    // whose z is outside the map, and the builder would return no levels.
+    g->player_at( 0 ).setpos( get_map(), tripoint_bub_ms( 65, 65, 0 ) );
+    g->player_at( 1 ).setpos( get_map(), tripoint_bub_ms( 66, 65, 0 ) );
+    mp_activate_player( 0 );
+    mp_sessions_reset_for_test();
+    mp_server_reset_for_test();
 
-    // The legacy path: a capable session and an active context, but no
-    // scheduler at all.
+    // Each seat's own terrain window and view centre: the frames must differ in
+    // the geometry they carry, not merely in their sequence.
+    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub();
+    g->contexts[0].w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    g->contexts[1].ter_view_p = g->player_at( 1 ).pos_bub();
+    g->contexts[1].w_terrain = catacurses::newwin( 12, 20, point( 0, 0 ) );
+
+    std::shared_ptr<mp_transport> first = install_session( 0 );
+    std::shared_ptr<mp_transport> second_wire = install_session( 1 );
+    REQUIRE( mp_session_of_slot( 0 ) != nullptr );
+    REQUIRE( mp_session_of_slot( 1 ) != nullptr );
+    mp_session_of_slot( 0 )->caps = 1;
+    mp_session_of_slot( 1 )->caps = 1;
+
+    // The legacy path still sends nothing: without a scheduler there is no
+    // baton and no parked seat to send for.
     mp_set_active_sched( nullptr );
-    mp_server_flush_screen();
-    CHECK( count_of_kind( drain_frames( *wire ), mp_msg_kind::scene ) == 0 );
+    mp_activate_player( 0 );
+    mp_server_flush_scene();
+    CHECK( count_of_kind( drain_frames( *first ), mp_msg_kind::scene ) == 0 );
+    CHECK( count_of_kind( drain_frames( *second_wire ), mp_msg_kind::scene ) == 0 );
 
-    // The join-loop redraw: the world holds the baton while a player's context
-    // is active, so the seat is not entitled to a frame.
-    mp_sched sched( 1 );
+    // The world holds the baton and grants neither seat a turn. The all-seat
+    // flush activates each seat's context in its turn and builds that seat's
+    // frame from its own window; a waiting seat no longer depends on its own
+    // thread being granted the baton.
+    mp_sched sched( 2 );
     mp_set_active_sched( &sched );
-    mp_server_flush_screen();
-    CHECK( count_of_kind( drain_frames( *wire ), mp_msg_kind::scene ) == 0 );
+    mp_server_flush_scenes_all();
+    const std::vector<wire_frame> first_frames = drain_frames( *first );
+    const std::vector<wire_frame> second_frames = drain_frames( *second_wire );
+
+    const mp_scene scene0 = decode_only_scene( first_frames );
+    CHECK( scene0.frame_seq == 1 );
+    CHECK( scene0.tiles_w == 40 );
+    CHECK( scene0.tiles_h == 10 );
+    CHECK( scene0.ui_x == 10 );
+    CHECK( scene0.ui_y == 0 );
+    CHECK( scene0.ui_w == 40 );
+    CHECK( scene0.ui_h == 10 );
+    CHECK( scene0.view_dx == -20 );
+    CHECK( scene0.view_dy == -5 );
+
+    const mp_scene scene1 = decode_only_scene( second_frames );
+    CHECK( scene1.frame_seq == 1 );
+    CHECK( scene1.tiles_w == 20 );
+    CHECK( scene1.tiles_h == 12 );
+    CHECK( scene1.ui_x == 0 );
+    CHECK( scene1.ui_y == 0 );
+    CHECK( scene1.ui_w == 20 );
+    CHECK( scene1.ui_h == 12 );
+    CHECK( scene1.view_dx == -10 );
+    CHECK( scene1.view_dy == -6 );
+
+    // The per-seat dirty/hash gate is untouched: a second round with no visual
+    // change sends no frame at all.
+    mp_server_flush_scenes_all();
     mp_set_active_sched( nullptr );
+    CHECK( count_of_kind( drain_frames( *first ), mp_msg_kind::scene ) == 0 );
+    CHECK( count_of_kind( drain_frames( *second_wire ), mp_msg_kind::scene ) == 0 );
 
-    // The world phase itself has no active session.
-    mp_activate_world();
-    mp_server_flush_screen();
-    CHECK( count_of_kind( drain_frames( *wire ), mp_msg_kind::scene ) == 0 );
-
-    leave_world_phase();
+    mp_sessions_reset_for_test();
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 TEST_CASE( "mp_scene_stream_scene_uses_the_requested_z_levels", "[mp]" )
