@@ -4,6 +4,7 @@
 
 #include "cata_catch.h"
 
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <string>
@@ -30,6 +31,8 @@
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
+#include "mp/mp_scene_codec.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_main.h"
@@ -235,6 +238,10 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
         client_wires_.push_back( wire.b );
         client_grids_.emplace_back( MP_HARNESS_COLS, MP_HARNESS_ROWS );
         client_states_.emplace_back();
+        client_scene_frames_.push_back( 0 );
+        client_party_.emplace_back();
+        client_party_generation_.push_back( 0 );
+        party_read_generation_.push_back( 0 );
     }
 
     // Each thread runs its player's join menu first in join mode, and goes
@@ -321,11 +328,163 @@ void mp_session_harness::mouse_move( const size_t slot, const point &pos )
                                         std::vector<uint8_t>( json.begin(), json.end() ) ) );
 }
 
+void mp_session_harness::send_plan( const size_t slot, const uint32_t seq,
+                                    const mp_plan_kind kind, const int x, const int y )
+{
+    mp_control msg;
+    msg.kind = mp_control_kind::plan;
+    msg.plan.seq = seq;
+    msg.plan.kind = kind;
+    // The seat's own scene cells, one z-level (phase 1). `cost` and `label` are
+    // the client's display estimates: the loop recomputes the cost from the
+    // world and the plan's label is not part of the round yet.
+    msg.plan.x = x;
+    msg.plan.y = y;
+    const std::string json = mp_control_to_json( msg );
+    client_wires_[slot]->send( mp_wrap( mp_msg_kind::control,
+                                        std::vector<uint8_t>( json.begin(), json.end() ) ) );
+}
+
+namespace
+{
+// The three round controls that carry nothing but their sequence. Their kind
+// is the whole message; the plan body only supplies the echo.
+void send_round_control( mp_transport &wire, const mp_control_kind kind, const uint32_t seq )
+{
+    mp_control msg;
+    msg.kind = kind;
+    msg.plan.seq = seq;
+    const std::string json = mp_control_to_json( msg );
+    wire.send( mp_wrap( mp_msg_kind::control,
+                        std::vector<uint8_t>( json.begin(), json.end() ) ) );
+}
+} // namespace
+
+void mp_session_harness::send_ready( const size_t slot, const uint32_t seq )
+{
+    send_round_control( *client_wires_[slot], mp_control_kind::plan_ready, seq );
+}
+
+void mp_session_harness::send_cancel( const size_t slot, const uint32_t seq )
+{
+    send_round_control( *client_wires_[slot], mp_control_kind::plan_cancel, seq );
+}
+
+void mp_session_harness::send_pass( const size_t slot, const uint32_t seq )
+{
+    send_round_control( *client_wires_[slot], mp_control_kind::plan_pass, seq );
+}
+
+void mp_session_harness::receive_client_frame( const size_t slot,
+        const std::vector<uint8_t> &payload )
+{
+    mp_msg_kind kind = mp_msg_kind::control;
+    std::vector<uint8_t> body;
+    if( mp_unwrap( payload, kind, body ) ) {
+        if( kind == mp_msg_kind::scene ) {
+            // The text client path has no scene buffer, so a scene frame is
+            // otherwise dropped unread. Keep its sequence: it is the only
+            // client-side evidence that a seat was sent a new frame.
+            mp_scene scene;
+            if( mp_scene_apply( scene, body ) ) {
+                client_scene_frames_[slot] = scene.frame_seq;
+            }
+            return;
+        }
+        if( kind == mp_msg_kind::control ) {
+            mp_control msg;
+            if( mp_control_from_json( std::string( body.begin(), body.end() ), msg ) &&
+                msg.kind == mp_control_kind::party ) {
+                client_party_[slot] = std::move( msg.party );
+                ++client_party_generation_[slot];
+                return;
+            }
+        }
+    }
+    mp_client_apply_message( payload, client_grids_[slot], client_states_[slot] );
+}
+
+bool mp_session_harness::wait_party( const size_t slot, const int timeout_ms,
+                                     mp_party_msg &out )
+{
+    if( slot >= client_wires_.size() ) {
+        return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds( timeout_ms );
+    // The world is not running while this polls, so every frame that can still
+    // arrive was already sent and only needs time to cross the wire. Settle on
+    // a quiet gap longer than that latency instead of returning at once: the
+    // snapshot from before the caller's run_until() is usually already
+    // delivered, and the one the caller observed is still in flight behind it.
+    const auto quiet = std::chrono::milliseconds( latency_ms_ * 4 + 10 );
+    auto quiet_since = std::chrono::steady_clock::now();
+    while( true ) {
+        while( const std::optional<std::vector<uint8_t>> msg = client_wires_[slot]->recv( 1 ) ) {
+            receive_client_frame( slot, *msg );
+            quiet_since = std::chrono::steady_clock::now();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if( client_party_generation_[slot] > party_read_generation_[slot] &&
+            now - quiet_since >= quiet ) {
+            out = client_party_[slot];
+            party_read_generation_[slot] = client_party_generation_[slot];
+            return true;
+        }
+        if( now >= deadline ) {
+            return false;
+        }
+    }
+}
+
+uint32_t mp_session_harness::last_scene_frame( const size_t slot ) const
+{
+    return slot < client_scene_frames_.size() ? client_scene_frames_[slot] : 0;
+}
+
+bool mp_session_harness::wait_scene_frame( const size_t slot, const uint32_t min_frame,
+        const int timeout_ms )
+{
+    if( slot >= client_wires_.size() ) {
+        return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds( timeout_ms );
+    while( true ) {
+        if( client_scene_frames_[slot] >= min_frame ) {
+            return true;
+        }
+        if( std::chrono::steady_clock::now() >= deadline ) {
+            return false;
+        }
+        while( const std::optional<std::vector<uint8_t>> msg = client_wires_[slot]->recv( 1 ) ) {
+            receive_client_frame( slot, *msg );
+        }
+    }
+}
+
+void mp_session_harness::set_client_caps( const size_t slot, const uint32_t caps )
+{
+    mp_session *const session = mp_session_of_slot( slot );
+    cata_assert( session != nullptr );
+    session->caps |= caps;
+}
+
+void mp_session_harness::reset_client_view( const size_t slot )
+{
+    client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
+    client_states_[slot] = mp_client_state();
+    client_scene_frames_[slot] = 0;
+    client_party_[slot] = mp_party_msg();
+    client_party_generation_[slot] = 0;
+    party_read_generation_[slot] = 0;
+}
+
 void mp_session_harness::pump_clients()
 {
     for( size_t i = 0; i < client_wires_.size(); ++i ) {
         while( const std::optional<std::vector<uint8_t>> msg = client_wires_[i]->recv( 0 ) ) {
-            mp_client_apply_message( *msg, client_grids_[i], client_states_[i] );
+            receive_client_frame( i, *msg );
         }
     }
 }
@@ -393,8 +552,7 @@ void mp_session_harness::connect_replacement_client( const size_t slot )
         mp_server_seat_client( slot, std::move( session ) );
     }
     client_wires_[slot] = wire.b;
-    client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
-    client_states_[slot] = mp_client_state();
+    reset_client_view( slot );
 }
 
 bool mp_session_harness::reconnect_client( const size_t slot, const std::string &save_id,
@@ -423,8 +581,7 @@ bool mp_session_harness::reconnect_client( const size_t slot, const std::string 
     }
 
     client_wires_[slot] = wire.b;
-    client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
-    client_states_[slot] = mp_client_state();
+    reset_client_view( slot );
     return true;
 }
 
@@ -450,8 +607,7 @@ bool mp_session_harness::try_admit_new_client( const std::string &username, std:
         const mp_session *const seated = mp_session_of_slot( slot );
         if( seated != nullptr && seated->transport.get() == admitted ) {
             client_wires_[slot] = wire.b;
-            client_grids_[slot] = mp_screen_grid( MP_HARNESS_COLS, MP_HARNESS_ROWS );
-            client_states_[slot] = mp_client_state();
+            reset_client_view( slot );
             return true;
         }
     }

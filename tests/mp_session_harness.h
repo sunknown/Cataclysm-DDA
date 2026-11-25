@@ -5,6 +5,7 @@
 #if defined(MP_SERVER)
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -15,6 +16,7 @@
 #include "cursesdef.h"           // catacurses::window
 #include "mp/mp_cell.h"
 #include "mp/mp_client_screen.h"
+#include "mp/mp_protocol.h"      // mp_plan_kind, mp_party_msg
 #include "mp/mp_sched.h"
 #include "mp/mp_transport.h"
 #include "panels.h"              // panel_manager
@@ -176,6 +178,47 @@ class mp_session_harness
         // wire path the game's mouse view does.
         void mouse_move( size_t slot, const point &pos );
 
+        // One round-control frame, encoded and wrapped exactly as a client
+        // does and written to the same wire press() uses. The server's reader,
+        // the seat's inbox and the world's drain are all in this path, so an
+        // integration case drives the loop with what a client really sends
+        // rather than handing the loop a message from its own namespace. A
+        // plan's cells are the seat's own scene cells (mp_plan_msg); the
+        // server translates them under that seat's context and view, and
+        // recomputes the cost, so `seq` is the only other client-side value.
+        void send_plan( size_t slot, uint32_t seq, mp_plan_kind kind, int x, int y );
+        void send_ready( size_t slot, uint32_t seq );
+        void send_cancel( size_t slot, uint32_t seq );
+        void send_pass( size_t slot, uint32_t seq );
+
+        // The newest party snapshot this client received and has not yet been
+        // asked for, waiting up to `timeout_ms` for one. `pump_clients()` keeps
+        // the latest body each client saw, so a caller that ran run_until()
+        // first reads the broadcast of the state it just observed. Polls the
+        // wire only; it never runs a turn, so an unsent broadcast times out
+        // with false instead of deadlocking the world.
+        bool wait_party( size_t slot, int timeout_ms, mp_party_msg &out );
+
+        // The frame sequence of the newest scene frame this client received and
+        // decoded, 0 when it has seen none. The scene stream has no grid
+        // analogue, so this is how a test observes that a seat was sent a new
+        // frame.
+        uint32_t last_scene_frame( size_t slot ) const;
+
+        // Waits up to `timeout_ms` for this client to receive a scene frame at
+        // or past `min_frame`, polling the wire without running the world.
+        // False on timeout. The scene stream is delivered a wire latency after
+        // the server sends it, so a test that just observed a broadcast has to
+        // wait for the frame rather than for a turn.
+        bool wait_scene_frame( size_t slot, uint32_t min_frame, int timeout_ms );
+
+        // Makes this seat's client a 3D-capable client for the rest of the
+        // session, adding the capability bits a real client's hello asks for.
+        // Without MP_CAP_SCENE the server never builds or sends a scene frame
+        // for the seat, so a scene test has nothing to observe. Called between
+        // turns, while the seat is parked.
+        void set_client_caps( size_t slot, uint32_t caps );
+
         // Answers player `slot`'s join menu with "New character: random" and
         // confirms the creation screen -- keystrokes, not a call into the menu's
         // internals, so the path under test is the one a person takes.
@@ -256,6 +299,18 @@ class mp_session_harness
         void pump_clients();
 
     private:
+        // Decodes one server frame as this client would: a scene frame updates
+        // the frame sequence, a control `party` body becomes the newest
+        // snapshot, and everything else goes through the ordinary client apply
+        // path. Shared by pump_clients() and wait_party() so neither can
+        // consume a frame differently from the other.
+        void receive_client_frame( size_t slot, const std::vector<uint8_t> &payload );
+
+        // Forgets everything this client had seen. A replacement arrives on a
+        // new wire with a blank terminal: an old grid, scene sequence or party
+        // body must not leak into the case that drives it.
+        void reset_client_view( size_t slot );
+
         // Held by pointer for both ends of its life. It is built in the
         // constructor body, after the leftover sessions of the previous test are
         // cleared, so the terminal it sets up lands in the fallback grid rather
@@ -280,6 +335,15 @@ class mp_session_harness
         // two the same way the real client does.
         std::vector<mp_screen_grid> client_grids_;
         std::vector<mp_client_state> client_states_;
+        // The newest scene frame sequence each client decoded, and the newest
+        // party body it received with a generation counter so wait_party()
+        // hands each snapshot out once: a broadcast seen during pump_clients()
+        // is not lost, and a second wait does not return it again.
+        std::vector<uint32_t> client_scene_frames_;
+        std::vector<mp_party_msg> client_party_;
+        std::vector<uint64_t> client_party_generation_;
+        std::vector<uint64_t> party_read_generation_;
+
         std::unique_ptr<mp_sched> sched_;
         // How long a loopback wire takes to deliver anything. A replacement
         // client needs a pair of its own, with the same latency as the first

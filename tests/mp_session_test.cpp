@@ -34,7 +34,9 @@
 #include "mp_session_harness.h"
 #include "map.h"
 #include "map_helpers.h"
+#include "map_helpers_tests.h"
 #include "messages.h"
+#include "monster.h"
 #include "output.h"
 #include "path_info.h"
 #include "worldfactory.h"
@@ -138,6 +140,71 @@ std::optional<point> plan_cell_for( const size_t slot, const tripoint_bub_ms &ti
     }
     return std::nullopt;
 }
+
+// Without shoes run_cost adds 16 to a plain step, so the "100 AP for a step on
+// pavement" arithmetic (mp_plan_test, mp_resolve_test) only holds for a
+// normally shod character.
+const itype_id itype_sneakers( "sneakers" );
+
+// The mp_plan_test baseline applied to a running two-seat session: plain
+// pavement cannot be assumed from whatever case ran before, and neither can
+// the avatars' clothes, so both are reset here. A step then costs exactly 100
+// AP, which is what makes the AP arithmetic in these cases exact rather than
+// approximate. Each seat then draws once -- a free zoom key, which opens no
+// menu and spends nothing -- because a plan's cells are measured in the terrain
+// window that seat's own draw produces. The caller owns restore_active_state.
+void prepare_two_seat_round( mp_session_harness &harness, const int moves )
+{
+    // clear_character() parks every test character on the same spot (60,60),
+    // so the harness's two-seat layout is read first and put back afterwards.
+    // The cases below need two seats at two positions: both for their AP
+    // arithmetic and for the party anchor, which must be each seat's own.
+    const tripoint_bub_ms seat0_pos = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms seat1_pos = g->player_at( 1 ).pos_bub();
+    REQUIRE( seat0_pos != seat1_pos );
+    clear_fields( 0 );
+    build_test_map( ter_id( "t_pavement" ) );
+    for( size_t slot = 0; slot < 2; ++slot ) {
+        clear_character( g->player_at( slot ) );
+        g->player_at( slot ).setpos( get_map(), slot == 0 ? seat0_pos : seat1_pos );
+        g->player_at( slot ).wear_item( item( itype_sneakers ) );
+        g->player_at( slot ).set_moves( moves );
+    }
+    harness.press( 0, 'z' );
+    harness.press( 1, 'z' );
+    REQUIRE( harness.run_until( []() {
+        return g->contexts[0].w_terrain && g->contexts[1].w_terrain &&
+               mp_turn_is_open() && mp_plan_phase() == mp_round_phase::planning;
+    }, 20 ) );
+}
+
+struct scene_anchor_point {
+    int x = 0;
+    int y = 0;
+
+    bool operator!=( const scene_anchor_point &other ) const {
+        return x != other.x || y != other.y;
+    }
+};
+
+// The anchor the party header carries for `slot`: that seat's scene origin in
+// bubble coordinates, computed from the same rect and view centre the broadcast
+// reads. The seat is activated to read its own context and the world is put
+// back afterwards, as the broadcast does.
+std::optional<scene_anchor_point> party_anchor_for( const size_t slot )
+{
+    mp_activate_player( slot );
+    mp_scene_rect rect;
+    const bool have_rect = mp_scene_mask_map_rect( rect );
+    std::optional<scene_anchor_point> result;
+    if( have_rect ) {
+        const tripoint_bub_ms origin = mp_scene_origin( rect, mp_active_context().ter_view_p );
+        result = scene_anchor_point{ origin.x(), origin.y() };
+    }
+    mp_activate_world();
+    return result;
+}
+
 } // namespace
 
 
@@ -1455,6 +1522,359 @@ TEST_CASE( "a_tick_runs_a_round_to_resolution_and_closes", "[mp]" )
     }, 5 ) );
     CHECK( g->player_at( 0 ).get_moves() > 0 );
     CHECK( g->player_at( 1 ).get_moves() > 0 );
+    CHECK( mp_plan_phase() == mp_round_phase::done );
+}
+
+// Two seats over the real wire. The cases above hand the loop the message a
+// seat's reader would deliver (see queue_control) because they are the loop's
+// unit tests; these write the control frames a client writes, through
+// mp_session_harness's senders, and read the party body the server broadcasts
+// back. Nothing here pokes at mp_session state.
+TEST_CASE( "both_seats_plan_and_the_round_resolves", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+    const std::optional<point> cell_a = plan_cell_for( 0, start_a + tripoint_rel_ms::east );
+    const std::optional<point> cell_b = plan_cell_for( 1, start_b + tripoint_rel_ms::west );
+    REQUIRE( cell_a );
+    REQUIRE( cell_b );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell_a->x, cell_a->y );
+    harness.send_plan( 1, 2, mp_plan_kind::move, cell_b->x, cell_b->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move &&
+               mp_plan_of( 1 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    // The cells each client sent were translated under that seat's own view:
+    // the loop holds the bubble targets, not the scene cells.
+    CHECK( mp_plan_of( 0 ).target == start_a + tripoint_rel_ms::east );
+    CHECK( mp_plan_of( 1 ).target == start_b + tripoint_rel_ms::west );
+
+    // Pin each pool to exactly the step's price, so the round spends all of it
+    // and the tick has nothing left to run.
+    const int cost_a = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    const int cost_b = mp_plan_cost( 1, mp_plan_of( 1 ) );
+    REQUIRE( cost_a > 0 );
+    REQUIRE( cost_b > 0 );
+    g->player_at( 0 ).set_moves( cost_a );
+    g->player_at( 1 ).set_moves( cost_b );
+
+    harness.send_ready( 0, 3 );
+    harness.send_ready( 1, 4 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_phase() == mp_round_phase::done;
+    }, 10 ) );
+
+    CHECK( g->player_at( 0 ).pos_bub() == start_a + tripoint_rel_ms::east );
+    CHECK( g->player_at( 1 ).pos_bub() == start_b + tripoint_rel_ms::west );
+    // The tick closed only because neither pool had anything left. The close
+    // then hands each seat a fresh pool of exactly its speed, so a charged step
+    // shows up as "nothing carried over" rather than the price still in hand.
+    CHECK( g->player_at( 0 ).get_moves() == g->player_at( 0 ).get_speed() );
+    CHECK( g->player_at( 1 ).get_moves() == g->player_at( 1 ).get_speed() );
+}
+
+TEST_CASE( "a_cancel_returns_the_round_to_planning", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+    const std::optional<point> cell_a = plan_cell_for( 0, start_a + tripoint_rel_ms::east );
+    const std::optional<point> cell_b = plan_cell_for( 1, start_b + tripoint_rel_ms::west );
+    REQUIRE( cell_a );
+    REQUIRE( cell_b );
+
+    // Seat 1 plans but never commits, so seat 0's ready cannot settle the round.
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell_a->x, cell_a->y );
+    harness.send_plan( 1, 2, mp_plan_kind::move, cell_b->x, cell_b->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move &&
+               mp_plan_of( 1 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    harness.send_ready( 0, 3 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_is_ready( 0 ) && mp_plan_phase() == mp_round_phase::planning;
+    }, 10 ) );
+    CHECK_FALSE( mp_plan_is_ready( 1 ) );
+
+    harness.send_cancel( 0, 4 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_plan_is_ready( 0 ) && mp_plan_of( 0 ).kind == mp_plan_kind::none;
+    }, 10 ) );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    CHECK_FALSE( mp_plan_is_ready( 1 ) );
+    CHECK_FALSE( mp_turn_round_complete() );
+    // A withdrawn intent leaves the round waiting for this seat again, which is
+    // the phase the client draws.
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+
+    // And the seat can go through the whole cycle again in the same round.
+    harness.send_plan( 0, 5, mp_plan_kind::move, cell_a->x, cell_a->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    REQUIRE( cost > 0 );
+    g->player_at( 0 ).set_moves( cost );
+    harness.send_ready( 0, 6 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_is_ready( 0 );
+    }, 10 ) );
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+}
+
+TEST_CASE( "a_plan_that_costs_more_than_ap_is_refused", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
+    const std::optional<point> cell = plan_cell_for( 0, start + tripoint_rel_ms::east );
+    REQUIRE( cell );
+
+    g->player_at( 0 ).set_moves( 65 );
+    // Seat 1 has nothing; the refusal is seat 0's alone.
+    g->player_at( 1 ).set_moves( 0 );
+
+    // Submitting a plan costs nothing, so it is accepted; the commit is where
+    // the AP is checked.
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) == 100 );
+
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_plan_error( 0 ).empty();
+    }, 10 ) );
+
+    // The refusal is the resolver's own text, unchanged, and the seat kept
+    // every point of AP it had.
+    CHECK( mp_plan_error( 0 ) == "needs 100 AP, you have 65" );
+    CHECK( g->player_at( 0 ).get_moves() == 65 );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    CHECK( mp_turn_is_open() );
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+
+    // The client is told by the party snapshot, not left to guess.
+    mp_party_msg party;
+    REQUIRE( harness.wait_party( 0, 1000, party ) );
+    REQUIRE( party.seats.size() == 2 );
+    CHECK( party.seats[0].error == "needs 100 AP, you have 65" );
+    CHECK( party.seats[0].plan == mp_plan_kind::move );
+    CHECK( party.seats[0].pcost == 100 );
+}
+
+TEST_CASE( "a_seat_with_no_moves_does_not_hold_the_round", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+    const std::optional<point> cell = plan_cell_for( 0, start_a + tripoint_rel_ms::east );
+    REQUIRE( cell );
+
+    // Seat 1 is empty for this tick: the eligible set is seat 0 alone, so its
+    // commit settles the round.
+    g->player_at( 1 ).set_moves( 0 );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    REQUIRE( cost > 0 );
+    g->player_at( 0 ).set_moves( cost );
+
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_phase() == mp_round_phase::done;
+    }, 10 ) );
+
+    CHECK( g->player_at( 0 ).pos_bub() == start_a + tripoint_rel_ms::east );
+    CHECK( g->player_at( 1 ).pos_bub() == start_b );
+    CHECK( g->player_at( 0 ).get_moves() == g->player_at( 0 ).get_speed() );
+    // The idle seat did not leave a planning phase of its own behind.
+    CHECK( mp_plan_phase() == mp_round_phase::done );
+}
+
+TEST_CASE( "the_party_broadcast_shows_both_plans", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+    const std::optional<point> cell_a = plan_cell_for( 0, start_a + tripoint_rel_ms::east );
+    const std::optional<point> cell_b = plan_cell_for( 1, start_b + tripoint_rel_ms::west );
+    REQUIRE( cell_a );
+    REQUIRE( cell_b );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell_a->x, cell_a->y );
+    harness.send_plan( 1, 2, mp_plan_kind::move, cell_b->x, cell_b->y );
+    // Not ready: the snapshot is read while the round is still planning, which
+    // is when a client draws the plans.
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move &&
+               mp_plan_of( 1 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+
+    mp_party_msg to_seat0;
+    mp_party_msg to_seat1;
+    REQUIRE( harness.wait_party( 0, 1000, to_seat0 ) );
+    REQUIRE( harness.wait_party( 1, 1000, to_seat1 ) );
+
+    // The seats are one shared body: same names, plans, targets and costs.
+    REQUIRE( to_seat0.seats.size() == 2 );
+    REQUIRE( to_seat1.seats.size() == 2 );
+    for( size_t i = 0; i < 2; ++i ) {
+        const mp_party_seat &a = to_seat0.seats[i];
+        const mp_party_seat &b = to_seat1.seats[i];
+        CHECK( a.slot == b.slot );
+        CHECK( a.name == b.name );
+        CHECK( a.moves == b.moves );
+        CHECK( a.ready == b.ready );
+        CHECK( a.passed == b.passed );
+        CHECK( a.connected == b.connected );
+        CHECK( a.away == b.away );
+        CHECK( a.plan == b.plan );
+        CHECK( a.px == b.px );
+        CHECK( a.py == b.py );
+        CHECK( a.pcost == b.pcost );
+        CHECK( a.menu == b.menu );
+        CHECK( a.error == b.error );
+    }
+    // Targets are bubble tiles, not the cells either client sent: east for
+    // seat 0, west for seat 1, and each body carries both.
+    CHECK( to_seat0.seats[0].slot == 0 );
+    CHECK( to_seat0.seats[0].name == "P0" );
+    CHECK( to_seat0.seats[0].plan == mp_plan_kind::move );
+    CHECK( to_seat0.seats[0].px == start_a.x() + 1 );
+    CHECK( to_seat0.seats[0].py == start_a.y() );
+    CHECK( to_seat0.seats[1].slot == 1 );
+    CHECK( to_seat0.seats[1].name == "P1" );
+    CHECK( to_seat0.seats[1].plan == mp_plan_kind::move );
+    CHECK( to_seat0.seats[1].px == start_b.x() - 1 );
+    CHECK( to_seat0.seats[1].py == start_b.y() );
+    CHECK( to_seat0.phase == static_cast<uint8_t>( mp_round_phase::planning ) );
+    CHECK( to_seat1.phase == to_seat0.phase );
+
+    // Each body's header is the recipient's own: its slot and its own scene
+    // origin, so a partner's bubble target can be placed through it. The seats
+    // stand two tiles apart, so their views differ -- and the headers differ in
+    // exactly the same way, while the seats do not.
+    CHECK( to_seat0.you == 0 );
+    CHECK( to_seat1.you == 1 );
+    REQUIRE( to_seat0.view_known );
+    REQUIRE( to_seat1.view_known );
+    const std::optional<scene_anchor_point> anchor0 = party_anchor_for( 0 );
+    const std::optional<scene_anchor_point> anchor1 = party_anchor_for( 1 );
+    REQUIRE( anchor0 );
+    REQUIRE( anchor1 );
+    CHECK( to_seat0.vx == anchor0->x );
+    CHECK( to_seat0.vy == anchor0->y );
+    CHECK( to_seat1.vx == anchor1->x );
+    CHECK( to_seat1.vy == anchor1->y );
+    CHECK( *anchor0 != *anchor1 );
+    CHECK( ( to_seat0.vx != to_seat1.vx || to_seat0.vy != to_seat1.vy ) );
+}
+
+TEST_CASE( "a_waiting_seat_gets_its_scene_after_resolution", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // A scene frame exists only for a client that asked for the stream; the
+    // harness's bare session is a text client until this says otherwise.
+    harness.set_client_caps( 0, MP_CAP_SCENE );
+    harness.set_client_caps( 1, MP_CAP_SCENE );
+    prepare_two_seat_round( harness, 1000 );
+
+    // Let every frame the initial draw queued land before taking the baseline:
+    // a frame still on the wire would otherwise satisfy the assertion without a
+    // resolution. No seat has input, so these polls only deliver and wait.
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    REQUIRE( harness.last_scene_frame( 1 ) > 0 );
+    const uint32_t server_before = mp_session_of_slot( 1 )->scene_seq;
+
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+    const std::optional<point> cell = plan_cell_for( 0, start_a + tripoint_rel_ms::east );
+    REQUIRE( cell );
+
+    // Seat 1 never acts this round: no plan, no ready, no moves.
+    g->player_at( 1 ).set_moves( 0 );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    REQUIRE( cost > 0 );
+    g->player_at( 0 ).set_moves( cost );
+
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_phase() == mp_round_phase::done;
+    }, 10 ) );
+
+    CHECK( g->player_at( 1 ).pos_bub() == start_b );
+    // The all-seat flush built and sent a frame for the seat that was waiting,
+    // even though that seat never held the baton this round.
+    const uint32_t server_after = mp_session_of_slot( 1 )->scene_seq;
+    CHECK( server_after > server_before );
+    REQUIRE( harness.wait_scene_frame( 1, server_after, 1000 ) );
+    CHECK( harness.last_scene_frame( 1 ) >= server_after );
+}
+
+TEST_CASE( "a_monster_takes_its_step_after_the_player_batch", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+    set_time_to_day();
+
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+    const tripoint_abs_ms avatar_abs = g->player_at( 0 ).pos_abs();
+    // Three tiles east: in sight, but far enough that the creature's step is a
+    // walk rather than a melee attack.
+    const tripoint_bub_ms monster_start = start_a + tripoint_rel_ms( 3, 0, 0 );
+    monster &zombie = spawn_test_monster( "mon_zombie", monster_start );
+    zombie.set_dest( avatar_abs );
+    // Exactly one step's AP on pavement: the creature takes its one step in the
+    // round that follows the players' batch, and has nothing left for another.
+    zombie.set_moves( 100 );
+
+    harness.send_pass( 0, 1 );
+    harness.send_pass( 1, 2 );
+    REQUIRE( harness.run_until( [&zombie, monster_start]() {
+        return zombie.pos_bub() != monster_start;
+    }, 10 ) );
+
+    // The players' batch went first and the creature followed it inside the
+    // same tick: one round's step, not a tick's worth of walking.
+    CHECK( rl_dist( monster_start, zombie.pos_bub() ) <= 1 );
+    CHECK( zombie.get_moves() <= 0 );
+    CHECK( g->player_at( 0 ).pos_bub() == start_a );
+    CHECK( g->player_at( 1 ).pos_bub() == start_b );
+    // With the creature's AP gone nothing can act, so the tick closed in the
+    // same poll and the client sees the resolver's `done`. A loop that closed
+    // before the creature's round would have closed without it ever moving.
+    CHECK_FALSE( mp_turn_is_open() );
     CHECK( mp_plan_phase() == mp_round_phase::done );
 }
 

@@ -354,12 +354,19 @@ void mp_server_flush_scenes_all()
     }
     // One seat at a time, each under its own context: a frame's rect and view
     // centre belong to the seat it is sent to, and a parked seat has no thread
-    // of its own running to build it. The per-seat dirty/hash gate inside
+    // of its own running to build it. The body hash inside
     // mp_server_flush_scene() keeps a round with no visual change silent.
     for( size_t slot = 0; slot < g->player_slot_count(); ++slot ) {
-        if( mp_session_of_slot( slot ) == nullptr ) {
+        mp_session *const seat = mp_session_of_slot( slot );
+        if( seat == nullptr ) {
             continue;
         }
+        // The world changed for every seat -- another seat acted, a creature
+        // moved, the tick turned -- and a waiting seat never drew it: only a
+        // seat's own terrain blit sets its dirty flag. Force the build; the
+        // body hash inside the flush still suppresses a frame that came out
+        // identical, which is the silence a no-op round wants.
+        seat->scene_terrain_dirty = true;
         mp_activate_player( slot );
         mp_server_flush_scene();
     }
