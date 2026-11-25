@@ -11,7 +11,7 @@
 // Version of the wire protocol. Sent in the client's first message; a
 // mismatch is refused with an explanation rather than tolerated, because the
 // failure mode of a silent mismatch is a garbled screen.
-constexpr int MP_PROTOCOL_VERSION = 3;
+constexpr int MP_PROTOCOL_VERSION = 4;
 
 // Capability bits. A client asks for streams in its hello; the server answers
 // with the set it can serve in the hello_ack, so a client never waits for a
@@ -208,6 +208,11 @@ struct mp_party_seat {
     // The last rejection text for this seat, empty when none: the client shows
     // it instead of guessing why a plan was refused.
     std::string error;
+    // Why the seat can or cannot start an action, by name (see
+    // mp_action_availability_name): mandatory, because a client that guessed
+    // `available` would let a seat in recovery plan an action. Kept as a string
+    // on the wire so an older peer's body cannot silently read as a default.
+    std::string availability;
 };
 
 // Server to client: the whole party's round state, sent whenever it changes.

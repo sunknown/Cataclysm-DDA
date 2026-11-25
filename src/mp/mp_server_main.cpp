@@ -305,6 +305,8 @@ static std::vector<mp_party_seat> party_seats()
         seat.menu = slot < g->contexts.size() && g->contexts[slot].ui_stack.size() > 1 ?
                     "menu" : std::string();
         seat.error = error;
+        seat.availability =
+            mp_action_availability_name( mp_turn_player_availability( slot ) );
         seats.push_back( std::move( seat ) );
     }
     return seats;

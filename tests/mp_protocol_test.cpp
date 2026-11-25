@@ -8,6 +8,7 @@
 #include "input_enums.h"
 #include "mp/mp_protocol.h"
 #include "mp/mp_scene.h"
+#include "mp/mp_turn.h"
 
 TEST_CASE( "mp_wrap_tags_a_body_with_its_kind", "[mp]" )
 {
@@ -457,10 +458,12 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     a.slot = 0; a.moves = 120; a.speed = 120; a.ready = true;
     a.plan = mp_plan_kind::move; a.px = 10; a.py = 11; a.pcost = 100; a.menu = "inventory";
     a.name = "Alice";
+    a.availability = "available";
     mp_party_seat b;
     b.slot = 1; b.moves = 0; b.speed = 100; b.passed = true; b.connected = true;
     b.name = "Bob";
     b.error = "needs 100 AP, you have 65";
+    b.availability = "recovering";
     sent.party.seats = { a, b };
 
     mp_control got;
@@ -486,10 +489,47 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     CHECK( got.party.seats[0].menu == "inventory" );
     CHECK( got.party.seats[0].name == "Alice" );
     CHECK( got.party.seats[0].error.empty() );
+    CHECK( got.party.seats[0].availability == "available" );
     CHECK( got.party.seats[1].passed );
     CHECK( got.party.seats[1].connected );
     CHECK( got.party.seats[1].name == "Bob" );
     CHECK( got.party.seats[1].error == "needs 100 AP, you have 65" );
+    CHECK( got.party.seats[1].availability == "recovering" );
+}
+
+TEST_CASE( "mp_control_party_requires_a_known_availability", "[mp][ap_debt]" )
+{
+    // A seat with no state field is refused: the client cannot draw a state it
+    // was never told, and guessing `available` would let it plan for a seat in
+    // recovery.
+    mp_control got;
+    CHECK_FALSE( mp_control_from_json(
+        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,"ready":false,"passed":false,"connected":true,"away":false,"plan":"none","px":0,"py":0,"pcost":0,"menu":"","name":"A","error":""}]})",
+        got ) );
+    // An unknown state is refused as well, not carried as text.
+    CHECK_FALSE( mp_control_from_json(
+        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,"ready":false,"passed":false,"connected":true,"away":false,"plan":"none","px":0,"py":0,"pcost":0,"menu":"","name":"A","error":"","availability":"tired"}]})",
+        got ) );
+
+    // Every state the server can send round-trips by name.
+    for( const mp_action_availability state :
+         { mp_action_availability::available, mp_action_availability::recovering,
+           mp_action_availability::passed, mp_action_availability::busy,
+           mp_action_availability::away, mp_action_availability::disconnected,
+           mp_action_availability::dead, mp_action_availability::unavailable } ) {
+        mp_control sent;
+        sent.kind = mp_control_kind::party;
+        mp_party_seat seat;
+        seat.slot = 0;
+        seat.name = "A";
+        seat.availability = mp_action_availability_name( state );
+        sent.party.seats = { seat };
+        mp_control round_tripped;
+        REQUIRE( mp_control_from_json( mp_control_to_json( sent ), round_tripped ) );
+        REQUIRE( round_tripped.party.seats.size() == 1 );
+        CHECK( round_tripped.party.seats[0].availability ==
+               mp_action_availability_name( state ) );
+    }
 }
 
 TEST_CASE( "mp_control_party_without_the_header_defaults_to_no_anchor", "[mp]" )

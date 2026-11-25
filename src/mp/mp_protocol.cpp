@@ -6,6 +6,7 @@
 #include "json.h"
 #include "json_loader.h"
 #include "mp/mp_describe.h"
+#include "mp/mp_turn.h"
 #include "point.h"
 
 std::vector<uint8_t> mp_wrap( const mp_msg_kind kind, const std::vector<uint8_t> &body )
@@ -381,6 +382,7 @@ std::string mp_control_to_json( const mp_control &msg )
                 jo.member( "menu", seat.menu );
                 jo.member( "name", seat.name );
                 jo.member( "error", seat.error );
+                jo.member( "availability", seat.availability );
                 jo.end_object();
             }
             jo.end_array();
@@ -570,6 +572,16 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                     out_seat.menu = seat.get_string( "menu" );
                     out_seat.name = seat.get_string( "name" );
                     out_seat.error = seat.get_string( "error" );
+                    // Mandatory and validated: a missing or unknown state is a
+                    // body this client cannot draw, not a default to guess at.
+                    mp_action_availability availability =
+                        mp_action_availability::unavailable;
+                    if( !seat.has_string( "availability" ) ||
+                        !mp_action_availability_from_string(
+                            seat.get_string( "availability" ), availability ) ) {
+                        return false;
+                    }
+                    out_seat.availability = mp_action_availability_name( availability );
                     msg.party.seats.push_back( std::move( out_seat ) );
                 }
                 break;

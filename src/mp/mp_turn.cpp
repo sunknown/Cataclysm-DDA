@@ -625,6 +625,45 @@ mp_action_availability mp_turn_player_availability( const size_t slot )
     return mp_action_availability::available;
 }
 
+const char *mp_action_availability_name( const mp_action_availability availability )
+{
+    switch( availability ) {
+        case mp_action_availability::available:
+            return "available";
+        case mp_action_availability::recovering:
+            return "recovering";
+        case mp_action_availability::passed:
+            return "passed";
+        case mp_action_availability::busy:
+            return "busy";
+        case mp_action_availability::away:
+            return "away";
+        case mp_action_availability::disconnected:
+            return "disconnected";
+        case mp_action_availability::dead:
+            return "dead";
+        case mp_action_availability::unavailable:
+            return "unavailable";
+    }
+    return "unavailable";
+}
+
+bool mp_action_availability_from_string( const std::string &text,
+        mp_action_availability &availability )
+{
+    for( const mp_action_availability state :
+         { mp_action_availability::available, mp_action_availability::recovering,
+           mp_action_availability::passed, mp_action_availability::busy,
+           mp_action_availability::away, mp_action_availability::disconnected,
+           mp_action_availability::dead, mp_action_availability::unavailable } ) {
+        if( text == mp_action_availability_name( state ) ) {
+            availability = state;
+            return true;
+        }
+    }
+    return false;
+}
+
 const char *mp_action_availability_refusal( const mp_action_availability availability )
 {
     switch( availability ) {

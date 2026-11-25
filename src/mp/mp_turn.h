@@ -352,6 +352,13 @@ enum class mp_action_availability {
 
 mp_action_availability mp_turn_player_availability( size_t slot );
 
+// The wire name of a state, and its parser. The name is what `party` carries
+// and what a client validates; an unknown name is refused rather than drawn as
+// a guess.
+const char *mp_action_availability_name( mp_action_availability availability );
+bool mp_action_availability_from_string( const std::string &text,
+        mp_action_availability &availability );
+
 // The player-facing reason for a state other than `available`.
 const char *mp_action_availability_refusal( mp_action_availability availability );
 
