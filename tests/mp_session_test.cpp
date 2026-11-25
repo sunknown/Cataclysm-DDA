@@ -510,15 +510,20 @@ TEST_CASE( "two_players_overmaps_do_not_share_a_cursor", "[mp]" )
     // cursor. On a per-seat view it moves one step from its own origin; on the
     // shared view it continues seat 0's three presses.
     harness.press( 1, KEY_RIGHT );
-    harness.run_until( []() {
-        return false;
-    }, 5 );
+    // The key is granted on a poll of its own and the redrawn sidebar goes out
+    // with the seat's next flush; a fixed number of polls is a grant-count
+    // assumption, and the menu-state traffic now shares those polls. Wait on
+    // the observable the case is about. A shared cursor shows the shifted cell
+    // and never one_right, so this still fails on the bug it guards.
+    const bool moved = harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), seat1_one_right.to_string() );
+    }, 20 );
     CAPTURE( seat1_origin.to_string(), seat1_one_right.to_string(),
              seat1_shifted_by_seat0.to_string() );
     // The shared cursor's position must not reach this seat's screen: that is
     // the leak the manual pass saw.
     CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), seat1_shifted_by_seat0.to_string() ) );
-    CHECK( mp_grid_contains( harness.screen( 1 ), seat1_one_right.to_string() ) );
+    CHECK( moved );
 }
 
 // The teardown half of the same ownership question: a session can end while a
