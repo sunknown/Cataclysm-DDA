@@ -230,8 +230,11 @@ void mp_server_flush_screen()
         return;
     }
     mp_sched *const sched = mp_active_sched();
-    // The baton check is the same one the scene flush uses -- the join
-    // loop and the world phase draw for a seat that is not entitled to run.
+    // A hover answer is seat-only: the question names a frame and a view only
+    // this seat is looking at, so -- unlike the scene flush, which the world
+    // may also build from its all-seat flush -- only the seat itself may
+    // answer. The join loop and the world phase draw for a seat that is not
+    // entitled to run.
     if( sched != nullptr && !sched->holds( s->context_index ) ) {
         return;
     }

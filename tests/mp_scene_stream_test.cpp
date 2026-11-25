@@ -170,6 +170,43 @@ void leave_world_phase()
     mp_activate_player( 0 );
 }
 
+// Two real seats on the test map, each with its own terrain window in
+// g->contexts so mp_activate_player(slot) is legal: slot 0 is 40x10 at (10,0),
+// slot 1 is 20x12 at (0,0). Leaves slot 0 active.
+void prepare_two_seat_stream_world()
+{
+    mp_ensure_player_context();
+    clear_avatar();
+    build_test_map( ter_id( "t_pavement" ) );
+    clear_creatures();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &second = g->add_player_slot();
+    second.set_body();
+    mp_sync_context_count();
+    // Both avatars on the test map: a fresh slot starts at the blank sentinel,
+    // whose z is outside the map, and the builder would return no levels.
+    g->player_at( 0 ).setpos( get_map(), tripoint_bub_ms( 65, 65, 0 ) );
+    g->player_at( 1 ).setpos( get_map(), tripoint_bub_ms( 66, 65, 0 ) );
+    mp_activate_player( 0 );
+    mp_sessions_reset_for_test();
+    mp_server_reset_for_test();
+    // Each seat's own terrain window and view centre: a frame's geometry is
+    // that seat's, not the process's.
+    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub();
+    g->contexts[0].w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
+    g->contexts[1].ter_view_p = g->player_at( 1 ).pos_bub();
+    g->contexts[1].w_terrain = catacurses::newwin( 12, 20, point( 0, 0 ) );
+}
+
+void teardown_two_seat_stream_world()
+{
+    mp_sessions_reset_for_test();
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
 void send_hello_json( mp_transport &transport, const std::string &json )
 {
     transport.send( mp_wrap( mp_msg_kind::control,
@@ -383,29 +420,7 @@ TEST_CASE( "mp_scene_stream_unchanged_scene_does_not_advance_frame_seq", "[mp]" 
 TEST_CASE( "a_waiting_seat_gets_its_own_scene", "[mp]" )
 {
     restore_active_state restore;
-    mp_ensure_player_context();
-    clear_avatar();
-    build_test_map( ter_id( "t_pavement" ) );
-    clear_creatures();
-    game_test_helper::reset_player_slots();
-    mp_sync_context_count();
-    avatar &second = g->add_player_slot();
-    second.set_body();
-    mp_sync_context_count();
-    // Both avatars on the test map: a fresh slot starts at the blank sentinel,
-    // whose z is outside the map, and the builder would return no levels.
-    g->player_at( 0 ).setpos( get_map(), tripoint_bub_ms( 65, 65, 0 ) );
-    g->player_at( 1 ).setpos( get_map(), tripoint_bub_ms( 66, 65, 0 ) );
-    mp_activate_player( 0 );
-    mp_sessions_reset_for_test();
-    mp_server_reset_for_test();
-
-    // Each seat's own terrain window and view centre: the frames must differ in
-    // the geometry they carry, not merely in their sequence.
-    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub();
-    g->contexts[0].w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
-    g->contexts[1].ter_view_p = g->player_at( 1 ).pos_bub();
-    g->contexts[1].w_terrain = catacurses::newwin( 12, 20, point( 0, 0 ) );
+    prepare_two_seat_stream_world();
 
     std::shared_ptr<mp_transport> first = install_session( 0 );
     std::shared_ptr<mp_transport> second_wire = install_session( 1 );
@@ -461,10 +476,99 @@ TEST_CASE( "a_waiting_seat_gets_its_own_scene", "[mp]" )
     CHECK( count_of_kind( drain_frames( *first ), mp_msg_kind::scene ) == 0 );
     CHECK( count_of_kind( drain_frames( *second_wire ), mp_msg_kind::scene ) == 0 );
 
-    mp_sessions_reset_for_test();
+    teardown_two_seat_stream_world();
+}
+
+TEST_CASE( "a_waiting_seat_gets_its_masks_across_the_world_flush", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_two_seat_stream_world();
+
+    std::shared_ptr<mp_transport> first = install_session( 0 );
+    std::shared_ptr<mp_transport> second_wire = install_session( 1 );
+    REQUIRE( mp_session_of_slot( 0 ) != nullptr );
+    REQUIRE( mp_session_of_slot( 1 ) != nullptr );
+    mp_session_of_slot( 0 )->caps = 1;
+    mp_session_of_slot( 1 )->caps = 1;
+
+    // Each seat draws its own screen: its terrain blit clears its grid, and
+    // the windows blitted over the map note the cells they cover. The rects
+    // differ per seat, so one shared grid could not serve both.
+    const mp_scene_rect seat0_mask{ 12, 2, 6, 3, 0 };
+    const mp_scene_rect seat1_mask{ 1, 3, 4, 3, 1 };
     mp_activate_player( 0 );
-    game_test_helper::reset_player_slots();
-    mp_sync_context_count();
+    mp_scene_mask_clear();
+    mp_scene_mask_note( seat0_mask.x, seat0_mask.y, seat0_mask.w, seat0_mask.h,
+                        seat0_mask.role );
+    mp_activate_player( 1 );
+    mp_scene_mask_clear();
+    mp_scene_mask_note( seat1_mask.x, seat1_mask.y, seat1_mask.w, seat1_mask.h,
+                        seat1_mask.role );
+
+    // Seat 1's own flush, under its own baton: the reference frame whose mask
+    // the world-side flush must reproduce.
+    flush_scene_under_baton( 1, 2 );
+    const mp_scene own_scene = decode_only_scene( drain_frames( *second_wire ) );
+    REQUIRE( own_scene.masks.size() == 1 );
+    CHECK( own_scene.masks[0].x == seat1_mask.x );
+    CHECK( own_scene.masks[0].y == seat1_mask.y );
+    CHECK( own_scene.masks[0].w == seat1_mask.w );
+    CHECK( own_scene.masks[0].h == seat1_mask.h );
+    CHECK( own_scene.masks[0].role == seat1_mask.role );
+    const uint32_t seat1_seq = mp_session_of_slot( 1 )->scene_seq;
+    const uint64_t seat1_mask_hash = mp_session_of_slot( 1 )->scene_mask_hash;
+    REQUIRE( seat1_seq == 1 );
+
+    // A later draw of seat 1: the map blit clears and the panels re-note the
+    // same rect, the blit marks the scene dirty, and the character steps one
+    // tile -- so the frame really changes while its mask set does not.
+    mp_activate_player( 1 );
+    mp_scene_mask_clear();
+    mp_scene_mask_note( seat1_mask.x, seat1_mask.y, seat1_mask.w, seat1_mask.h,
+                        seat1_mask.role );
+    g->player_at( 1 ).setpos( get_map(),
+                              g->player_at( 1 ).pos_bub() + tripoint_rel_ms( 1, 0, 0 ) );
+    mp_activate_world();
+    mp_session_of_slot( 1 )->scene_terrain_dirty = true;
+
+    // The world flushes both parked seats, neither granted a turn.
+    mp_sched sched( 2 );
+    mp_set_active_sched( &sched );
+    mp_server_flush_scenes_all();
+    mp_set_active_sched( nullptr );
+
+    const mp_scene seat1_world = decode_only_scene( drain_frames( *second_wire ) );
+    CHECK( seat1_world.frame_seq == seat1_seq + 1 );
+    REQUIRE( seat1_world.masks.size() == 1 );
+    CHECK( seat1_world.masks[0].x == seat1_mask.x );
+    CHECK( seat1_world.masks[0].y == seat1_mask.y );
+    CHECK( seat1_world.masks[0].w == seat1_mask.w );
+    CHECK( seat1_world.masks[0].h == seat1_mask.h );
+    CHECK( seat1_world.masks[0].role == seat1_mask.role );
+    // Visiting the other seat first did not move this seat's mask hash: only
+    // a change in its own UI may.
+    CHECK( mp_session_of_slot( 1 )->scene_mask_hash == seat1_mask_hash );
+
+    // Seat 0's first frame carries seat 0's own mask, not seat 1's and not an
+    // empty list: the shared grid would have been emptied by either switch.
+    const mp_scene seat0_world = decode_only_scene( drain_frames( *first ) );
+    REQUIRE( seat0_world.masks.size() == 1 );
+    CHECK( seat0_world.masks[0].x == seat0_mask.x );
+    CHECK( seat0_world.masks[0].y == seat0_mask.y );
+    CHECK( seat0_world.masks[0].w == seat0_mask.w );
+    CHECK( seat0_world.masks[0].h == seat0_mask.h );
+    CHECK( seat0_world.masks[0].role == seat0_mask.role );
+
+    // With the masks intact and nothing else changed, the next all-seat flush
+    // sends no frame at all -- the dirty/hash gate still suppresses a no-op
+    // round.
+    mp_set_active_sched( &sched );
+    mp_server_flush_scenes_all();
+    mp_set_active_sched( nullptr );
+    CHECK( count_of_kind( drain_frames( *first ), mp_msg_kind::scene ) == 0 );
+    CHECK( count_of_kind( drain_frames( *second_wire ), mp_msg_kind::scene ) == 0 );
+
+    teardown_two_seat_stream_world();
 }
 
 TEST_CASE( "mp_scene_stream_scene_uses_the_requested_z_levels", "[mp]" )

@@ -1810,6 +1810,9 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
         g->player_at( i ).set_moves( 100 );
         g->player_at( i ).activity = player_activity();
     }
+    // A step costs more than a turn's 100 AP hands out, and the party's cost
+    // field must carry the real figure; give seat 0 room to commit it.
+    g->player_at( 0 ).set_moves( 1000 );
     mp_activate_player( 0 );
 
     // Seat 0 has a map window, so its scene origin is known. Seat 1 has none --
@@ -1830,16 +1833,18 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     mp_sessions()[1]->transport = second_pair.a;
     mp_sessions()[1]->context_index = 1;
 
-    // Seat 0 plans a ranged action, so plan/cost/target are all non-default;
-    // ranged accepts any target without a map lookup.
+    // Seat 0 plans a step onto the tile beside it, so the party's plan, cost
+    // and target are all real: a broadcast that hardcoded 0 would fail.
     mp_plan plan;
-    plan.kind = mp_plan_kind::ranged;
-    plan.target = g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 3, -2, 0 );
+    plan.kind = mp_plan_kind::move;
+    plan.target = g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 1, 0, 0 );
     std::string err;
     REQUIRE( mp_plan_submit( 0, plan, err ) );
     REQUIRE( err.empty() );
     REQUIRE( mp_plan_ready( 0, err ) );
     REQUIRE( err.empty() );
+    const int expected_cost = mp_plan_cost( 0, plan );
+    REQUIRE( expected_cost > 0 );
 
     // Seat 1 passed, went away, lost its client, and carries the refusal text
     // that is the last thing the client shows it.
@@ -1926,17 +1931,17 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     const mp_party_seat &seat0 = to_first.party.seats[0];
     CHECK( seat0.slot == 0 );
     CHECK( seat0.name == g->player_at( 0 ).get_name() );
-    CHECK( seat0.moves == 100 );
+    CHECK( seat0.moves == 1000 );
     CHECK( seat0.speed == g->player_at( 0 ).get_speed() );
     CHECK( seat0.ready );
     CHECK_FALSE( seat0.passed );
     CHECK( seat0.connected );
     CHECK_FALSE( seat0.away );
-    CHECK( seat0.plan == mp_plan_kind::ranged );
+    CHECK( seat0.plan == mp_plan_kind::move );
     // Bubble tiles, not scene cells: the target the seat submitted.
     CHECK( seat0.px == plan.target.x() );
     CHECK( seat0.py == plan.target.y() );
-    CHECK( seat0.pcost == 0 );
+    CHECK( seat0.pcost == expected_cost );
     CHECK( seat0.menu.empty() );
     CHECK( seat0.error.empty() );
 

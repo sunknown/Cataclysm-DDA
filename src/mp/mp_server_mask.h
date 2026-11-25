@@ -8,10 +8,14 @@
 #include "cursesdef.h"
 #include "mp/mp_scene.h"
 
-// What the text UI covers inside the map window, one role per cell. The grid
-// covers exactly the active context's terrain window; a terrain blit clears it
-// and every other blit marks the cells it intersects. Rects are compressed to
-// absolute terminal cells for the scene frame's mask list.
+// What the text UI covers inside the map window, one role per cell. The state
+// is per seat: each seat's grid covers exactly that seat's terrain window, a
+// terrain blit clears that seat's grid, and every other blit marks the cells it
+// intersects there. Per seat because the world flushes seats that are not
+// running -- a shared grid would be cleared whenever another seat was
+// activated, and the parked seat's overlays would vanish from its frame. Rects
+// are compressed to absolute terminal cells for the scene frame's mask list.
+// Every entry point below operates on the active seat's grid.
 
 // Empties every cell. Called when the terrain window blits: the fresh map
 // underneath has no text on it yet.

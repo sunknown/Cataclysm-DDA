@@ -10,6 +10,7 @@
 
 #include "cursesdef.h"
 #include "cursesport.h"
+#include "game.h"
 #include "mp/mp_context.h"
 #include "mp/mp_scene.h"
 
@@ -33,9 +34,10 @@ std::map<const void *, role_entry> &role_registry()
     return registry;
 }
 
-// One cell of the map window, in map-local coordinates. Geometry is rebuilt
-// whenever the active terrain window changes (resize, slot switch, a test
-// assigning its own window).
+// One cell of one seat's map window, in map-local coordinates. Geometry is
+// rebuilt whenever that seat's terrain window changes (a resize, or a window
+// the seat recreated), and the cells are then reset because the new window has
+// no text on it yet.
 struct mask_grid {
     bool active = false;
     const void *window_key = nullptr;
@@ -46,48 +48,76 @@ struct mask_grid {
     std::vector<int16_t> roles;
 };
 
-mask_grid &grid()
+// One grid per seat, keyed by seat index -- not by window pointer. The mask
+// describes that seat's terrain window and the UI drawn over it, and the world
+// now flushes seats that are not running, so a single shared grid would be
+// cleared whenever another seat was activated. Keying by window would let a
+// recreated window (or a reused pointer) inherit or strand a mask, and would
+// grow the table with every window rather than with the roster.
+std::map<size_t, mask_grid> &grids()
 {
-    static mask_grid state;
+    static std::map<size_t, mask_grid> state;
     return state;
 }
 
-// Re-reads the map window's rect and resets the cells when it changed. Returns
-// false when there is no map window to cover, in which case the mask API is a
-// silent no-op.
-bool sync_geometry()
+// The active seat's grid, re-read against its current terrain window and reset
+// when that window changed. Returns null when there is nothing to cover: no
+// active context, no terrain window, a terminal backend without an in-memory
+// rect, or a slot the roster does not have. The mask API is then a silent
+// no-op. The table is bounded by the seat count: entries for seats the roster
+// no longer has are dropped here.
+mask_grid *synced_grid()
 {
     player_context *const ctx = mp_active_context_ptr();
-    if( ctx == nullptr || !ctx->w_terrain ) {
-        return false;
+    if( ctx == nullptr || !ctx->w_terrain || g == nullptr ) {
+        return nullptr;
     }
 #if defined(TUI)
     // The mask hook lives in the MP server's curses backend; the terminal
     // backends have no in-memory window rect to read.
-    return false;
+    return nullptr;
 #else
     cata_cursesport::WINDOW *const win =
         ctx->w_terrain.get<cata_cursesport::WINDOW>();
     if( win == nullptr || win->width <= 0 || win->height <= 0 ) {
-        return false;
+        return nullptr;
     }
-    mask_grid &g = grid();
+    const size_t slot = ctx->slot_index;
+    std::map<size_t, mask_grid> &all = grids();
+    // One grid per slot the process can address. The bound is the larger of the
+    // roster and the context list: the scene stream tests arm a context for a
+    // slot outside the player list and flush it, and that seat still needs its
+    // mask. The slot this call is about is always allowed; every other entry
+    // beyond the bound is dropped here, so the table cannot grow past the seats
+    // (plus at most the one synthetic context a test drives) no matter how many
+    // windows are created and destroyed.
+    const size_t seats = std::max( g->player_slot_count(), g->contexts.size() );
+    if( all.size() > seats ) {
+        for( auto it = all.begin(); it != all.end(); ) {
+            if( it->first >= seats && it->first != slot ) {
+                it = all.erase( it );
+            } else {
+                ++it;
+            }
+        }
+    }
+    mask_grid &grid = all[slot];
     const void *const key = ctx->w_terrain.get<void>();
     const uint16_t ox = static_cast<uint16_t>( win->pos.x );
     const uint16_t oy = static_cast<uint16_t>( win->pos.y );
     const uint16_t w = static_cast<uint16_t>( win->width );
     const uint16_t h = static_cast<uint16_t>( win->height );
-    if( !g.active || g.window_key != key || g.ox != ox || g.oy != oy ||
-        g.w != w || g.h != h ) {
-        g.active = true;
-        g.window_key = key;
-        g.ox = ox;
-        g.oy = oy;
-        g.w = w;
-        g.h = h;
-        g.roles.assign( static_cast<size_t>( w ) * h, EMPTY_CELL );
+    if( !grid.active || grid.window_key != key || grid.ox != ox || grid.oy != oy ||
+        grid.w != w || grid.h != h ) {
+        grid.active = true;
+        grid.window_key = key;
+        grid.ox = ox;
+        grid.oy = oy;
+        grid.w = w;
+        grid.h = h;
+        grid.roles.assign( static_cast<size_t>( w ) * h, EMPTY_CELL );
     }
-    return true;
+    return &grid;
 #endif
 }
 
@@ -95,19 +125,21 @@ bool sync_geometry()
 
 void mp_scene_mask_clear()
 {
-    if( !sync_geometry() ) {
+    mask_grid *const grid = synced_grid();
+    if( grid == nullptr ) {
         return;
     }
-    std::fill( grid().roles.begin(), grid().roles.end(), EMPTY_CELL );
+    std::fill( grid->roles.begin(), grid->roles.end(), EMPTY_CELL );
 }
 
 void mp_scene_mask_note( const uint16_t x, const uint16_t y, const uint16_t w,
                          const uint16_t h, const uint8_t role )
 {
-    if( !sync_geometry() ) {
+    mask_grid *const grid = synced_grid();
+    if( grid == nullptr ) {
         return;
     }
-    mask_grid &g = grid();
+    mask_grid &g = *grid;
     const int left = std::max<int>( x, g.ox );
     const int top = std::max<int>( y, g.oy );
     const int right = std::min<int>( static_cast<int>( x ) + w,
@@ -167,17 +199,14 @@ uint8_t mp_scene_mask_role_for( const catacurses::window &win )
 
 bool mp_scene_mask_map_rect( mp_scene_rect &out )
 {
-    if( !sync_geometry() ) {
+    const mask_grid *const grid = synced_grid();
+    if( grid == nullptr || grid->w == 0 || grid->h == 0 ) {
         return false;
     }
-    const mask_grid &g = grid();
-    if( g.w == 0 || g.h == 0 ) {
-        return false;
-    }
-    out.x = g.ox;
-    out.y = g.oy;
-    out.w = g.w;
-    out.h = g.h;
+    out.x = grid->ox;
+    out.y = grid->oy;
+    out.w = grid->w;
+    out.h = grid->h;
     out.role = 0;
     return true;
 }
@@ -185,10 +214,11 @@ bool mp_scene_mask_map_rect( mp_scene_rect &out )
 std::vector<mp_scene_rect> mp_scene_mask_rects()
 {
     std::vector<mp_scene_rect> rects;
-    if( !sync_geometry() ) {
+    const mask_grid *const synced = synced_grid();
+    if( synced == nullptr ) {
         return rects;
     }
-    const mask_grid &g = grid();
+    const mask_grid &g = *synced;
     // Runs still open in the previous row, keyed by (start, width, role), so
     // vertically equal spans extend the rect instead of starting a new one.
     std::map<std::tuple<int, int, int>, size_t> open;
