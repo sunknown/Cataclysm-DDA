@@ -1232,8 +1232,23 @@ bool game::do_turn()
             if( !sched->waiting_for_baton( i ) ) {
                 continue;
             }
+            // A scene client that has just left the join phase has no terrain
+            // window yet: its first in-game screen is built when its own
+            // thread runs the turn loop, and the world's all-seat flush cannot
+            // build a frame without that window. A client that sends nothing
+            // and waits for its first scene would then be parked for ever on
+            // the join screen. This grant is that first draw; the seat's input
+            // wait flushes the screen and scene for it. Text clients get their
+            // screen from the grant their first key earns, and an away seat is
+            // not drawing anything, so neither is woken for this.
+            mp_session *const seat = mp_session_of_slot( i );
+            const bool needs_first_scene =
+                seat != nullptr && ( seat->caps & MP_CAP_SCENE ) != 0 &&
+                !mp_player_is_away( i ) && !mp_player_is_disconnected( i ) &&
+                ( i >= g->contexts.size() || !g->contexts[i].w_terrain );
             if( mp_server_seat_has_input( i ) || mp_player_needs_replacement( i ) ||
-                sched->quit_requested( i ) || mp_server_seat_needs_local_service( i ) ) {
+                sched->quit_requested( i ) || mp_server_seat_needs_local_service( i ) ||
+                needs_first_scene ) {
                 sched->yield_to( mp_sched::world, i );
             }
         }

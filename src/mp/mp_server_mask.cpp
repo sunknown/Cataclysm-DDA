@@ -54,11 +54,16 @@ struct mask_grid {
 // cleared whenever another seat was activated. Keying by window would let a
 // recreated window (or a reused pointer) inherit or strand a mask, and would
 // grow the table with every window rather than with the roster.
+#if !defined(TUI)
+// The grid table is only reachable from synced_grid()'s curses backend; a TUI
+// build has no in-memory window rect to key it by, so the function is compiled
+// out rather than left unused and -Werror'd.
 std::map<size_t, mask_grid> &grids()
 {
     static std::map<size_t, mask_grid> state;
     return state;
 }
+#endif
 
 // The active seat's grid, re-read against its current terrain window and reset
 // when that window changed. Returns null when there is nothing to cover: no
