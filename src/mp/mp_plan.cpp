@@ -15,6 +15,8 @@
 #include "item.h"
 #include "map.h"
 #include "string_formatter.h"
+#include "vehicle.h"
+#include "vpart_position.h"
 
 namespace
 {
@@ -52,6 +54,33 @@ int move_cost( const size_t slot, const mp_plan &plan )
     const bool diagonal = from.x() != plan.target.x() && from.y() != plan.target.y();
     return ava.run_cost( get_map().combined_movecost( from, plan.target ), diagonal );
 }
+
+// True when avatar_action::move() would open the target in place and charge
+// the character's whole speed instead of a step. A closed door's terrain move
+// cost is zero, so the ordinary estimate would leave that charge unpaid and
+// the character could end a planned step with negative moves. The engine's own
+// check_only open is the predicate: it opens terrain, furniture and a vehicle
+// part alike without touching anything.
+bool opens_door_in_place( avatar &ava, const tripoint_bub_ms &target )
+{
+    map &here = get_map();
+    if( ava.pos_bub().z() != target.z() ) {
+        return false;
+    }
+    const optional_vpart_position vp = here.veh_at( target );
+    const optional_vpart_position from_vp = here.veh_at( ava.pos_bub() );
+    const bool outside_vehicle = !vp || !from_vp ||
+                                 &vp->vehicle() != &from_vp->vehicle();
+    const bool vehicle_door = vp && vp->vehicle().next_part_to_open(
+                                  vp->part_index(), outside_vehicle ) >= 0;
+    // A walkable terrain door (a wooden fence gate) is walked over rather than
+    // opened while running; a vehicle door and a closed terrain or furniture
+    // door are opened in place in either mode.
+    if( !vehicle_door && here.passable_ter_furn( target ) && !ava.is_walking() ) {
+        return false;
+    }
+    return here.open_door( ava, target, !here.is_outside( ava.pos_bub() ), true );
+}
 } // namespace
 
 void mp_plan_reset_all()
@@ -67,7 +96,11 @@ void mp_plan_reset_round()
         slot.plan = mp_plan();
         slot.ready = false;
         slot.passed = false;
-        slot.error.clear();
+        // `error` deliberately survives: a refusal the resolver stored is what
+        // the post-resolve party broadcast carries to the client, and the tick
+        // loop resets the round before it broadcasts. The seat's next submit,
+        // cancel or pass clears it, and mp_plan_reset_all() clears it with the
+        // rest of the session.
     }
 }
 
@@ -137,6 +170,12 @@ int mp_plan_cost( const size_t slot, const mp_plan &plan )
             if( !seat_exists( slot ) ) {
                 return -1;
             }
+            if( opens_door_in_place( g->player_at( slot ), plan.target ) ) {
+                // avatar_action::move() opens an adjacent closed door or gate
+                // where it stands and spends the character's whole speed for
+                // it, not the tile's step cost.
+                return g->player_at( slot ).get_speed();
+            }
             return move_cost( slot, plan );
         case mp_plan_kind::melee: {
             if( !seat_exists( slot ) ) {
@@ -144,9 +183,9 @@ int mp_plan_cost( const size_t slot, const mp_plan &plan )
             }
             avatar &ava = g->player_at( slot );
             const item &weapon = ava.is_armed() ? *ava.get_wielded_item() : null_item_reference();
-            // The same base melee_attack spends: 100 plus the weapon's own
-            // attack speed.
-            return 100 + ava.attack_speed( weapon );
+            // Exactly what Character::melee_attack_abstract() charges for the
+            // swing: its move_cost is attack_speed(weapon), with no base 100.
+            return ava.attack_speed( weapon );
         }
     }
     return -1;

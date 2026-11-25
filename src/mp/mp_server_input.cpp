@@ -266,13 +266,40 @@ void reader_main( mp_session *const s )
         if( !mp_control_from_json( std::string( body.begin(), body.end() ), msg ) ) {
             continue;
         }
+        bool overflow = false;
         {
             std::lock_guard<std::mutex> lock( s->inbox_mutex );
             if( msg.kind == mp_control_kind::input ) {
-                s->input_inbox.push_back( msg.event );
+                // A parsed key event is bounded in size, so the queue bound is
+                // a count. Past it the peer is not a player typing.
+                if( s->input_inbox.size() >= MP_INPUT_BACKLOG_EVENTS ) {
+                    overflow = true;
+                } else {
+                    s->input_inbox.push_back( msg.event );
+                }
             } else {
-                s->control_inbox.push_back( std::move( msg ) );
+                // A queued control keeps the strings it parsed; charge the
+                // frame's payload, the upper bound of what it occupies.
+                const size_t bytes = payload->size();
+                if( s->control_inbox_bytes + bytes > MP_CONTROL_BACKLOG_BYTES ) {
+                    overflow = true;
+                } else {
+                    s->control_inbox_bytes += bytes;
+                    s->control_inbox.push_back( std::move( msg ) );
+                }
             }
+        }
+        if( overflow ) {
+            // The seat is not being read: whatever is typing is not waiting for
+            // a turn. Close the wire and say why; the world learns from the
+            // reader exit, and the session continues for everybody else.
+            mp_server_log( "client \"" + s->name + "\" flooded its input queue (" +
+                           ( msg.kind == mp_control_kind::input ?
+                             std::to_string( MP_INPUT_BACKLOG_EVENTS ) + " events" :
+                             std::to_string( MP_CONTROL_BACKLOG_BYTES ) + " control bytes" ) +
+                           " cap); closing the wire" );
+            t->close();
+            break;
         }
         s->inbox_cv.notify_all();
         signal_events();
@@ -408,6 +435,12 @@ bool handle_local_controls( mp_session &s )
             }
             handled.push_back( std::move( *it ) );
             it = q.erase( it );
+        }
+        if( q.empty() ) {
+            // The byte charge is an over-approximation kept only while the
+            // queue is non-empty (see mp_session::control_inbox_bytes). A
+            // drained queue owes nothing.
+            s.control_inbox_bytes = 0;
         }
     }
     // Outside the lock: dispatch closes a transport on `bye`, and the reader
@@ -575,6 +608,7 @@ void mp_server_stop_reader( mp_session &s )
         // not follow the seat into the reconnect and buy it a grant.
         s.input_inbox.clear();
         s.control_inbox.clear();
+        s.control_inbox_bytes = 0;
         s.input_in_hand = false;
     }
     // A seat parked in its input wait may have seen reader_running true and
@@ -659,6 +693,9 @@ bool mp_server_take_control( size_t &slot, mp_control &out )
                 q.pop_front();
                 slot = s->context_index;
                 took = true;
+                if( q.empty() ) {
+                    s->control_inbox_bytes = 0;
+                }
             }
         }
         for( const mp_control &msg : handled ) {
@@ -709,6 +746,37 @@ bool mp_server_seat_has_input( const size_t slot )
     // baton; the in-hand half is the key that seat already took out of it and
     // is parked on the baton for. Both mean the world owes the seat a grant.
     return !s->input_inbox.empty() || s->input_in_hand;
+}
+
+void mp_server_note_menu_state( mp_session &s, const bool in_menu )
+{
+    {
+        std::lock_guard<std::mutex> lock( s.inbox_mutex );
+        if( in_menu == s.menu_reported ) {
+            return;
+        }
+        s.menu_dirty = true;
+    }
+    // A seat in a menu parks on its wire while the world waits on somebody
+    // else; this wake is what lets the world send the party body that moves
+    // the client's plan gate to the state the seat is actually in.
+    signal_events();
+}
+
+bool mp_server_take_menu_change()
+{
+    bool changed = false;
+    for( const std::unique_ptr<mp_session> &holder : mp_sessions() ) {
+        if( !holder ) {
+            continue;
+        }
+        std::lock_guard<std::mutex> lock( holder->inbox_mutex );
+        if( holder->menu_dirty ) {
+            holder->menu_dirty = false;
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 input_event mp_server_wait_for_input( const int timeout_ms )

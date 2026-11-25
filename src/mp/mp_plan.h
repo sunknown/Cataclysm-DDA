@@ -41,9 +41,11 @@ struct mp_plan {
 // test) calls this; the phase goes back to planning.
 void mp_plan_reset_all();
 
-// Forgets this round's plans, readiness and passes, keeping the phase: the
-// resolver decides when the round moves on, and reset_all is the one that
-// starts afresh.
+// Forgets this round's plans, readiness and passes, keeping the phase and any
+// refusal text: the resolver decides when the round moves on, and reset_all is
+// the one that starts afresh. The text must outlive the reset by one broadcast,
+// because that is how the client learns why a committed plan did not run; the
+// seat's next submit, cancel or pass clears it.
 void mp_plan_reset_round();
 
 // Stores a seat's plan after validating it against the world. On refusal
@@ -94,8 +96,9 @@ bool mp_plan_round_complete( const std::vector<bool> &eligible );
 // The reason this seat's last plan was refused or could not run, in words a
 // player can read; empty when there is none. The resolver sets it when it
 // refuses a committed action (an unaffordable step, a kind this phase cannot
-// run), and the party broadcast carries it to the client. Accepting a new
-// intent for the seat -- submit, cancel, pass, reset_round -- clears it.
+// run, a menu it had to cancel), and the party broadcast carries it to the
+// client. Accepting a new intent for the seat -- submit, cancel, pass -- clears
+// it; a round reset deliberately keeps it for the broadcast that follows.
 //
 // Like mp_plan_of, the result refers into the slot table: copy it to keep the
 // text across a call that can grow or rebuild the table.

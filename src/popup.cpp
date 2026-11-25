@@ -10,6 +10,7 @@
 #include "color.h"
 #include "imgui/imgui.h"
 #include "input_context.h"
+#include "mp/mp_interactive.h"
 #include "output.h"
 #include "string_formatter.h"
 #include "ui_manager.h"
@@ -280,6 +281,14 @@ void query_popup::invalidate_ui() const
 
 query_popup::result query_popup::query_once()
 {
+    if( !mp_interactive::allowed() ) {
+        // A plan executes on the world thread, where nobody can answer a modal
+        // popup. Dismiss it instead of waiting for a key: the action that asked
+        // is in the middle of resolving a committed round, and the world must
+        // not park on an input wait no player owns. Not a menu refusal: a
+        // popup is a message, and the action around it has already happened.
+        return result( false, "ERROR", input_event() );
+    }
 
     if( !anykey && !cancel && options.empty() ) {
         return { false, "ERROR", {} };

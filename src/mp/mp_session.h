@@ -108,6 +108,27 @@ struct mp_session {
     std::condition_variable inbox_cv;
     std::deque<input_event> input_inbox;
     std::deque<mp_control> control_inbox;
+    // Upper bound on the bytes queued in control_inbox (see
+    // MP_CONTROL_BACKLOG_BYTES). Charged with each frame's payload size on the
+    // way in and only ever cleared, never decremented per message: it is a
+    // conservative over-approximation that resets whenever the queue drains
+    // completely. A seat that stops draining its wire is closed instead of
+    // letting the queue grow with the sender.
+    size_t control_inbox_bytes = 0;
+    // The `menu` flag the last party snapshot carried for this seat's own
+    // client, and whether the seat's UI depth has moved away from it since.
+    // The seat's input wait writes the pair through mp_server_note_menu_state()
+    // and the world clears them in mp_server_broadcast_party(); both hold the
+    // baton, and inbox_mutex orders the accesses regardless.
+    bool menu_reported = false;
+    bool menu_dirty = false;
+    // The anchor (scene origin) the last full party body carried for this
+    // recipient. A menu-state broadcast reuses it rather than activating the
+    // seat to recompute it: activation swaps avatars, and a menu open across
+    // that swap holds item locations the swap would expire.
+    bool party_view_known = false;
+    int party_vx = 0;
+    int party_vy = 0;
     // True while this seat holds an input event it already took out of
     // input_inbox and is parked on the baton to deliver: the inbox is empty by
     // then, so without this the world has nothing to grant the seat for, and

@@ -14,12 +14,17 @@ struct mp_plan;
 // enters the resolver: its turn runs inline in game::do_turn().
 
 // Executes one round of the seats 0 .. player_count - 1: every ready, non-pass,
-// non-dead seat's plan in cost order (Cost from the plan, then speed
-// descending, then slot), moves as a batch per cost group, then the non-move
-// actions. Cleans up between groups and runs mon_round_step() after the player
-// batch. The phase becomes `resolving` before anything is applied and `done`
-// once the monster step has finished; the round state itself is left for the
-// caller (Task 4's tick loop) to reset.
+// non-dead, connected seat's plan in cost order (the server's mp_plan_cost of
+// the plan, then speed descending, then slot), moves as a batch per cost group,
+// then the non-move actions. Cleans up between groups and runs mon_round_step()
+// after the player batch. The phase becomes `resolving` before anything is
+// applied and `done` once the monster step has finished; the round state itself
+// is left for the caller (Task 4's tick loop) to reset.
+//
+// Nothing it runs may wait for input: the world thread holds the baton and
+// every player is parked on it. A confirmation prompt answers itself, a menu
+// that would open is cancelled, and the plan that needed one fizzles with
+// "needs an interactive choice" in the seat's error instead of half-executing.
 //
 // Returns whether the round's creature step made progress (see
 // mon_round_step()). The tick loop pairs it with mp_resolve_any_creature_can_act()
@@ -32,7 +37,11 @@ bool mp_resolve_round( size_t player_count );
 // from the world immediately before the action and the action is refused (with
 // "needs N AP, you have M") when the seat cannot pay it. A move or attack that
 // the world has invalidated -- the target died, somebody took the tile -- is
-// still charged as a miss; a dead seat acts not at all.
+// still charged as a miss; a dead seat acts not at all. An action that reaches
+// a menu gets no interactive answer: the plan fizzles with "needs an
+// interactive choice" and spends nothing. The engine's own charge is clamped
+// at zero, so a priced move the character actually spends more on cannot leave
+// a player with negative AP.
 void mp_apply_plan( avatar &ava, const mp_plan &plan );
 
 // The three pieces game::world_turn_post() was decomposed into, so a co-op

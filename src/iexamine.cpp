@@ -67,6 +67,7 @@
 #include "memory_fast.h"
 #include "messages.h"
 #include "mission_companion.h"
+#include "mp/mp_interactive.h"
 #include "mtype.h"
 #include "mutation.h"
 #include "npc.h"
@@ -1872,6 +1873,12 @@ void iexamine::gunsafe_el( Character &you, const tripoint_bub_ms &examp )
  */
 void iexamine::locked_object( Character &you, const tripoint_bub_ms &examp )
 {
+    if( !mp_interactive::allowed() ) {
+        // A plan is resolving: the menu of ways to open a lock cannot be shown,
+        // so the action fizzles rather than half-executing. Same rule as ledge.
+        mp_interactive::note_menu_cancelled();
+        return;
+    }
     map &here = get_map();
     item &best_prying = you.best_item_with_quality( qual_PRY );
     item &best_lockpick = you.best_item_with_quality( qual_LOCKPICK );
@@ -5515,6 +5522,13 @@ void iexamine::pay_gas( Character &you, const tripoint_bub_ms &examp )
 
 void iexamine::ledge( Character &you, const tripoint_bub_ms &examp )
 {
+    if( !mp_interactive::allowed() ) {
+        // A plan executes on the world thread, where nobody can answer this
+        // menu. Refuse before any uilist is built; the resolver records it and
+        // fizzles the plan with a party-visible reason.
+        mp_interactive::note_menu_cancelled();
+        return;
+    }
     enum ledge_actions {
         ledge_peek_down = 1,
         ledge_jump_across,

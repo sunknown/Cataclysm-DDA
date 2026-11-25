@@ -28,6 +28,7 @@
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
+#include "mp/mp_session_ui.h"
 #include "mp/mp_transport.h"
 #include "mp/mp_turn.h"
 #include "output.h"
@@ -183,6 +184,19 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
         input_event ev;
         ev.type = input_event_t::timeout;
         return ev;
+    }
+    // The party snapshot's `menu` flag comes from this seat's UI depth, and the
+    // client's plan gate turns on it. Report a change before this wait parks on
+    // the wire: the world wakes from its event wait and broadcasts a party body
+    // without waiting for another seat's control, so opening or closing a menu
+    // updates the client on the next snapshot.
+    if( mp_active_sched() != nullptr ) {
+        if( mp_session *const own = mp_active_session() ) {
+            if( mp_session_ui_active( *own ) ) {
+                const bool in_menu = mp_active_context().ui_stack.size() > 1;
+                mp_server_note_menu_state( *own, in_menu );
+            }
+        }
     }
     while( true ) {
         int w = 0;

@@ -287,6 +287,14 @@ void mp_server_poll_new_clients();
 // once per poll, after something the client can see has changed.
 void mp_server_broadcast_party();
 
+// The same party body for a menu-state change alone. It sends the fresh seats
+// (including the `menu` flag the client gates its plan keys on) but reuses each
+// recipient's last anchor instead of activating the seat to recompute it: the
+// world may be broadcasting while a seat is inside a menu, and activation
+// swaps avatars, which expires item locations a menu is holding. Same baton
+// rules as mp_server_broadcast_party(), which must have run once first.
+void mp_server_broadcast_party_ui();
+
 // The round phase, sent to every session. Same baton and cadence rules as
 // mp_server_broadcast_party().
 void mp_server_broadcast_phase();

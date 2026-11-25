@@ -1163,15 +1163,17 @@ bool game::do_turn()
                     plan.label = control.plan.label;
                     if( plan.kind != mp_plan_kind::pass ) {
                         // A client has no map coordinates: its cells are the
-                        // seat's own scene grid, so the world translates them
-                        // under that seat's context and view. A pass names no
+                        // seat's own scene rect cells, 0-based inside the frame,
+                        // so the world places them through that seat's origin.
+                        // The sidebar's position moves the terrain window but
+                        // not the frame the client indexed. A pass names no
                         // tile and skips this.
                         std::optional<tripoint_bub_ms> target;
                         mp_activate_player( control_slot );
                         mp_scene_rect rect;
                         if( mp_scene_mask_map_rect( rect ) ) {
-                            target = mp_scene_tile_at( rect, mp_active_context().ter_view_p,
-                                                       control.plan.x, control.plan.y );
+                            target = mp_scene_rect_tile_at( rect, mp_active_context().ter_view_p,
+                                                            control.plan.x, control.plan.y );
                         }
                         mp_activate_world();
                         if( !target ) {
@@ -1209,6 +1211,12 @@ bool game::do_turn()
                     break;
             }
         }
+        // A seat that opened or closed a menu while it held the baton changed
+        // the `menu` flag its client gates plan keys on. The seat's input wait
+        // woke this loop for exactly that; one party body puts the client on
+        // the state the seat is actually in, without waiting for another seat's
+        // control.
+        const bool menu_changed = mp_server_take_menu_change();
         if( controls_handled > 0 ) {
             // The snapshot carries the new plans and any refusal text the loop
             // just stored. The scenes keep their own dirty gate inside the
@@ -1216,6 +1224,12 @@ bool game::do_turn()
             // not the map.
             mp_server_broadcast_party();
             mp_server_broadcast_phase();
+        } else if( menu_changed ) {
+            // Only the menu flag moved. This body must not activate a seat: a
+            // seat reported the change from inside a menu, and the avatar swap
+            // an activation performs would expire the item locations that menu
+            // is holding.
+            mp_server_broadcast_party_ui();
         }
 
         // A parked seat is owed the baton when it has an event to deliver, a

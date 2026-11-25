@@ -9,11 +9,13 @@
 #include "game.h"
 #include "game_test_helper.h"
 #include "item.h"
+#include "map.h"
 #include "map_helpers_tests.h"
 #include "mp/mp_context.h"
 #include "mp/mp_plan.h"
 #include "mp/mp_turn.h"
 #include "player_helpers.h"
+#include "string_formatter.h"
 #include "type_id.h"
 
 namespace
@@ -146,11 +148,12 @@ TEST_CASE( "mp_plan_submit_validates_and_cancel_clears_ready", "[mp]" )
     CHECK( err == "nothing there" );
 
     // A creature on the tile makes the same melee plan acceptable, and the
-    // cost is the server's: the base attack cost plus the weapon's speed.
+    // cost is the server's: exactly what the swing spends, the weapon's attack
+    // speed.
     spawn_test_monster( "mon_zombie", u.pos_bub() + tripoint::east );
     REQUIRE( mp_plan_submit( 0, p, err ) );
     const item &weapon = u.is_armed() ? *u.get_wielded_item() : null_item_reference();
-    CHECK( mp_plan_cost( 0, mp_plan_of( 0 ) ) == 100 + u.attack_speed( weapon ) );
+    CHECK( mp_plan_cost( 0, mp_plan_of( 0 ) ) == u.attack_speed( weapon ) );
     mp_plan_cancel( 0 );
 
     p = mp_plan();
@@ -177,6 +180,40 @@ TEST_CASE( "mp_plan_submit_validates_and_cancel_clears_ready", "[mp]" )
     CHECK( mp_plan_cost( 0, mp_plan{} ) == -1 );
     CHECK_FALSE( mp_plan_ready( 0, err ) );
     CHECK( err == "invalid plan" );
+}
+
+TEST_CASE( "a_plan_into_a_closed_door_is_priced_at_the_opening", "[mp]" )
+{
+    restore_active_state restore;
+    setup_plan_test();
+
+    avatar &u = g->player_at( 0 );
+    const tripoint_bub_ms target = u.pos_bub() + tripoint_rel_ms::east;
+    get_map().ter_set( target, ter_id( "t_door_c" ) );
+
+    mp_plan p;
+    p.kind = mp_plan_kind::move;
+    p.target = target;
+    std::string err;
+    REQUIRE( mp_plan_submit( 0, p, err ) );
+
+    // A closed door's terrain move cost is zero, so the plain step estimate is
+    // half a pavement step; walking into it opens it in place and spends the
+    // character's whole speed. The plan must be priced at that, or the round
+    // gate lets through a step the engine cannot pay for.
+    CHECK( mp_plan_cost( 0, mp_plan_of( 0 ) ) == u.get_speed() );
+
+    u.set_moves( 50 );
+    CHECK_FALSE( mp_plan_ready( 0, err ) );
+    CHECK( err == string_format( "needs %d AP, you have 50", u.get_speed() ) );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    // A refused commit opens nothing and spends nothing.
+    CHECK( get_map().ter( target ) == ter_id( "t_door_c" ) );
+    CHECK( u.get_moves() == 50 );
+
+    u.set_moves( u.get_speed() );
+    CHECK( mp_plan_ready( 0, err ) );
+    CHECK( mp_plan_is_ready( 0 ) );
 }
 
 TEST_CASE( "mp_plan_of_reads_are_copied_to_outlive_the_slot_table", "[mp]" )

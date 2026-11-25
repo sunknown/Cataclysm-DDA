@@ -197,6 +197,16 @@ std::optional<tripoint_bub_ms> mp_scene_tile_at( const mp_scene_rect &rect,
            tripoint_rel_ms( cell_x - rect.x, cell_y - rect.y, 0 );
 }
 
+std::optional<tripoint_bub_ms> mp_scene_rect_tile_at( const mp_scene_rect &rect,
+        const tripoint_bub_ms &view_centre, int cell_x, int cell_y )
+{
+    if( cell_x < 0 || cell_y < 0 || cell_x >= rect.w || cell_y >= rect.h ) {
+        return std::nullopt;
+    }
+    return mp_scene_origin( rect, view_centre ) +
+           tripoint_rel_ms( cell_x, cell_y, 0 );
+}
+
 mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int tiles_h,
                          uint8_t z_levels )
 {

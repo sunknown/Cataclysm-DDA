@@ -25,6 +25,22 @@ struct player_context;
 constexpr int MP_MAX_TERMINAL_WIDTH = 1000;
 constexpr int MP_MAX_TERMINAL_HEIGHT = 1000;
 
+// Per-seat bounds on the queues the reader fills, in the same spirit as
+// MP_SCREEN_BACKLOG_BYTES and MP_MAX_FRAME_BYTES: the server's memory must be
+// bounded by its own constants, not by what a peer chooses to send. A seat's
+// wire is closed, with a logged reason, the moment an enqueue would cross one
+// of these, so a client that stops being read cannot make the process grow.
+// Both limits are far above what playing produces: a keystroke is a few dozen
+// bytes and a plan a few hundred, and the seat drains its input queue on every
+// baton grant.
+//
+// The input queue holds only parsed key events, whose size does not depend on
+// the frame that carried them, so a count is the honest measure. A queued
+// control keeps its parsed strings (a plan's label, a bye reason), so its cap
+// is bytes of wire payload; one maximum-size frame fits.
+constexpr size_t MP_INPUT_BACKLOG_EVENTS = 2048;
+constexpr size_t MP_CONTROL_BACKLOG_BYTES = 8u * 1024u * 1024u;
+
 // Performs the connection handshake on a freshly-accepted transport: reads the
 // client's first message (a `hello` control), checks its protocol version and
 // the terminal size it wants, and sends a `hello_ack` verdict either way.
@@ -85,6 +101,26 @@ bool mp_server_take_resize_request( int &width, int &height );
 // backend tell "the wait ended because the client resized" from an ordinary
 // timeout without consuming the request.
 bool mp_server_resize_pending();
+
+// --- Round UI state --------------------------------------------------------
+//
+// The party snapshot's `menu` field is the only thing that tells a client its
+// own seat is in a menu, and the party body used to be sent only at round
+// boundaries. A seat that opens or closes a menu would then keep forwarding
+// raw keys (or keep planning them) from a stale flag until somebody else acted.
+// The seat's own input wait reports the change before it parks; the world wakes,
+// broadcasts a party body, and that body's `menu` values become the baseline.
+
+// Records the seat's UI depth as `in_menu` (the same depth test party_seats()
+// uses) if it differs from the last party body; signals the world when it does.
+// Called by the seat's input path while it holds the baton, and only for a
+// seat that is in game.
+void mp_server_note_menu_state( mp_session &session, bool in_menu );
+
+// True when any seat reported a menu-state change since the last call. The
+// caller broadcasts the party, which records the new baseline. The marks are
+// cleared either way, so one change is reported once.
+bool mp_server_take_menu_change();
 
 // --- Hover describe state --------------------------------------------------
 //

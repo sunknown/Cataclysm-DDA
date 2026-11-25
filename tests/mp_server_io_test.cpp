@@ -1992,4 +1992,83 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     mp_sync_context_count();
 }
 
+// Waits for the server end of a wire to report itself closed, so a test fails
+// with an assertion instead of blocking on a reader that never closed it.
+static bool wait_for_wire_close( mp_transport &t, const int timeout_ms )
+{
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds( timeout_ms );
+    while( t.connected() && std::chrono::steady_clock::now() < deadline ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+    }
+    return !t.connected();
+}
+
+TEST_CASE( "a_flooded_input_queue_is_bounded_and_closes_the_wire", "[mp]" )
+{
+    // A peer that streams keystrokes while nobody drains them must not make
+    // the server allocate without bound: past the named cap the wire closes
+    // and the session continues for everybody else.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    mp_session *const seat = mp_active_session();
+    REQUIRE( seat != nullptr );
+    const reader_scope readers;
+
+    mp_control key;
+    key.kind = mp_control_kind::input;
+    key.event.type = input_event_t::keyboard_char;
+    key.event.sequence.push_back( 'x' );
+    const std::string json = mp_control_to_json( key );
+    const std::vector<uint8_t> frame = mp_wrap( mp_msg_kind::control,
+                                     std::vector<uint8_t>( json.begin(), json.end() ) );
+    for( size_t i = 0; i < MP_INPUT_BACKLOG_EVENTS + 32; ++i ) {
+        pair.b->send( frame );
+    }
+
+    REQUIRE( wait_for_wire_close( *pair.a, 10000 ) );
+    {
+        std::lock_guard<std::mutex> lock( seat->inbox_mutex );
+        CHECK( seat->input_inbox.size() <= MP_INPUT_BACKLOG_EVENTS );
+    }
+}
+
+TEST_CASE( "a_flooded_control_queue_is_bounded_and_closes_the_wire", "[mp]" )
+{
+    // A plan's label is the one free-form string a control carries, so a few
+    // large frames are enough to cross the byte cap; the queue must stop
+    // growing there rather than keep what the sender writes.
+    mp_set_active_context( &test_input_ctx );
+    test_input_ctx.input_queue.clear();
+    mp_server_reset_for_test();
+    mp_loopback_pair pair = mp_make_loopback_pair();
+    set_test_transport( pair.a );
+    mp_server_set_terminal_size( 40, 10 );
+    mp_session *const seat = mp_active_session();
+    REQUIRE( seat != nullptr );
+    const reader_scope readers;
+
+    mp_control plan;
+    plan.kind = mp_control_kind::plan;
+    plan.plan.kind = mp_plan_kind::move;
+    plan.plan.label = std::string( 1024u * 1024u, 'x' );
+    const std::string json = mp_control_to_json( plan );
+    const std::vector<uint8_t> frame = mp_wrap( mp_msg_kind::control,
+                                     std::vector<uint8_t>( json.begin(), json.end() ) );
+    for( size_t i = 0; i < 16; ++i ) {
+        pair.b->send( frame );
+    }
+
+    REQUIRE( wait_for_wire_close( *pair.a, 20000 ) );
+    {
+        std::lock_guard<std::mutex> lock( seat->inbox_mutex );
+        CHECK( seat->control_inbox_bytes <= MP_CONTROL_BACKLOG_BYTES );
+        CHECK( seat->control_inbox.size() <= 16 );
+    }
+}
+
 #endif // MP_SERVER

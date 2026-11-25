@@ -67,9 +67,11 @@ void mp_server_flush_scene();
 // The world's all-seat flush: activates each seated slot's context in turn,
 // sends that seat's own frame, and finally reactivates the world. A parked seat
 // never builds another seat's frame, and a slot with no session is skipped. The
-// per-seat dirty/hash gate inside mp_server_flush_scene() still suppresses a
-// round with no visual change. A no-op without a scheduler -- in single player
-// and in a legacy session there is no parked seat to send for.
+// flush forces each seat's terrain-dirty flag, because only a seat's own blit
+// would otherwise set it; the body hash inside mp_server_flush_scene() still
+// suppresses a frame that came out identical, so a round with no visual change
+// sends nothing. A no-op without a scheduler -- in single player and in a
+// legacy session there is no parked seat to send for.
 void mp_server_flush_scenes_all();
 
 // Drops all state. Tests only -- these modules hold process-wide state because

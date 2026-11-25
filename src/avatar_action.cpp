@@ -44,6 +44,7 @@
 #include "messages.h"
 #include "monster.h"
 #include "move_mode.h"
+#include "mp/mp_interactive.h"
 #include "mtype.h"
 #include "npc.h"
 #include "options.h"
@@ -115,6 +116,11 @@ static const trait_id trait_SHELL3( "SHELL3" );
 
 static bool check_water_affect_items( avatar &you )
 {
+    if( !mp_interactive::allowed() ) {
+        // The dive was committed by the plan; there is nobody to ask about the
+        // items it would ruin, so the confirmation takes its affirmative answer.
+        return true;
+    }
     if( you.has_effect( effect_stunned ) || you.has_effect( effect_psi_stunned ) ) {
         return true;
     }
@@ -534,8 +540,12 @@ bool avatar_action::move( avatar &you, map &m, const tripoint_rel_ms &d )
     const tripoint_abs_ms abs_dest_loc = here.get_abs( dest_loc );
     if( g->walk_move( dest_loc, via_ramp ) ) {
         // AUTOPEEK: If safe mode would be triggered after the move, look around and move back
+        // A look-around is a menu, and during a resolution the world thread
+        // has nobody to show it to: the move stands and safe mode simply does
+        // not get its peek. A prompt here would park the world on an input
+        // wait no player owns.
         if( g->safe_mode == SAFE_MODE_ON && !you.is_running() &&
-            you.pos_abs() == abs_dest_loc ) {
+            you.pos_abs() == abs_dest_loc && mp_interactive::allowed() ) {
             here.build_map_cache( dest_loc.z() );
             here.update_visibility_cache( dest_loc.z() );
             g->mon_info_update();

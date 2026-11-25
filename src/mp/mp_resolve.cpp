@@ -18,13 +18,30 @@
 #include "line.h"
 #include "map.h"
 #include "mp/mp_context.h"
+#include "mp/mp_interactive.h"
 #include "mp/mp_plan.h"
+#include "mp/mp_turn.h"
 #include "sounds.h"
 #include "string_formatter.h"
 
 namespace
 {
 constexpr size_t no_slot = static_cast<size_t>( -1 );
+
+// The plan did not run because the engine needed a choice from a player and
+// none can be asked while the world thread resolves.
+constexpr const char *interactive_choice_error = "needs an interactive choice";
+
+// The one place a player's AP is allowed to stop being negative: the engine
+// charges some special moves (a swim, a mount, a blind bump) more than any
+// plan could price, so after the call the seat is put back at zero. Single
+// player never runs the resolver and so never reaches this.
+void clamp_moves( avatar &ava )
+{
+    if( ava.get_moves() < 0 ) {
+        ava.set_moves( 0 );
+    }
+}
 
 // The seat whose avatar this is, or no_slot for an avatar the game does not
 // own as a player (mp_apply_plan is usable with one, the error storage is not).
@@ -68,19 +85,39 @@ bool affordable( const size_t slot, const avatar &ava, const mp_plan &plan, int 
 
 // Steps the avatar one tile. A step the map refuses (a creature in the way, an
 // effect that stopped the move) still costs the round's move when nothing was
-// spent on it -- an arbitrated move is a commitment, not a retry. Returns true
-// when the avatar changed cells.
+// spent on it -- an arbitrated move is a commitment, not a retry. A step whose
+// engine call stopped at a menu (a ledge, a locked vehicle door) fizzles
+// instead: it spends nothing and leaves the reason for the party snapshot.
+// Returns true when the avatar changed cells.
 bool step( avatar &ava, const tripoint_bub_ms &target, const int cost )
 {
     const tripoint_bub_ms from = ava.pos_bub();
     const int moves_before = ava.get_moves();
+    mp_interactive::clear_menu_cancelled();
     avatar_action::move( ava, get_map(), target - from );
+    if( mp_interactive::menu_cancelled() ) {
+        mp_interactive::clear_menu_cancelled();
+        const size_t slot = slot_of( ava );
+        if( slot != no_slot ) {
+            mp_plan_set_error( slot, interactive_choice_error );
+        }
+        // The engine got no answer, so nothing was decided: undo whatever AP
+        // it spent and leave the avatar where it was. A move it did make
+        // (which no current path does after a cancelled menu) stands.
+        if( ava.pos_bub() == from ) {
+            ava.set_moves( moves_before );
+        }
+        clamp_moves( ava );
+        return ava.pos_bub() != from;
+    }
+    clamp_moves( ava );
     if( ava.pos_bub() != from ) {
         return true;
     }
     if( ava.get_moves() == moves_before ) {
         ava.mod_moves( -cost );
     }
+    clamp_moves( ava );
     return false;
 }
 
@@ -89,18 +126,31 @@ bool step( avatar &ava, const tripoint_bub_ms &target, const int cost )
 // have and is not reported as a refusal.
 void attack( avatar &ava, const mp_plan &plan, const int cost )
 {
+    mp_interactive::clear_menu_cancelled();
     Creature *const target = get_creature_tracker().creature_at<Creature>( plan.target );
     if( target == nullptr || target->is_dead_state() || !ava.is_adjacent( target, false ) ) {
         ava.mod_moves( -cost );
+        clamp_moves( ava );
         return;
     }
     ava.melee_attack( *target, true );
+    if( mp_interactive::menu_cancelled() ) {
+        mp_interactive::clear_menu_cancelled();
+        const size_t slot = slot_of( ava );
+        if( slot != no_slot ) {
+            mp_plan_set_error( slot, interactive_choice_error );
+        }
+    }
+    clamp_moves( ava );
 }
 
 // One plan in a round's cost group, with the order the round sorted it by.
+// `cost` is the server's own figure, recomputed when the round is collected;
+// the client's estimate never reaches this struct.
 struct resolution_entry {
     size_t slot = 0;
     mp_plan plan;
+    int cost = 0;
     int speed = 0;
 };
 
@@ -284,6 +334,9 @@ void post_group_cleanup( const std::vector<resolution_entry> &entries, const siz
 
 void mp_apply_plan( avatar &ava, const mp_plan &plan )
 {
+    // Direct callers (a test, or a future single-plan path) get the same rule
+    // as the round resolver: no engine call here may wait for a human.
+    const mp_interactive::scope no_prompts;
     if( ava.is_dead_state() ) {
         return;
     }
@@ -319,6 +372,11 @@ void mp_apply_plan( avatar &ava, const mp_plan &plan )
 
 bool mp_resolve_round( const size_t player_count )
 {
+    // No engine call in the resolver may wait for a human: the world thread
+    // holds the baton, and every player is parked on it. Prompt answers and a
+    // cancelled menu (recorded per action) take the place of the questions.
+    const mp_interactive::scope no_prompts;
+
     mp_plan_set_phase( mp_round_phase::resolving );
 
     std::vector<resolution_entry> entries;
@@ -332,6 +390,12 @@ bool mp_resolve_round( const size_t player_count )
             // A dead seat's plan is dropped and costs nothing.
             continue;
         }
+        if( mp_player_is_disconnected( slot ) ) {
+            // Defense in depth: mp_server_mark_disconnected() cancels the plan
+            // when the wire dies, and a seat with nobody behind it must not act
+            // even if one slipped through.
+            continue;
+        }
         // Copy: the plan table can grow between reads, and this round works
         // from one snapshot anyway.
         mp_plan plan = mp_plan_of( slot );
@@ -341,14 +405,18 @@ bool mp_resolve_round( const size_t player_count )
         resolution_entry entry;
         entry.slot = slot;
         entry.plan = std::move( plan );
+        // The same server figure the party publishes as `pcost`, and the same
+        // one the affordability gate re-checks at apply time. The client's
+        // plan.cost is display-only and never orders or groups a round.
+        entry.cost = std::max( 0, mp_plan_cost( slot, entry.plan ) );
         entry.speed = ava.get_speed();
         entries.push_back( std::move( entry ) );
     }
 
     std::sort( entries.begin(), entries.end(),
     []( const resolution_entry & l, const resolution_entry & r ) {
-        if( l.plan.cost != r.plan.cost ) {
-            return l.plan.cost < r.plan.cost;
+        if( l.cost != r.cost ) {
+            return l.cost < r.cost;
         }
         if( l.speed != r.speed ) {
             return l.speed > r.speed;
@@ -358,7 +426,7 @@ bool mp_resolve_round( const size_t player_count )
 
     for( size_t begin = 0; begin < entries.size(); ) {
         size_t end = begin + 1;
-        while( end < entries.size() && entries[end].plan.cost == entries[begin].plan.cost ) {
+        while( end < entries.size() && entries[end].cost == entries[begin].cost ) {
             ++end;
         }
         // Movement first, as one batch: the players' steps contend for cells

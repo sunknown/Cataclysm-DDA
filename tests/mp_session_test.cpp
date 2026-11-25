@@ -37,6 +37,7 @@
 #include "map_helpers_tests.h"
 #include "messages.h"
 #include "monster.h"
+#include "options_helpers.h"
 #include "output.h"
 #include "path_info.h"
 #include "worldfactory.h"
@@ -58,6 +59,7 @@
 #include "player_helpers.h"
 #include "point.h"
 #include "string_formatter.h"
+#include "trap.h"
 #include "type_id.h"
 #include "ui_manager.h"
 #include "units.h"
@@ -117,10 +119,12 @@ void queue_plan_pass( const size_t slot )
     queue_plan_only( slot, mp_control_kind::plan_pass );
 }
 
-// The scene cell a plan must name for `slot` to reach `tile`: the round loop
-// translates a plan's cells through the seat's own terrain window and view
-// centre with mp_scene_tile_at, so this inverts exactly that mapping instead of
-// duplicating the origin arithmetic.
+// The scene cell a plan must name for `slot` to reach `tile`. A plan cell is a
+// rect cell: a 0-based offset into the seat's own terrain frame, which is what
+// the shipped client sends (its avatar cell plus the key's delta). This inverts
+// the server's translation -- origin plus the cell -- rather than duplicating
+// the terminal-space describe lookup, whose cells also carry the rect's
+// position on the terminal.
 std::optional<point> plan_cell_for( const size_t slot, const tripoint_bub_ms &tile )
 {
     mp_activate_player( slot );
@@ -131,14 +135,13 @@ std::optional<point> plan_cell_for( const size_t slot, const tripoint_bub_ms &ti
     if( !have_rect ) {
         return std::nullopt;
     }
-    for( int y = rect.y; y < rect.y + rect.h; ++y ) {
-        for( int x = rect.x; x < rect.x + rect.w; ++x ) {
-            if( mp_scene_tile_at( rect, view, x, y ) == tile ) {
-                return point( x, y );
-            }
-        }
+    const tripoint_bub_ms origin = mp_scene_origin( rect, view );
+    const int x = tile.x() - origin.x();
+    const int y = tile.y() - origin.y();
+    if( x < 0 || y < 0 || x >= rect.w || y >= rect.h ) {
+        return std::nullopt;
     }
-    return std::nullopt;
+    return point( x, y );
 }
 
 // Without shoes run_cost adds 16 to a plain step, so the "100 AP for a step on
@@ -1838,6 +1841,275 @@ TEST_CASE( "a_waiting_seat_gets_its_scene_after_resolution", "[mp]" )
     CHECK( server_after > server_before );
     REQUIRE( harness.wait_scene_frame( 1, server_after, 1000 ) );
     CHECK( harness.last_scene_frame( 1 ) >= server_after );
+}
+
+TEST_CASE( "a_session_plan_onto_a_known_trap_runs_without_asking", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    map &here = get_map();
+    here.trap_set( target, trap_id( "tr_light_snare" ) );
+    a.add_known_trap( target, here.tr_at( target ) );
+    // The dangerous check reads the active avatar, which a previous poll may
+    // have left on the partner's seat; look through seat 0's eyes.
+    mp_activate_player( 0 );
+    const bool dangerous = !g->get_dangerous_tile( target, 10 ).empty();
+    mp_activate_world();
+    REQUIRE( dangerous );
+
+    const std::optional<point> cell = plan_cell_for( 0, target );
+    REQUIRE( cell );
+    // Seat 1 has nothing to do, so seat 0's commit settles the round alone.
+    g->player_at( 1 ).set_moves( 0 );
+
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    harness.send_ready( 0, 2 );
+
+    // The resolution asks its dangerous-tile question on the world thread. The
+    // committed plan answers it, so the round finishes and the step lands; a
+    // prompt that truly waited would hang this run.
+    REQUIRE( harness.run_until( [&]() {
+        return g->player_at( 0 ).pos_bub() == target;
+    }, 10 ) );
+    CHECK( mp_plan_error( 0 ).empty() );
+}
+
+TEST_CASE( "a_plan_onto_a_ledge_fizzles_and_the_reason_reaches_the_party", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    // Open air is passable, so the move reaches the ledge menu.
+    get_map().ter_set( target, ter_id( "t_open_air" ) );
+    const int moves = g->player_at( 0 ).get_moves();
+
+    const std::optional<point> cell = plan_cell_for( 0, target );
+    REQUIRE( cell );
+    g->player_at( 1 ).set_moves( 0 );
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    harness.send_ready( 0, 2 );
+
+    // The menu cannot open on the world thread. The plan fizzles instead of
+    // half-executing, and the reason survives the round reset into the party
+    // body the client sees.
+    REQUIRE( harness.run_until( []() {
+        return !mp_plan_error( 0 ).empty();
+    }, 10 ) );
+    CHECK( mp_plan_error( 0 ) == "needs an interactive choice" );
+    CHECK( g->player_at( 0 ).pos_bub() == start );
+    CHECK( g->player_at( 0 ).get_moves() == moves );
+
+    mp_party_msg party;
+    REQUIRE( harness.wait_party( 0, 1000, party ) );
+    REQUIRE( party.seats.size() == 2 );
+    CHECK( party.seats[0].error == "needs an interactive choice" );
+}
+
+TEST_CASE( "a_resolver_refusal_reaches_the_party_body", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
+    const std::optional<point> cell = plan_cell_for( 0, start + tripoint_rel_ms::east );
+    REQUIRE( cell );
+    g->player_at( 1 ).set_moves( 0 );
+
+    // `ranged` is a kind phase 1 cannot run. The submit and the commit both
+    // accept it (it costs nothing up front); only the resolver refuses it.
+    harness.send_plan( 0, 1, mp_plan_kind::ranged, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::ranged;
+    }, 10 ) );
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_plan_error( 0 ).empty();
+    }, 10 ) );
+
+    // The tick loop resets the round before it broadcasts. The resolver's
+    // refusal has to survive that reset, or the client never learns why the
+    // committed plan did nothing.
+    CHECK( mp_plan_error( 0 ) == "not in this phase" );
+    CHECK( g->player_at( 0 ).pos_bub() == start );
+
+    mp_party_msg party;
+    REQUIRE( harness.wait_party( 0, 1000, party ) );
+    REQUIRE( party.seats.size() == 2 );
+    CHECK( party.seats[0].error == "not in this phase" );
+    CHECK( party.seats[0].plan == mp_plan_kind::none );
+
+    // The seat's next intent clears the text, as the protocol promises.
+    harness.send_plan( 0, 3, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    CHECK( mp_plan_error( 0 ).empty() );
+}
+
+TEST_CASE( "a_plan_cell_is_a_rect_cell_when_the_sidebar_is_on_the_left", "[mp]" )
+{
+    restore_active_state restore;
+    // The terrain window starts right of the sidebar, so a rect cell and the
+    // terminal cell at the same index name different map tiles.
+    override_option sidebar( "SIDEBAR_POSITION", "left" );
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    mp_activate_player( 0 );
+    mp_scene_rect rect;
+    const bool have_rect = mp_scene_mask_map_rect( rect );
+    mp_activate_world();
+    REQUIRE( have_rect );
+    REQUIRE( rect.x > 0 );
+
+    const tripoint_bub_ms start = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    const std::optional<point> cell = plan_cell_for( 0, target );
+    REQUIRE( cell );
+    // A rect cell is an offset inside the frame, never a terminal column.
+    CHECK( cell->x >= 0 );
+    CHECK( cell->x < rect.w );
+    CHECK( cell->y >= 0 );
+    CHECK( cell->y < rect.h );
+
+    g->player_at( 1 ).set_moves( 0 );
+    harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 0 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    // The cell reached the tile the client meant, not a tile shifted by the
+    // sidebar's terminal offset.
+    CHECK( mp_plan_of( 0 ).target == target );
+
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    REQUIRE( cost > 0 );
+    g->player_at( 0 ).set_moves( cost );
+    harness.send_ready( 0, 2 );
+    REQUIRE( harness.run_until( [&]() {
+        return g->player_at( 0 ).pos_bub() == target;
+    }, 10 ) );
+}
+
+TEST_CASE( "a_seat_s_menu_state_reaches_the_party_body", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    harness.press( 1, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    }, 20 ) );
+    // The seat reports the depth change when it parks in the menu; one more
+    // poll turns that into the party body, with no other seat's control needed.
+    harness.run_until( []() {
+        return false;
+    }, 2 );
+    mp_party_msg opened;
+    REQUIRE( harness.wait_party( 1, 1000, opened ) );
+    REQUIRE( opened.seats.size() == 2 );
+    CHECK_FALSE( opened.seats[1].menu.empty() );
+    CHECK( opened.seats[0].menu.empty() );
+
+    harness.press( 1, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    }, 20 ) );
+    harness.run_until( []() {
+        return false;
+    }, 2 );
+    mp_party_msg closed;
+    REQUIRE( harness.wait_party( 1, 1000, closed ) );
+    CHECK( closed.seats[1].menu.empty() );
+}
+
+TEST_CASE( "a_disconnected_seat_s_committed_plan_does_not_run", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    prepare_two_seat_round( harness, 1000 );
+
+    const tripoint_bub_ms b_start = g->player_at( 1 ).pos_bub();
+    const std::optional<point> cell = plan_cell_for( 1, b_start + tripoint_rel_ms::east );
+    REQUIRE( cell );
+
+    harness.send_plan( 1, 1, mp_plan_kind::move, cell->x, cell->y );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_of( 1 ).kind == mp_plan_kind::move;
+    }, 10 ) );
+    harness.send_ready( 1, 2 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_is_ready( 1 );
+    }, 10 ) );
+    // Seat 0 has not committed, so nothing can resolve while the wire is alive.
+    CHECK( mp_turn_is_open() );
+
+    harness.drop_client( 1 );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_is_disconnected( 1 );
+    }, 20 ) );
+    // Disconnect cancels the committed plan: the round no longer waits on it,
+    // and it cannot act for a seat nobody is watching.
+    CHECK_FALSE( mp_plan_is_ready( 1 ) );
+    CHECK( mp_plan_of( 1 ).kind == mp_plan_kind::none );
+
+    g->player_at( 0 ).set_moves( 100 );
+    queue_plan_pass( 0 );
+    REQUIRE( harness.run_until( []() {
+        return mp_plan_phase() == mp_round_phase::done;
+    }, 20 ) );
+    CHECK( g->player_at( 1 ).pos_bub() == b_start );
+    // The seat's AP may have been refilled by the tick close; what matters is
+    // that no action was taken for it.
+    CHECK_FALSE( mp_player_is_disconnected( 0 ) );
+}
+
+TEST_CASE( "a_session_boundary_forgets_the_round_state", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+    mp_plan_reset_all();
+    mp_sessions_reset_for_test();
+
+    avatar &u = g->player_at( 0 );
+    u.set_moves( 1000 );
+    mp_plan p;
+    p.kind = mp_plan_kind::move;
+    p.target = u.pos_bub() + tripoint_rel_ms::east;
+    std::string err;
+    REQUIRE( mp_plan_submit( 0, p, err ) );
+    REQUIRE( mp_plan_ready( 0, err ) );
+    mp_plan_set_error( 0, "carried over" );
+
+    mp_server_end_session();
+
+    // A session that ends with a stored plan, a readiness or a refusal leaves
+    // none of it for the next session to broadcast or execute.
+    CHECK( mp_plan_of( 0 ).kind == mp_plan_kind::none );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    CHECK_FALSE( mp_plan_is_passed( 0 ) );
+    CHECK( mp_plan_error( 0 ).empty() );
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+    mp_turn_reset_all();
 }
 
 TEST_CASE( "a_monster_takes_its_step_after_the_player_batch", "[mp]" )

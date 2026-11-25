@@ -144,7 +144,19 @@ mp_scene mp_scene_build( const tripoint_bub_ms &view_centre, int tiles_w, int ti
 // outside `rect`. The rect is placed by the same origin rule the builder uses:
 // origin = view_centre - ( rect.w / 2, rect.h / 2 ), and the cell's offset
 // within the rect is added to it. The returned tile takes the view's z.
+//
+// `cell_x`/`cell_y` are *terminal* cells here: the rect's own screen position
+// (`rect.x`, `rect.y`) is subtracted first. The hover describe feed names cells
+// that way, because the client picks them off its terminal grid.
 std::optional<tripoint_bub_ms> mp_scene_tile_at( const mp_scene_rect &rect,
+        const tripoint_bub_ms &view_centre, int cell_x, int cell_y );
+
+// The absolute map tile behind a *rect cell*: `cell_x`/`cell_y` are 0-based
+// offsets into the w by h rect, which is the space the client's scene frames
+// and its plan cells use. Returns nothing when the cell is outside the rect.
+// A plan's cell is a rect cell, not a terminal cell: the sidebar can move the
+// terrain window's origin, and that must not move the plan.
+std::optional<tripoint_bub_ms> mp_scene_rect_tile_at( const mp_scene_rect &rect,
         const tripoint_bub_ms &view_centre, int cell_x, int cell_y );
 
 #endif // CATA_SRC_MP_MP_SCENE_H

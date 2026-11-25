@@ -16,6 +16,7 @@
 #include "game.h"
 #include "input.h"
 #include "memory_fast.h"
+#include "mp/mp_interactive.h"
 #include "mp/mp_sched.h"
 #include "output.h"
 #include "sdltiles.h"
@@ -888,6 +889,15 @@ shared_ptr_fast<uilist_impl> uilist::create_or_get_ui()
 
 shared_ptr_fast<uilist_impl> uilist::query( bool loop, int timeout, bool allow_unfiltered_hotkeys )
 {
+    if( !mp_interactive::allowed() ) {
+        // A plan is executing on the world thread: a menu that would open now
+        // (a ledge, a locked door, a dive into water) is cancelled before it
+        // draws. Record it, so the resolver can fizzle the plan with an error
+        // the party sees instead of charging for half an action.
+        ret = UILIST_CANCEL;
+        mp_interactive::note_menu_cancelled();
+        return nullptr;
+    }
     input_context ctxt = create_main_input_context();
 
 #if defined(__ANDROID__)

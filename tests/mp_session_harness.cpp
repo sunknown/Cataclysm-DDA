@@ -38,6 +38,7 @@
 #include "mp/mp_server_main.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
+#include "mp/mp_plan.h"
 #include "mp/mp_turn.h"
 
 namespace
@@ -219,6 +220,9 @@ mp_session_harness::mp_session_harness( const size_t players, const int latency_
     // to a session, not to a turn, so mp_turn_reset() deliberately leaves them --
     // reset_all is the session/test boundary.
     mp_turn_reset_all();
+    // The plan table is session state too; a previous harness's intent must not
+    // be visible in this session's first party body.
+    mp_plan_reset_all();
 
     for( size_t i = 0; i < players; ++i ) {
         // The latency is not decoration. Without it, code that only works at
@@ -285,6 +289,10 @@ mp_session_harness::~mp_session_harness()
     }
     mp_sync_context_count();
     mp_turn_reset_all();
+    // The harness tears a session down by hand rather than through
+    // mp_server_end_session(), so it has to forget the plans too: a case that
+    // ends mid-round must not leave an intent or a refusal for the next one.
+    mp_plan_reset_all();
     // A session that ended (a death, a quit) leaves the quit status behind,
     // and the next test's first do_turn() would read it as its game being over.
     g->uquit = QUIT_NO;

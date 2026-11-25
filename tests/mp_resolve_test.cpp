@@ -6,6 +6,7 @@
 
 #include "avatar.h"
 #include "bodypart.h"
+#include "calendar.h"
 #include "cata_scope_helpers.h"
 #include "coordinates.h"
 #include "creature.h"
@@ -19,10 +20,13 @@
 #include "map_helpers_tests.h"
 #include "monster.h"
 #include "mp/mp_context.h"
+#include "mp/mp_interactive.h"
 #include "mp/mp_plan.h"
 #include "mp/mp_resolve.h"
+#include "mp/mp_turn.h"
 #include "player_helpers.h"
 #include "string_formatter.h"
+#include "trap.h"
 #include "type_id.h"
 
 namespace
@@ -31,6 +35,7 @@ namespace
 // the "100 AP for a step on pavement" arithmetic only holds for a normally
 // shod avatar.
 const itype_id itype_sneakers( "sneakers" );
+static const efftype_id effect_blind( "blind" );
 // A weapon makes a one-hit kill independent of unarmed damage; the melee
 // fixture only needs the blow to land and do more than a point.
 const itype_id itype_katana( "katana" );
@@ -76,10 +81,14 @@ struct clear_map_fields_guard {
 
 // Adds slot 1 at `where`. The slot table is rebuilt so it sees the new seat,
 // and the context list is grown so mp_activate_player() can hand it a turn.
+// The avatar goes through the same normalization the first seat got: a raw
+// slot avatar differs in stamina and limb state, and the server prices steps
+// from those, so two seats that should pay the same step would otherwise land
+// in different cost groups.
 void add_second_seat( const tripoint_bub_ms &where )
 {
     avatar &b = g->add_player_slot();
-    b.set_body();
+    clear_character( b );
     b.wear_item( item( itype_sneakers ) );
     b.setpos( get_map(), where );
     mp_sync_context_count();
@@ -87,32 +96,30 @@ void add_second_seat( const tripoint_bub_ms &where )
 }
 
 // Gives the seat enough AP to afford anything it plans and commits a step.
-// `cost` is the client's own estimate: it is the field the resolver orders
-// its cost groups by, while the actual charge comes from mp_plan_cost().
-void plan_move( const size_t slot, const tripoint_bub_ms &target, const int cost = 100 )
+// `client_cost` is what a wire plan would carry in its `cost` field; it is set
+// only so a case can prove the resolver ignores it.
+void plan_move( const size_t slot, const tripoint_bub_ms &target, const int client_cost = 0 )
 {
     avatar &ava = g->player_at( slot );
     ava.set_moves( 1000 );
     mp_plan plan;
     plan.kind = mp_plan_kind::move;
     plan.target = target;
-    plan.cost = cost;
+    plan.cost = client_cost;
     std::string err;
     REQUIRE( mp_plan_submit( slot, plan, err ) );
     REQUIRE( mp_plan_ready( slot, err ) );
     REQUIRE( mp_plan_is_ready( slot ) );
 }
 
-void plan_melee( const size_t slot, const tripoint_bub_ms &target, const int cost = 100 )
+void plan_melee( const size_t slot, const tripoint_bub_ms &target, const int client_cost = 0 )
 {
     avatar &ava = g->player_at( slot );
     ava.set_moves( 1000 );
     mp_plan plan;
     plan.kind = mp_plan_kind::melee;
     plan.target = target;
-    // The client's estimate only orders the groups; the server recomputes the
-    // attack cost when it resolves.
-    plan.cost = cost;
+    plan.cost = client_cost;
     std::string err;
     REQUIRE( mp_plan_submit( slot, plan, err ) );
     REQUIRE( mp_plan_ready( slot, err ) );
@@ -128,13 +135,18 @@ TEST_CASE( "the_faster_seat_takes_a_contested_cell", "[mp]" )
     avatar &a = g->player_at( 0 );
     const tripoint_bub_ms a_start = a.pos_bub();
     const tripoint_bub_ms target = a_start + tripoint_rel_ms::east;
-    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms::south;
+    // The other seat stands on the far side of the same cell, so both plans
+    // are one straight step and cost the same: they land in one cost group and
+    // the speed decides, exactly as the server prices them.
+    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms( 2, 0, 0 );
     add_second_seat( b_start );
     set_speed( a, 200 );
     set_speed( g->player_at( 1 ), 100 );
 
     plan_move( 0, target );
     plan_move( 1, target );
+    REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) ==
+             mp_plan_cost( 1, mp_plan_of( 1 ) ) );
     mp_resolve_round( 2 );
 
     // Same target, same cost group: the faster claimant walks and the slower
@@ -144,7 +156,7 @@ TEST_CASE( "the_faster_seat_takes_a_contested_cell", "[mp]" )
     // The resolver finished its own phase transition; resetting the round is
     // the tick loop's job, not the resolver's.
     CHECK( mp_plan_phase() == mp_round_phase::done );
-    // A move that lost arbitration still costs the estimate.
+    // A move that lost arbitration still costs the server's price.
     CHECK( g->player_at( 1 ).get_moves() < 1000 );
     CHECK( a.get_moves() < 1000 );
 }
@@ -157,13 +169,15 @@ TEST_CASE( "equal_speed_contested_cell_blocks_both", "[mp]" )
     avatar &a = g->player_at( 0 );
     const tripoint_bub_ms a_start = a.pos_bub();
     const tripoint_bub_ms target = a_start + tripoint_rel_ms::east;
-    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms::south;
+    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms( 2, 0, 0 );
     add_second_seat( b_start );
     set_speed( a, 100 );
     set_speed( g->player_at( 1 ), 100 );
 
     plan_move( 0, target );
     plan_move( 1, target );
+    REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) ==
+             mp_plan_cost( 1, mp_plan_of( 1 ) ) );
     mp_resolve_round( 2 );
 
     // Neither claimant wins a tie: the cell stays empty and both stay put.
@@ -291,10 +305,18 @@ TEST_CASE( "a_second_attack_on_a_killed_target_misses", "[mp]" )
         a.set_dex_base( 8 );
     } );
 
-    plan_melee( 0, zombie_pos, 10 );
-    plan_melee( 1, zombie_pos, 20 );
+    // The swing order is the server's: seat 0's attack is cheaper (its rigged
+    // dexterity floors attack_speed) and resolves first. The client `cost` the
+    // two plans carry is deliberately the opposite way round -- 1000 for seat 0
+    // and 1 for seat 1 -- and must change nothing, or a client could choose its
+    // own priority.
+    plan_melee( 0, zombie_pos, 1000 );
+    plan_melee( 1, zombie_pos, 1 );
+    const int cost_a = mp_plan_cost( 0, mp_plan_of( 0 ) );
     const int cost_b = mp_plan_cost( 1, mp_plan_of( 1 ) );
+    REQUIRE( cost_a > 0 );
     REQUIRE( cost_b > 0 );
+    REQUIRE( cost_a < cost_b );
     const int moves_b = g->player_at( 1 ).get_moves();
 
     mp_resolve_round( 2 );
@@ -377,6 +399,139 @@ TEST_CASE( "an_unsupported_plan_is_refused_with_not_in_this_phase", "[mp]" )
     // charging AP, and the seat is told why.
     CHECK( a.get_moves() == 100 );
     CHECK( mp_plan_error( 0 ) == "not in this phase" );
+}
+
+TEST_CASE( "a_planned_step_onto_a_known_trap_runs_without_asking", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    map &here = get_map();
+    here.trap_set( target, trap_id( "tr_light_snare" ) );
+    a.add_known_trap( target, here.tr_at( target ) );
+    REQUIRE_FALSE( g->get_dangerous_tile( target, 10 ).empty() );
+
+    plan_move( 0, target );
+    mp_resolve_round( 1 );
+
+    // A dangerous tile asks a confirmation question. The committed plan is the
+    // answer: the step happens, and the world thread never waits for a player
+    // who cannot be asked.
+    CHECK( a.pos_bub() == target );
+    CHECK( mp_plan_error( 0 ).empty() );
+    // The non-interactive scope is the resolver's alone and cannot leak.
+    CHECK( mp_interactive::allowed() );
+}
+
+TEST_CASE( "a_planned_step_onto_a_ledge_fizzles_without_asking", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    get_map().ter_set( target, ter_id( "t_open_air" ) );
+
+    plan_move( 0, target );
+    const int moves = a.get_moves();
+    mp_resolve_round( 1 );
+
+    // What the move needs is the ledge menu. A menu cannot open while the
+    // world thread resolves, so the plan fizzles: no step, no AP spent, and a
+    // reason the party snapshot can carry.
+    CHECK( a.pos_bub() == start );
+    CHECK( a.get_moves() == moves );
+    CHECK( mp_plan_error( 0 ) == "needs an interactive choice" );
+    CHECK( mp_interactive::allowed() );
+}
+
+TEST_CASE( "a_planned_door_step_pays_the_opening_and_opens_it", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    const tripoint_bub_ms target = start + tripoint_rel_ms::east;
+    map &here = get_map();
+    here.ter_set( target, ter_id( "t_door_c" ) );
+
+    plan_move( 0, target );
+    // A closed door's terrain move cost is zero, so the plan has to be priced
+    // at the character's speed: exactly what avatar_action::move() charges to
+    // open it in place.
+    REQUIRE( mp_plan_cost( 0, mp_plan_of( 0 ) ) == a.get_speed() );
+    const int moves = a.get_moves();
+
+    mp_resolve_round( 1 );
+
+    CHECK( here.ter( target ) == ter_id( "t_door_o" ) );
+    CHECK( a.pos_bub() == start );
+    CHECK( a.get_moves() == moves - a.get_speed() );
+    CHECK( a.get_moves() >= 0 );
+}
+
+TEST_CASE( "an_engine_charge_beyond_the_plan_s_price_is_clamped_at_zero", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms start = a.pos_bub();
+    const tripoint_bub_ms wall = start + tripoint_rel_ms::east;
+    get_map().ter_set( wall, ter_id( "t_wall" ) );
+
+    // A blind bump spends the character's whole speed, which no terrain price
+    // can see. The wall's own move cost is zero, so the plan is priced well
+    // below that charge; the affordability gate passes at exactly the price,
+    // the engine then spends more, and the post-condition is what keeps the
+    // seat at zero instead of negative.
+    plan_move( 0, wall );
+    const int cost = mp_plan_cost( 0, mp_plan_of( 0 ) );
+    REQUIRE( cost > 0 );
+    REQUIRE( cost < a.get_speed() );
+    a.set_moves( cost );
+    a.add_effect( effect_blind, 1_turns, true );
+
+    mp_resolve_round( 1 );
+
+    CHECK( a.pos_bub() == start );
+    CHECK( a.get_moves() == 0 );
+    // Not a refusal: the engine's own invalid move is still the round's move.
+    CHECK( mp_plan_error( 0 ).empty() );
+}
+
+TEST_CASE( "a_disconnected_seat_s_plan_is_not_executed", "[mp]" )
+{
+    restore_active_state restore;
+    setup_resolve_test();
+
+    avatar &a = g->player_at( 0 );
+    const tripoint_bub_ms a_start = a.pos_bub();
+    const tripoint_bub_ms b_start = a_start + tripoint_rel_ms::south;
+    add_second_seat( b_start );
+
+    plan_move( 0, a_start + tripoint_rel_ms::east );
+    plan_move( 1, b_start + tripoint_rel_ms::east );
+    avatar &b = g->player_at( 1 );
+    const int moves_b = b.get_moves();
+
+    mp_set_disconnected( 1, true );
+    on_out_of_scope restore_connected( []() {
+        mp_set_disconnected( 1, false );
+    } );
+
+    mp_resolve_round( 2 );
+
+    // Defense in depth: mark_disconnected() cancels the plan, and the resolver
+    // also skips a seat whose client is gone. Nobody is at that terminal to
+    // see the action, so it must not run.
+    CHECK( b.pos_bub() == b_start );
+    CHECK( b.get_moves() == moves_b );
 }
 
 TEST_CASE( "a_monster_takes_one_step_per_round", "[mp]" )

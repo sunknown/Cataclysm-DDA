@@ -31,6 +31,7 @@
 #include "item.h"
 #include "line.h"
 #include "game.h"
+#include "mp/mp_interactive.h"
 #include "options.h"
 #include "point.h"
 #include "popup.h"
@@ -858,6 +859,12 @@ int border_helper::border_connection::as_curses_line() const
 
 bool query_yn( const std::string &text )
 {
+    if( !mp_interactive::allowed() ) {
+        // A plan executes on the world thread with no player at the baton to
+        // answer. The commitment itself is the answer: a confirmation that was
+        // implied by the plan is a yes.
+        return mp_interactive::confirm();
+    }
 #if defined(__ANDROID__)
     if( get_option<bool>( "ANDROID_NATIVE_UI" ) ) {
         JNIEnv *env = ( JNIEnv * )GetAndroidJNIEnv();
@@ -898,6 +905,11 @@ bool query_yn( const std::string &text )
 
 query_ynq_result query_ynq( const std::string &text )
 {
+    if( !mp_interactive::allowed() ) {
+        // Same rule as query_yn(): a committed plan answers yes, and asking
+        // the world thread for a keystroke would never return.
+        return mp_interactive::confirm() ? query_ynq_result::yes : query_ynq_result::no;
+    }
     // TODO: android native UI
     const bool force_uc = get_option<bool>( "FORCE_CAPITAL_YN" );
     const auto &allow_key = force_uc ? input_context::disallow_lower_case_or_non_modified_letters

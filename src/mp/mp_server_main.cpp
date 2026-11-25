@@ -342,6 +342,15 @@ void mp_server_broadcast_party()
         // not this recipient had one.
         mp_activate_world();
 
+        // Remember what this recipient's anchor was, so a menu-state broadcast
+        // can send a body without activating the seat (and swapping avatars).
+        {
+            std::lock_guard<std::mutex> lock( session.inbox_mutex );
+            session.party_view_known = view_known;
+            session.party_vx = vx;
+            session.party_vy = vy;
+        }
+
         mp_control msg;
         msg.kind = mp_control_kind::party;
         msg.party.phase = static_cast<uint8_t>( mp_plan_phase() );
@@ -351,6 +360,47 @@ void mp_server_broadcast_party()
         msg.party.vy = vy;
         msg.party.seats = seats;
         send_control( session, msg );
+        // This body is now the client's own baseline for the `menu` flag: the
+        // seat's input wait reports a change only relative to what it was last
+        // sent, so a snapshot that went out for another reason still clears the
+        // mark.
+        {
+            std::lock_guard<std::mutex> lock( session.inbox_mutex );
+            session.menu_reported = has_slot && !seats[slot].menu.empty();
+            session.menu_dirty = false;
+        }
+    }
+}
+
+void mp_server_broadcast_party_ui()
+{
+    const std::vector<mp_party_seat> seats = party_seats();
+    for( const std::unique_ptr<mp_session> &holder : mp_sessions() ) {
+        if( !holder ) {
+            continue;
+        }
+        mp_session &session = *holder;
+        const size_t slot = session.context_index;
+        const bool has_slot = slot < seats.size();
+
+        mp_control msg;
+        msg.kind = mp_control_kind::party;
+        msg.party.phase = static_cast<uint8_t>( mp_plan_phase() );
+        msg.party.you = has_slot ? static_cast<int8_t>( slot ) : static_cast<int8_t>( -1 );
+        // A menu does not move the view, so the anchor from the last full body
+        // is still this recipient's own. Recomputing it would mean activating
+        // the seat, and that avatar swap is what a menu must not have happen
+        // under it.
+        msg.party.view_known = session.party_view_known;
+        msg.party.vx = session.party_vx;
+        msg.party.vy = session.party_vy;
+        msg.party.seats = seats;
+        send_control( session, msg );
+        {
+            std::lock_guard<std::mutex> lock( session.inbox_mutex );
+            session.menu_reported = has_slot && !seats[slot].menu.empty();
+            session.menu_dirty = false;
+        }
     }
 }
 
@@ -665,6 +715,13 @@ void mp_server_mark_disconnected( const size_t slot )
         session->transport->close();
     }
     mp_set_disconnected( slot, true );
+    // Disconnect: cancel the plan, mark the seat disconnected. A committed
+    // plan belongs to a player who is still at the table; the round must not
+    // execute an action for a seat nobody is watching, and the seat must not
+    // hold the round as ready either. Idempotent: the early return above means
+    // this runs once per disconnect episode, and cancel is a no-op on an empty
+    // slot.
+    mp_plan_cancel( slot );
     Messages::add_msg( string_format( _( "Player %d (%s) disconnected" ),
                                      static_cast<int>( slot ) + 1, who ) );
     const std::string length = mp_server_log_session_length();
@@ -1431,8 +1488,11 @@ void mp_server_start_player_threads()
     mp_sync_context_count();
     // Nothing of a previous session's turn survives into this one: the barrier
     // flags, the open-turn flag and the end request are all about a session
-    // that no longer exists.
+    // that no longer exists. The plans are the same: a stored plan or refusal
+    // text from the session that just ended must not appear in the first party
+    // body of this one, and a stale ready plan must not execute.
     mp_turn_reset_all();
+    mp_plan_reset_all();
     // The wires have been installed and nobody reads them yet: give every seat
     // its reader before its player thread can park on the inbox.
     mp_server_start_readers();
@@ -1455,6 +1515,9 @@ void mp_server_end_session()
     mp_server_stop_readers();
     mp_sessions().clear();
     mp_turn_reset_all();
+    // Plans are ephemeral and session-scoped like the turn state above; a
+    // session must not leave an intent or a refusal behind for the next one.
+    mp_plan_reset_all();
     // Hand main() back the process it started the session in: player 0's
     // context and stack, not the world phase the threads were stopped in.
     // main() still holds context 0's main screen and drops it at the end of

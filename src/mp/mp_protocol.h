@@ -171,8 +171,9 @@ enum class mp_plan_kind : uint8_t {
 };
 
 struct mp_plan_msg {
-    // Client sequence number, echoed in the party snapshot so a client can tell
-    // which of its plans the server accepted.
+    // Client sequence number. The server stores it with the plan and never
+    // sends it back: the party snapshot does not echo it (T7-C deferred that
+    // deliberately), so the client's own bookkeeping is the only consumer.
     uint32_t seq = 0;
     mp_plan_kind kind = mp_plan_kind::none;
     int x = 0;
