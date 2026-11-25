@@ -359,13 +359,13 @@ TEST_CASE( "menu_actions_are_free_while_waiting_and_costly_ones_are_not", "[mp]"
     CHECK( mp_action_is_free( ACTION_TAKE_OFF ) );
     CHECK( mp_action_is_free( ACTION_UNLOAD ) );
     CHECK( mp_action_is_free( ACTION_ITEMACTION ) );
+    // The read menu opens first; the activity starts on its confirmed choice.
+    CHECK( mp_action_is_free( ACTION_READ ) );
 
     // A key that spends time or starts a targeting flow of its own stays
-    // refused, and so do the two menu-ish keys with a no-menu path: a grazer
-    // eats from the map and a shell is read from its opening, both without a
-    // menu and both spending time.
+    // refused, and so does the one menu-ish key with a no-menu path: a grazer
+    // eats from the map without a menu, spending time.
     CHECK_FALSE( mp_action_is_free( ACTION_EAT ) );
-    CHECK_FALSE( mp_action_is_free( ACTION_READ ) );
     CHECK_FALSE( mp_action_is_free( ACTION_MOVE_FORTH ) );
     CHECK_FALSE( mp_action_is_free( ACTION_PICKUP ) );
     CHECK_FALSE( mp_action_is_free( ACTION_FIRE ) );
