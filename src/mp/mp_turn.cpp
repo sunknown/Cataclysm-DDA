@@ -523,6 +523,22 @@ bool mp_action_is_free( const action_id act )
         case ACTION_FACTIONS:
         case ACTION_MORALE:
         case ACTION_MEDICAL:
+        // Menus whose key only opens the menu: the spec makes opening,
+        // closing, tabs, filters, sorting and examining free in every phase,
+        // and what a menu does with a confirmed choice is not this question.
+        // The whitelist is inverted, so each of these has to be named.
+        case ACTION_DROP:
+        case ACTION_COMPARE:
+        case ACTION_EXAMINE:
+        case ACTION_CRAFT:
+        case ACTION_CONSTRUCT:
+        case ACTION_WIELD:
+        case ACTION_WEAR:
+        case ACTION_TAKE_OFF:
+        case ACTION_EAT:
+        case ACTION_READ:
+        case ACTION_UNLOAD:
+        case ACTION_ITEMACTION:
         // Client-side and bookkeeping.
         case ACTION_OPTIONS:
         case ACTION_HELP:
@@ -538,9 +554,10 @@ bool mp_action_is_free( const action_id act )
         case ACTION_SAVE:
             return true;
         default:
-            // Everything else costs time, or might. Refusing is the safe
-            // direction: a gap here is an annoyance, a gap the other way is a
-            // free action outside the turn.
+            // Everything else spends time or starts a targeting flow of its
+            // own (movement, pickup, fire, throw, pause, autotravel). Refusing
+            // is the safe direction: a gap here is an annoyance, a gap the
+            // other way is a free action outside the turn.
             return false;
     }
 }

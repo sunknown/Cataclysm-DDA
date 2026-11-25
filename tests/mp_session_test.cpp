@@ -60,6 +60,8 @@
 #include "ui_manager.h"
 #include "units.h"
 
+static const vproto_id vehicle_prototype_test_shopping_cart( "test_shopping_cart" );
+
 namespace
 {
 // Hands the round loop the message a seat's reader would have queued. The wire
@@ -269,20 +271,20 @@ struct mp_heavy_menu {
 
 const mp_heavy_menu mp_menu_inventory{ 'i', "Item hotkeys assigned" };
 const mp_heavy_menu mp_menu_character_sheet{ '@', "ENCUMBRANCE" };
+const mp_heavy_menu mp_menu_crafting{ '&', "Craft, D[e]scribe" };
 const mp_heavy_menu mp_menu_map{ 'm', "Quick Reference" };
+// Examining the one vehicle next to the player auto-selects it and opens the
+// vehicle's action menu (a uilist, so this is also the case that has to unwind
+// through uilist's own cancel at teardown).
+const mp_heavy_menu mp_menu_vehicle{ 'e', "Examine vehicle" };
+const mp_heavy_menu mp_menu_construction{ '*', "Construction" };
 } // namespace
 
 // The six menus the design names as the heavy ones (inventory, crafting, map,
 // character sheet, vehicle, construction): each is a different UI path, and a
 // global leaked by any of them shows up as one player seeing the other's
-// screen. The keys are the DEFAULTMODE defaults.
-//
-// Only the heavy menus a seat can still open during a round are tabled. The
-// planning gate refuses a time-costing raw key from the map (crafting,
-// examining a vehicle, construction -- see mp_action_is_free), so those three
-// menus are reached by the 3D client's plans in a later phase, not by a
-// keystroke here; a case for them would compare two map screens and pass
-// while reproducing nothing.
+// screen. The keys are the DEFAULTMODE defaults, and every one of them only
+// opens its menu, so the planning gate lets it through (mp_action_is_free).
 TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
 {
     restore_active_state restore;
@@ -293,18 +295,29 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
     };
     const std::vector<menu_case> menus = {
         { "inventory vs character sheet", mp_menu_inventory, mp_menu_character_sheet },
-        { "inventory vs map", mp_menu_inventory, mp_menu_map },
-        { "character sheet vs map", mp_menu_character_sheet, mp_menu_map },
+        { "crafting vs map", mp_menu_crafting, mp_menu_map },
+        { "vehicle vs construction", mp_menu_vehicle, mp_menu_construction },
     };
 
     for( const menu_case &c : menus ) {
         CAPTURE( c.name );
+        // The cart outlives the harness; nothing after this test expects it.
+        on_out_of_scope remove_vehicles( []() {
+            clear_vehicles();
+        } );
         mp_session_harness harness( 2 );
+        if( c.first.key == mp_menu_vehicle.key ) {
+            // Something to examine: without a vehicle in reach the key opens
+            // nothing, and the case would compare a menu with a blank screen.
+            REQUIRE( get_map().add_vehicle( vehicle_prototype_test_shopping_cart,
+                                            g->player_at( 0 ).pos_bub() + point::east,
+                                            0_degrees ) != nullptr );
+        }
 
         // The harness zeroes every slot's moves, which reads as "already acted":
         // the round would settle before either player is handed the baton, and
         // no key would be read. Give both their moves back so both are
-        // actionable. Neither key costs time, so both players hold nothing and
+        // actionable. Neither key spends time, so both players hold nothing and
         // both stay live -- which is the whole point of the per-player context.
         g->player_at( 0 ).set_moves( 100 );
         g->player_at( 1 ).set_moves( 100 );
@@ -2099,16 +2112,95 @@ TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
     SUCCEED( "four inventory reopen cycles did not crash the server" );
 }
 
-// The multiselector branch of the same crash used to be pinned here: 'd' opened
-// the multidrop menu and a tick boundary killed the marked item_location under
-// it. The planning gate refuses a time-costing raw key from the map
-// (mp_action_is_free), and the drop menu has no other entry point in a session,
-// so the scenario is unreachable for the text client this harness drives. The
-// same stale-location mechanism is still covered through the inventory, which
-// a free key does open (a_prune_does_not_move_the_confirmed_row,
-// paging_survives_a_cleared_highlight,
-// a_dead_row_is_not_replaced_under_the_filter_prompt,
-// inventory_reopen_cycles_do_not_crash).
+// The multiselector branch of the same crash. Marking the wielded item fills
+// to_use with an item_location the turn boundary then kills; the drop menu's
+// header stats and selection pane dereference to_use, so the post-wait drop has
+// to discard the dead pair before it rebuilds the layout. Without that, the
+// keypress that ends the wait dies in inventory_drop_selector::get_raw_stats().
+TEST_CASE( "a_dead_drop_selection_is_discarded_without_a_crash", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    // Direct item member of the avatar: the turn boundary's avatar swap is what
+    // expires its item_location.
+    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
+
+    const auto drop_menu_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "Multidrop" );
+    };
+    const auto screen_text = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        std::string text;
+        for( int y = 0; y < grid.height(); ++y ) {
+            for( int x = 0; x < grid.width(); ++x ) {
+                text += grid.at( x, y ).ch;
+            }
+            text += '\n';
+        }
+        return text;
+    };
+    // The item row and the selection pane both render the marked item's name, on
+    // the same screen row when the columns fit side by side, so count occurrences.
+    const auto rock_cells = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        int hits = 0;
+        for( int y = 0; y < grid.height(); ++y ) {
+            std::string row;
+            for( int x = 0; x < grid.width(); ++x ) {
+                row += grid.at( x, y ).ch;
+            }
+            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
+                 pos = row.find( "rock", pos + 1 ) ) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    // 'd' opens the multidrop menu with the cleared avatar's one item. The
+    // wielded item lives in the gear column, which is not the initially active
+    // (empty) inventory column, so step to it first; TOGGLE_ENTRY then marks the
+    // highlighted rock and fills to_use.
+    harness.press( 0, 'd' );
+    REQUIRE( harness.run_until( drop_menu_is_open ) );
+    harness.press( 0, 'h' );
+    harness.press( 0, 'l' );
+    const bool marked = harness.run_until( [&]() {
+        return rock_cells() == 2;
+    } );
+    INFO( screen_text() );
+    REQUIRE( marked );
+
+    // The round takes the tick's boundary while the menu stays open: both
+    // seats pass, so the round settles with nothing to run, the tick closes
+    // and reopens, and the avatar swap that closes it expires the marked row's
+    // item_location. A done-for-the-tick seat can still browse.
+    const int turn_before = to_turn<int>( calendar::turn );
+    queue_plan_pass( 0 );
+    queue_plan_pass( 1 );
+    REQUIRE( harness.run_until( [turn_before]() {
+        return to_turn<int>( calendar::turn ) > turn_before;
+    } ) );
+    // The world moved under the open menu and the marked row's location died.
+    CHECK( drop_menu_is_open() );
+    CHECK( g->player_at( 0 ).get_wielded_item() );
+
+    // This keypress is the one that used to dereference the dead to_use pair.
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return rock_cells() == 0;
+    }, 20 ) );
+    CHECK( drop_menu_is_open() );
+
+    // Cancel: the dead selection is discarded rather than reaching the drop.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !drop_menu_is_open();
+    }, 20 ) );
+    CHECK( g->player_at( 0 ).get_wielded_item() );
+}
 
 namespace
 {
@@ -2270,14 +2362,101 @@ TEST_CASE( "a_dead_row_is_not_replaced_under_the_filter_prompt", "[mp]" )
         return !inventory_is_open();
     }, 20 ) );
 }
-// The compare selector's stale-selection regression used to be pinned here: 'I'
-// opened the compare menu, a partner's turn freed a map item, and the raw
-// pointer it had kept dangled into compare_item_menu. The planning gate refuses
-// a time-costing raw key from the map (mp_action_is_free), and compare has no
-// other entry point in a session, so the scenario is unreachable for the text
-// client this harness drives. The item_location-not-pointer rule the fix
-// introduced is still exercised wherever a menu survives a tick boundary in the
-// inventory tests above.
+// The compare selector kept its selection as raw item pointers. An item on the
+// map is not an avatar member, so a partner's turn that removes it frees the
+// object instead of leaving a moved-from copy behind: the pointer really
+// dangles, and it used to be handed straight to compare_item_menu once a second
+// item was marked. The selection has to be held as item_location and the dead
+// one dropped by the post-wait prune.
+TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    // Both live items are worn: inventory list nodes survive the avatar swap that
+    // ends the partner's turn, unlike the wielded item's direct member. The map
+    // rock is then the only selection that can expire under the menu.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "socks" ) ), false ) );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+
+    // The rock sits on the partner's tile: adjacent to seat 0, so the compare
+    // menu's nearby-items pass lists it, and on the tile the partner's turn can
+    // remove it from.
+    g->player_at( 1 ).setpos( get_map(),
+                              g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 1, 0, 0 ) );
+    const tripoint_bub_ms rock_pos = g->player_at( 1 ).pos_bub();
+    get_map().add_item_or_charges( rock_pos, item( itype_id( "rock" ) ) );
+
+    const auto compare_is_open = [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "ITEMS TO COMPARE" );
+    };
+    // The item row and the selection pane both render the marked item's name, on
+    // the same screen row when the columns fit side by side, so count occurrences.
+    const auto rock_cells = [&]() {
+        const mp_screen_grid &grid = harness.screen( 0 );
+        int hits = 0;
+        for( int y = 0; y < grid.height(); ++y ) {
+            std::string row;
+            for( int x = 0; x < grid.width(); ++x ) {
+                row += grid.at( x, y ).ch;
+            }
+            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
+                 pos = row.find( "rock", pos + 1 ) ) {
+                ++hits;
+            }
+        }
+        return hits;
+    };
+
+    harness.press( 0, 'I' );
+    REQUIRE( harness.run_until( compare_is_open ) );
+
+    // At this terminal width the columns are merged into one, and the map item
+    // is added after the character's gear, so it is the last row. Mark it.
+    harness.press( 0, KEY_END );
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return rock_cells() == 2;
+    }, 20 ) );
+
+    // A pickup would move the rock into an inventory and destroy it at the old
+    // address just the same, so clearing the tile is the partner's turn as far
+    // as the saved location is concerned: it expires while the menu waits. Both
+    // seats pass, so the round settles, the tick closes and reopens, and a
+    // done-for-the-tick seat can still browse.
+    get_map().i_clear( rock_pos );
+    REQUIRE( take_a_partner_turn( harness ) );
+    CHECK( compare_is_open() );
+
+    // Mark one of the live items. The dead rock must already be gone from the
+    // selection; a raw pointer kept across the wait would complete the pair
+    // here and open the comparison window instead. The first key after the
+    // wait is also the one that runs the prune, so it only sets the highlight.
+    harness.press( 0, KEY_HOME );
+    harness.press( 0, 'l' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( compare_is_open() );
+
+    // A second live item completes a live pair, which does open the comparison.
+    harness.press( 0, KEY_END );
+    harness.press( 0, 'l' );
+    REQUIRE( harness.run_until( [&]() {
+        return !compare_is_open();
+    }, 20 ) );
+
+    // Close the comparison; the compare selector reopens, so Escape twice returns
+    // to the main screen. Reaching it proves the pair was usable and the server
+    // survived the case.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( compare_is_open, 20 ) );
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !compare_is_open();
+    }, 20 ) );
+}
 
 TEST_CASE( "mp_session_ui", "[mp]" )
 {

@@ -346,11 +346,28 @@ TEST_CASE( "menu_actions_are_free_while_waiting_and_costly_ones_are_not", "[mp]"
     CHECK( mp_action_is_free( ACTION_ZOOM_IN ) );
     CHECK( mp_action_is_free( ACTION_ZOOM_OUT ) );
     CHECK( mp_action_is_free( ACTION_COOP_HURRY ) );
+    // Menus: the key only opens the menu, so the spec makes it free in every
+    // phase. What is confirmed inside the menu is a menu action, not this
+    // gate's question.
+    CHECK( mp_action_is_free( ACTION_DROP ) );
+    CHECK( mp_action_is_free( ACTION_COMPARE ) );
+    CHECK( mp_action_is_free( ACTION_EXAMINE ) );
+    CHECK( mp_action_is_free( ACTION_CRAFT ) );
+    CHECK( mp_action_is_free( ACTION_CONSTRUCT ) );
+    CHECK( mp_action_is_free( ACTION_WIELD ) );
+    CHECK( mp_action_is_free( ACTION_WEAR ) );
+    CHECK( mp_action_is_free( ACTION_TAKE_OFF ) );
+    CHECK( mp_action_is_free( ACTION_EAT ) );
+    CHECK( mp_action_is_free( ACTION_READ ) );
+    CHECK( mp_action_is_free( ACTION_UNLOAD ) );
+    CHECK( mp_action_is_free( ACTION_ITEMACTION ) );
 
+    // A key that spends time or starts a targeting flow of its own stays
+    // refused.
     CHECK_FALSE( mp_action_is_free( ACTION_MOVE_FORTH ) );
     CHECK_FALSE( mp_action_is_free( ACTION_PICKUP ) );
     CHECK_FALSE( mp_action_is_free( ACTION_FIRE ) );
-    CHECK_FALSE( mp_action_is_free( ACTION_CRAFT ) );
+    CHECK_FALSE( mp_action_is_free( ACTION_THROW ) );
     CHECK_FALSE( mp_action_is_free( ACTION_PAUSE ) );
 }
 
