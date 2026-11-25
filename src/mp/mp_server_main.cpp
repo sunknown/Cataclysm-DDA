@@ -501,17 +501,15 @@ static bool seat_roster( std::string &err )
     // times and told the players who had not been moved that it was them.
     mp_activate_world();
     mp_announce_moved_characters( moved );
-    // Nobody has played a turn yet: the session starts, as single player's does,
-    // with every character owing nothing. `moves` is what the barrier reads as
-    // "still has a turn to play" (mp_player_state_of), and a character that has
-    // just been created or loaded has a turn's worth of them, so leaving them
-    // there would make the first turn wait for a first action from players whose
-    // screens have not been drawn yet -- and, with no countdown armed because
-    // nobody is holding anything yet, the world would never tick at all. They
-    // are handed a turn's moves back by avatar_turn_post() at the end of that
-    // first, closed turn, exactly as an already-played session starts.
+    // Nobody has played a turn yet, so a character created just now starts
+    // owing nothing -- `moves` is what the barrier reads as "still has a turn
+    // to play" (mp_player_state_of), and leaving a new character's turn's worth
+    // there would make the first turn wait for an action from players whose
+    // screens have not been drawn yet. A loaded character keeps its debt
+    // instead: only the positive bank is dropped, and the tick's own grant pays
+    // the debt back a tick at a time.
     for( size_t i = 0; i < players; ++i ) {
-        g->player_at( i ).set_moves( 0 );
+        mp_seed_session_moves( i, is_new[i] );
     }
     // The card goes out now, not at session end: it does not change during play,
     // and sending it early means it survives the server crashing.
@@ -849,6 +847,12 @@ void mp_run_replacement_menu( const size_t slot )
             }
             continue;
         }
+        // A replacement is a new character: the dead one's plan, pass and
+        // refusal text do not carry over, and its pool starts clean. The seat
+        // keeps its identity (slot, transport, context); only the round state
+        // and the pool belong to the character.
+        mp_plan_reset_seat( slot );
+        mp_seed_session_moves( slot, /*is_new=*/true );
         // The new character is at the keyboard by construction: the away flag
         // belonged to the character it replaced.
         mp_set_away( slot, false );

@@ -454,3 +454,49 @@ TEST_CASE( "each_character_keeps_its_own_per_character_files", "[coop]" )
     CHECK( contains( get_memorial().dump(), "memorial of alice" ) );
     CHECK_FALSE( contains( get_memorial().dump(), "memorial of bob" ) );
 }
+
+// A co-op session's AP is a character fact: an expensive action's debt is part
+// of that character's save, and a load brings it back for that character alone.
+// The format needed no change (`moves` was always serialized); what this pins is
+// that the load path really carries it, so the session bootstrap can stop
+// forgiving it.
+TEST_CASE( "a_debt_survives_save_and_load_per_character", "[coop][ap_debt]" )
+{
+    round_trip_cleanup cleanup;
+    game_test_helper::reset_player_slots();
+    mp_ensure_player_context();
+    mp_sync_context_count();
+
+    g->player_at( 0 ) = avatar();
+    avatar &alice = g->player_at( 0 );
+    alice.name = "Alice";
+    alice.set_save_id( "Alice" );
+    alice.set_body();
+    alice.setID( g->assign_npc_id() );
+    avatar &bob = g->add_player_slot();
+    bob.name = "Bob";
+    bob.set_save_id( "Bob" );
+    bob.set_body();
+    bob.setID( g->assign_npc_id() );
+    mp_sync_context_count();
+
+    // Two different debts: a single shared value cannot pass by accident.
+    alice.set_moves( -150 );
+    bob.set_moves( -20 );
+
+    REQUIRE( g->save() );
+
+    // The load has to bring the debt back, not read whatever is in memory.
+    alice.set_moves( 0 );
+    bob.set_moves( 0 );
+
+    mp_activate_player( 1 );
+    REQUIRE( g->load_character( save_t::from_save_id( "Bob" ), 1,
+                                /*with_game_state=*/false ) );
+    CHECK( get_avatar().get_moves() == -20 );
+
+    mp_activate_player( 0 );
+    REQUIRE( g->load_character( save_t::from_save_id( "Alice" ), 0,
+                                /*with_game_state=*/false ) );
+    CHECK( get_avatar().get_moves() == -150 );
+}

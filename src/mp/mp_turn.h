@@ -101,7 +101,8 @@ void mp_set_waiting_for_input( size_t slot, bool waiting );
 // Marks `slot` as having left the keyboard on purpose, or brings them back.
 // This is the player's own decision, not a drop imposed by a countdown, so it
 // stops the barrier waiting for them until they say otherwise. Called by
-// whatever handles the away key.
+// whatever handles the away key. Going away also drops the seat's unapplied
+// plan: a committed action belongs to a player who is still at the table.
 //
 // Unlike the hurry drop, this outlives mp_turn_reset(): a player who stepped
 // away for one turn is still away on the next one. Only the end of the session
@@ -280,10 +281,10 @@ bool mp_set_hurry_lengths( int manual_ms, int combat_ms );
 // on "hurry up" when something is running at them.
 void mp_tick_hurry();
 
-// Spends the turn's moves of every player the world stopped waiting for: the
-// ones a countdown dropped, the ones who went away, and the ones whose client
-// is gone. Called by the orchestrator once per closed turn, immediately before
-// avatar_turn_post hands moves back.
+// Burns the positive part of the pool of every player the world stopped waiting
+// for: the ones a countdown dropped, the ones who went away, and the ones whose
+// client is gone. Called by the orchestrator once per closed tick, immediately
+// before avatar_turn_post hands moves back.
 //
 // Not an optimisation and not cosmetic: moves accumulate (Character::
 // process_turn does `moves += get_speed()`), and a dropped player never spends
@@ -291,9 +292,18 @@ void mp_tick_hurry();
 // recipe list for a minute comes back holding a minute's worth of moves and
 // takes sixty actions inside one tick, which is both an exploit and exactly
 // what "their character stands still and skips the turn" says does not happen.
-// The same arithmetic hands a player who stepped away for a while a bank of
-// moves to spend the moment they sit down again.
+// Only the positive remainder burns: a negative balance is budget that was
+// already spent, the seat's debt, and the ticks pay it back one grant at a
+// time. An absence neither accrues a bank nor forgives a debt.
 void mp_forfeit_dropped_moves();
+
+// Hands a seat the pool it starts a session with: a character created just now
+// has not played a turn and owes nothing, while a loaded or continued one keeps
+// its debt -- budget already spent -- and loses only the positive bank, which
+// the load policy does not carry. A reconnect does not call this: its balance
+// is the seat's current one. Called once per seat when the session starts and
+// for each replacement character.
+void mp_seed_session_moves( size_t slot, bool is_new );
 
 // Whether `act` may be taken by a player who has already acted this turn.
 //

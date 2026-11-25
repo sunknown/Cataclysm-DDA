@@ -997,4 +997,162 @@ TEST_CASE( "a_new_tick_clears_the_pass", "[mp][ap_debt]" )
     tear_down_two_planning_seats();
 }
 
+TEST_CASE( "an_absent_seat_forfeits_only_the_positive_part", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    avatar &a = g->player_at( 0 );
+    avatar &b = g->player_at( 1 );
+    mp_set_away( 0, true );
+    mp_set_disconnected( 1, true );
+
+    SECTION( "a positive bank is burned" ) {
+        a.set_moves( 120 );
+        b.set_moves( 80 );
+        mp_forfeit_dropped_moves();
+        CHECK( a.get_moves() == 0 );
+        CHECK( b.get_moves() == 0 );
+    }
+    SECTION( "a debt survives" ) {
+        a.set_moves( -150 );
+        b.set_moves( -20 );
+        mp_forfeit_dropped_moves();
+        // An absence is not a way to have the debt forgiven.
+        CHECK( a.get_moves() == -150 );
+        CHECK( b.get_moves() == -20 );
+    }
+    SECTION( "a present seat keeps its pool" ) {
+        mp_set_away( 0, false );
+        a.set_moves( 120 );
+        mp_forfeit_dropped_moves();
+        CHECK( a.get_moves() == 120 );
+    }
+
+    mp_set_away( 0, false );
+    mp_set_disconnected( 1, false );
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "the_tick_tail_forfeits_an_absent_seat_s_bank", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    avatar &a = g->player_at( 0 );
+    mp_set_away( 0, true );
+
+    // The bank is burned before the tick's own grant, so an absence cannot
+    // accumulate moves: one tick's worth, never several.
+    a.set_moves( 120 );
+    mp_turn_close_tick();
+    CHECK( a.get_moves() == a.get_speed() );
+
+    // A debt is not forgiven either: one grant pays part of it.
+    a.set_moves( -150 );
+    mp_turn_close_tick();
+    CHECK( a.get_moves() == -150 + a.get_speed() );
+    CHECK( a.get_moves() == -50 );
+
+    mp_set_away( 0, false );
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "an_absent_seat_s_activity_still_gets_the_tick", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    avatar &a = g->player_at( 0 );
+    a.activity = player_activity( activity_id( "ACT_HACKING" ), 500, 0 );
+    mp_set_away( 0, true );
+    a.set_moves( 0 );
+
+    mp_turn_close_tick();
+
+    // The body keeps working while its owner is away: the tick grants its
+    // budget and leaves the activity alone.
+    CHECK( a.get_moves() == a.get_speed() );
+    CHECK_FALSE( a.activity.is_null() );
+
+    mp_set_away( 0, false );
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "going_away_drops_the_unapplied_plan", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    commit_a_placeholder_plan( 0 );
+    REQUIRE( mp_plan_is_ready( 0 ) );
+
+    mp_set_away( 0, true );
+
+    // A committed plan belongs to a player who is still at the table.
+    CHECK( mp_plan_of( 0 ).kind == mp_plan_kind::none );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+
+    mp_set_away( 0, false );
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "a_returning_seat_keeps_its_balance", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    avatar &a = g->player_at( 0 );
+    a.set_moves( -150 );
+
+    // Neither leaving nor coming back normalises the pool: a debt is the
+    // seat's, and a positive remainder is only burned at the tick's tail.
+    mp_set_away( 0, true );
+    CHECK( a.get_moves() == -150 );
+    mp_set_away( 0, false );
+    CHECK( a.get_moves() == -150 );
+    mp_set_disconnected( 0, true );
+    CHECK( a.get_moves() == -150 );
+    mp_set_disconnected( 0, false );
+    CHECK( a.get_moves() == -150 );
+
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "a_session_seed_keeps_a_debt_and_drops_a_bank", "[mp][ap_debt]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    avatar &a = g->player_at( 0 );
+
+    // A character created just now has not played a turn: it owes nothing,
+    // whatever its body carried in.
+    a.set_moves( 120 );
+    mp_seed_session_moves( 0, /*is_new=*/true );
+    CHECK( a.get_moves() == 0 );
+
+    // A loaded character keeps its debt and loses only the positive bank.
+    a.set_moves( -150 );
+    mp_seed_session_moves( 0, false );
+    CHECK( a.get_moves() == -150 );
+    a.set_moves( 120 );
+    mp_seed_session_moves( 0, false );
+    CHECK( a.get_moves() == 0 );
+    a.set_moves( 0 );
+    mp_seed_session_moves( 0, false );
+    CHECK( a.get_moves() == 0 );
+
+    // No such seat: nothing to seed, nothing to crash on.
+    mp_seed_session_moves( 2, false );
+
+    tear_down_two_planning_seats();
+}
+
 #endif // defined(MULTIPLAYER)

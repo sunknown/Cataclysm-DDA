@@ -214,6 +214,12 @@ void mp_set_away( const size_t slot, const bool away )
     if( slot < g_away.size() ) {
         g_away[slot] = away;
     }
+    if( away ) {
+        // A committed plan belongs to a player who is still at the table. The
+        // pool is left alone here: the positive part is burned at the tick's
+        // tail, on the world thread, and a debt stays.
+        mp_plan_cancel( slot );
+    }
 }
 
 bool mp_player_is_away( const size_t slot )
@@ -499,13 +505,27 @@ void mp_forfeit_dropped_moves()
             state == mp_player_state::disconnected ) {
             // Standing still is what the drop means -- and what being away or
             // disconnected means, since nobody is there to spend the moves.
-            // Taken at the end of the turn rather than at the moment of the
+            // Taken at the end of the tick rather than at the moment of the
             // drop, because a drop lasts as long as the player sits in the
-            // same menu while every closed turn hands out another turn's worth
-            // of moves.
-            g->player_at( i ).set_moves( 0 );
+            // same menu while every closed tick hands out another tick's worth
+            // of moves. Only the positive part burns: a debt is budget that was
+            // already spent, and the ticks pay it back.
+            avatar &ava = g->player_at( i );
+            ava.set_moves( std::min( 0, ava.get_moves() ) );
         }
     }
+}
+
+void mp_seed_session_moves( const size_t slot, const bool is_new )
+{
+    if( slot >= g->player_slot_count() ) {
+        return;
+    }
+    avatar &ava = g->player_at( slot );
+    // A character created just now has not played a turn, so it owes nothing. A
+    // loaded one keeps its debt -- the pool is budget already spent -- and
+    // loses only the positive bank, which the load policy does not carry.
+    ava.set_moves( is_new ? 0 : std::min( 0, ava.get_moves() ) );
 }
 
 bool mp_action_is_free( const action_id act )
@@ -677,6 +697,10 @@ void mp_turn_close_tick()
     // work that used to follow monmove(), never monmove() itself -- the rounds
     // already took their steps.
     world_turn_post_tail();
+    // Nobody is at the keyboard of an away or disconnected seat, and a player
+    // a countdown dropped is done for the turn: the positive part of their pool
+    // is burned here, before the tick's own grant. A debt stays a debt.
+    mp_forfeit_dropped_moves();
     // Moves come back after the world's tail, exactly as in single player, in
     // each player's own context: avatar_turn_post() may open the progress popup
     // and reads the whole avatar.

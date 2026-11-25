@@ -1847,11 +1847,13 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     REQUIRE( expected_cost > 0 );
 
     // Seat 1 passed, went away, lost its client, and carries the refusal text
-    // that is the last thing the client shows it.
+    // that is the last thing the client shows it. Going away drops the seat's
+    // unapplied plan (and with it the last refusal), so the text is set after
+    // the transitions: the snapshot must carry whatever the seat holds now.
     mp_plan_pass( 1 );
-    mp_plan_set_error( 1, "needs 100 AP, you have 65" );
     mp_set_away( 1, true );
     mp_set_disconnected( 1, true );
+    mp_plan_set_error( 1, "needs 100 AP, you have 65" );
     mp_plan_set_phase( mp_round_phase::resolving );
 
     // The expected anchor for seat 0, from the same rect the broadcast reads.
