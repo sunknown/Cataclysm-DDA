@@ -317,7 +317,7 @@ void mp_apply_plan( avatar &ava, const mp_plan &plan )
     }
 }
 
-void mp_resolve_round( const size_t player_count )
+bool mp_resolve_round( const size_t player_count )
 {
     mp_plan_set_phase( mp_round_phase::resolving );
 
@@ -382,9 +382,12 @@ void mp_resolve_round( const size_t player_count )
     mp_activate_world();
 
     // Every seat has had its round's worth of actions; now the monsters and
-    // NPCs take theirs before the next round opens.
-    mon_round_step();
+    // NPCs take theirs before the next round opens. Whether that step made
+    // progress is the caller's continuation input: a creature-only round
+    // follows only while the creatures are still getting somewhere.
+    const bool creature_progress = mon_round_step();
     mp_plan_set_phase( mp_round_phase::done );
+    return creature_progress;
 }
 
 #endif // MULTIPLAYER

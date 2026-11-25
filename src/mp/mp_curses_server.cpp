@@ -297,6 +297,15 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             mp_set_waiting_for_input( slot, true );
             sched->release_to( slot, mp_sched::world );
             ev = mp_server_wait_for_input_of( session, ctx, timeout );
+            // An event that is not a timeout is now in this thread's hand: the
+            // wait took it out of the seat's inbox, so the world's grant
+            // predicate has nothing left to see and would never hand the baton
+            // back. Say so before parking; the two branches below clear it once
+            // this thread holds something that orders the write (the unwind
+            // right or the baton). A timeout -- a resize or a due hover wakes
+            // the wait as one -- is not an event to deliver and must not set
+            // the flag: those stay this seat's own business.
+            mp_server_set_input_in_hand( slot, ev.type != input_event_t::timeout );
             sched->wait_for_turn( slot );
             // Not cleared yet: wait_for_turn() can return without the baton
             // (below), and the flags are one shared vector<bool> -- every slot's
@@ -305,6 +314,7 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             // holds something that orders it: the unwind right or the baton.
             if( sched->unwind_if_stopping( slot ) ) {
                 mp_set_waiting_for_input( slot, false );
+                mp_server_set_input_in_hand( slot, false );
                 // Woken by the shutdown broadcast, without the baton. This is
                 // where a player sitting in a menu first learns of it, and it
                 // learns it with its own slot in hand -- so it takes the unwind
@@ -335,6 +345,7 @@ input_event input_manager::get_input_event( const keyboard_mode /*mode*/ )
             // else's, and the next mp_assert_holds() trips on a baton this
             // thread genuinely holds.
             mp_set_waiting_for_input( slot, false );
+            mp_server_set_input_in_hand( slot, false );
             mp_activate_player( slot );
         } else {
             ev = mp_server_wait_for_input( timeout );

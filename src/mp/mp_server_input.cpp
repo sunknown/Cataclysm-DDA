@@ -673,6 +673,16 @@ bool mp_server_take_control( size_t &slot, mp_control &out )
     return false;
 }
 
+void mp_server_set_input_in_hand( const size_t slot, const bool in_hand )
+{
+    mp_session *const s = mp_session_of_slot( slot );
+    if( s == nullptr ) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock( s->inbox_mutex );
+    s->input_in_hand = in_hand;
+}
+
 bool mp_server_seat_has_input( const size_t slot )
 {
     mp_session *const s = mp_session_of_slot( slot );
@@ -680,7 +690,10 @@ bool mp_server_seat_has_input( const size_t slot )
         return false;
     }
     std::lock_guard<std::mutex> lock( s->inbox_mutex );
-    return !s->input_inbox.empty();
+    // The inbox half is the key that arrived while the seat was parked on the
+    // baton; the in-hand half is the key that seat already took out of it and
+    // is parked on the baton for. Both mean the world owes the seat a grant.
+    return !s->input_inbox.empty() || s->input_in_hand;
 }
 
 input_event mp_server_wait_for_input( const int timeout_ms )

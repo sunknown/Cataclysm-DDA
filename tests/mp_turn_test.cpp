@@ -4,6 +4,7 @@
 
 #include "activity_actor_definitions.h"
 #include "avatar.h"
+#include "bodypart.h"
 #include "calendar.h"
 #include "debug.h"
 #include "display.h"
@@ -12,6 +13,7 @@
 #include "map_helpers.h"
 #include "map_helpers_tests.h"
 #include "mp/mp_context.h"
+#include "mp/mp_plan.h"
 #include "mp/mp_turn.h"
 #include "player_activity.h"
 #include "player_helpers.h"
@@ -715,6 +717,147 @@ TEST_CASE( "a_nonsense_hurry_length_is_refused", "[mp]" )
     debug_reset_error_observed();
     mp_request_hurry();
     CHECK( mp_hurry_remaining_ms( mp_hurry_source::manual ) > 3000 );
+}
+
+// --- Planning rounds -------------------------------------------------------
+//
+// The round rule, pinned at the unit level: every seat that can still act has
+// to commit or pass before the world resolves, and a seat that cannot act --
+// no AP, an activity, a destination, away, disconnected, dead or passed -- does
+// not hold the round. The tick around a resolved round (the world half, the
+// moves handed back, the next tick) is covered end to end in
+// mp_session_test.cpp, where a real map and threads exist.
+
+namespace
+{
+// Two seats on the test map, both able to act, with no plan or turn state left
+// over from an earlier case.
+void set_up_two_planning_seats()
+{
+    clear_avatar();
+    clear_map();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    avatar &b = g->add_player_slot();
+    b.set_body();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+    mp_plan_reset_all();
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        g->player_at( i ).set_moves( 100 );
+        g->player_at( i ).activity = player_activity();
+    }
+}
+
+void tear_down_two_planning_seats()
+{
+    mp_plan_reset_all();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    mp_turn_reset_all();
+}
+
+// Commits a plan the submission code does not check against the world. The
+// round rule under test reads readiness, not what the plan would do, so a
+// ranged intent -- accepted with any target -- is the cheapest committable one.
+void commit_a_placeholder_plan( const size_t slot )
+{
+    mp_plan plan;
+    plan.kind = mp_plan_kind::ranged;
+    std::string err;
+    REQUIRE( mp_plan_submit( slot, plan, err ) );
+    REQUIRE( mp_plan_ready( slot, err ) );
+    REQUIRE( mp_plan_is_ready( slot ) );
+}
+} // namespace
+
+TEST_CASE( "a_plan_round_waits_for_a_seat_with_moves", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+
+    // Both seats can act and nobody has committed: the world must wait. This is
+    // the rule the whole WEGO turn rests on -- a present seat with AP is never
+    // skipped for its partner's convenience.
+    REQUIRE( mp_turn_player_can_act( 0 ) );
+    REQUIRE( mp_turn_player_can_act( 1 ) );
+    CHECK_FALSE( mp_turn_round_complete() );
+
+    // One committed seat leaves the other holding the round.
+    commit_a_placeholder_plan( 0 );
+    CHECK_FALSE( mp_turn_round_complete() );
+
+    // Every eligible seat committed: the round is complete.
+    commit_a_placeholder_plan( 1 );
+    CHECK( mp_turn_round_complete() );
+
+    tear_down_two_planning_seats();
+}
+
+TEST_CASE( "a_seat_with_no_moves_or_activity_does_not_hold_the_round", "[mp]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+    commit_a_placeholder_plan( 0 );
+
+    SECTION( "no moves" ) {
+        g->player_at( 1 ).set_moves( 0 );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+    }
+    SECTION( "an activity" ) {
+        // Occupied, not thinking: the activity will spend the turn whether or
+        // not the player touches a key.
+        g->player_at( 1 ).activity = player_activity( activity_id( "ACT_HACKING" ), 500, 0 );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+    }
+    SECTION( "a destination" ) {
+        avatar &b = g->player_at( 1 );
+        b.set_destination( { b.pos_bub() + tripoint_rel_ms::east }, player_activity() );
+        REQUIRE( b.has_destination() );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+        b.clear_destination();
+    }
+    SECTION( "away" ) {
+        mp_set_away( 1, true );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+        mp_set_away( 1, false );
+    }
+    SECTION( "disconnected" ) {
+        mp_set_disconnected( 1, true );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+        mp_set_disconnected( 1, false );
+    }
+    SECTION( "dead" ) {
+        g->player_at( 1 ).set_part_hp_cur( bodypart_id( "torso" ), 0 );
+        REQUIRE( g->player_at( 1 ).is_dead_state() );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+    }
+    SECTION( "passed" ) {
+        mp_plan_pass( 1 );
+        // Passing spends the AP. Give it back so the flag, not the empty pool,
+        // is what this check is about.
+        g->player_at( 1 ).set_moves( 100 );
+        REQUIRE( mp_plan_is_passed( 1 ) );
+        CHECK_FALSE( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+    }
+    SECTION( "ready" ) {
+        // The mirror case: a seat that committed still can act -- it simply
+        // does not hold the round any more.
+        commit_a_placeholder_plan( 1 );
+        CHECK( mp_turn_player_can_act( 1 ) );
+        CHECK( mp_turn_round_complete() );
+    }
+
+    tear_down_two_planning_seats();
 }
 
 #endif // defined(MULTIPLAYER)

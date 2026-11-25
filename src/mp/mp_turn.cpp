@@ -8,9 +8,14 @@
 
 #include "avatar.h"
 #include "debug.h"
+#include "debug_capture.h"
 #include "game.h"
 #include "map.h"
 #include "monster.h"
+#include "mp/mp_context.h"
+#include "mp/mp_plan.h"
+#include "mp/mp_resolve.h"
+#include "mp/mp_tether.h"
 #include "player_activity.h"
 
 namespace
@@ -539,3 +544,82 @@ bool mp_action_is_free( const action_id act )
             return false;
     }
 }
+
+#if defined( MULTIPLAYER )
+// --- A planning tick -------------------------------------------------------
+
+bool mp_turn_player_can_act( const size_t slot )
+{
+    if( slot >= g->player_slot_count() ) {
+        return false;
+    }
+    const avatar &ava = g->player_at( slot );
+    // Every clause is a way of being done for the tick. The activity and the
+    // destination say the turn will be spent without the player touching a key;
+    // away, disconnected and dead say there is nobody to wait for; a pass says
+    // the player has already said so. Only what is left holds the round open.
+    return !ava.is_dead_state() && !mp_player_is_disconnected( slot ) &&
+           !mp_player_is_away( slot ) && ava.get_moves() > 0 && !ava.activity &&
+           !ava.has_destination() && !mp_plan_is_passed( slot );
+}
+
+bool mp_turn_round_complete()
+{
+    std::vector<bool> eligible( g->player_slot_count(), false );
+    for( size_t i = 0; i < eligible.size(); ++i ) {
+        eligible[i] = mp_turn_player_can_act( i );
+    }
+    return mp_plan_round_complete( eligible );
+}
+
+void mp_turn_open_tick()
+{
+    mp_turn_reset(); // once per opened tick, not once per poll
+    g->world_turn_pre();
+    // The session's whole-tick monster work. Single player's world_turn_post()
+    // keeps interleaving it with the move loop; a tick takes it up front and
+    // lets each round take one step (mp_resolve.h).
+    mon_tick_pre();
+    // Each player's turn preamble runs under that player's own context: it
+    // touches the body, the vehicle and any running activity, and a shared
+    // world context would run it all against slot 0's avatar.
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        mp_activate_player( i );
+        g->avatar_turn_pre( g->player_at( i ) );
+    }
+    mp_activate_world();
+    mp_set_turn_open( true );
+    // The first round's phase. A tick that opens with nobody able to act closes
+    // in the same poll, and the resolver's `done` is then what a client sees
+    // until the next tick opens.
+    mp_plan_set_phase( mp_round_phase::planning );
+}
+
+void mp_turn_close_tick()
+{
+    mp_activate_world();
+    // The session's tick tail: the despawn, the NPC body updates and the world
+    // work that used to follow monmove(), never monmove() itself -- the rounds
+    // already took their steps.
+    world_turn_post_tail();
+    // Moves come back after the world's tail, exactly as in single player, in
+    // each player's own context: avatar_turn_post() may open the progress popup
+    // and reads the whole avatar.
+    for( size_t i = 0; i < g->player_slot_count(); ++i ) {
+        mp_activate_player( i );
+        g->avatar_turn_post( g->player_at( i ) );
+    }
+    mp_activate_player( 0 );
+    // The bubble follows the group. Kept identical to the barrier loop's tail:
+    // one seat means one fixed viewpoint and no re-centring.
+    if( g->player_slot_count() > 1 ) {
+        const tripoint_abs_ms anchor = mp_bubble_anchor();
+        g->shift_map_center( anchor );
+        if( anchor.z() != get_map().get_abs_sub().z() ) {
+            g->shift_map_z( anchor.z() );
+        }
+    }
+    mp_set_turn_open( false );
+    debug_menu::debug_capture::tick_if_active();
+}
+#endif // MULTIPLAYER

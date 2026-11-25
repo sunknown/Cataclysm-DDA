@@ -108,6 +108,14 @@ struct mp_session {
     std::condition_variable inbox_cv;
     std::deque<input_event> input_inbox;
     std::deque<mp_control> control_inbox;
+    // True while this seat holds an input event it already took out of
+    // input_inbox and is parked on the baton to deliver: the inbox is empty by
+    // then, so without this the world has nothing to grant the seat for, and
+    // the key sits in a hand nobody asks it to play. Written by the seat's own
+    // input wait (set before the park, cleared once the baton is regained or
+    // abandoned) and read by the world's grant predicate through
+    // mp_server_seat_has_input(), all under inbox_mutex.
+    bool input_in_hand = false;
     // Set by mp_server_stop_reader(). Atomic because the stop is a plain store
     // from another thread and the reader polls it without taking inbox_mutex.
     std::atomic<bool> reader_stop{ false };

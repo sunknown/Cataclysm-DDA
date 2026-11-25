@@ -20,7 +20,11 @@ struct mp_plan;
 // batch. The phase becomes `resolving` before anything is applied and `done`
 // once the monster step has finished; the round state itself is left for the
 // caller (Task 4's tick loop) to reset.
-void mp_resolve_round( size_t player_count );
+//
+// Returns whether the round's creature step made progress (see
+// mon_round_step()). The tick loop pairs it with mp_resolve_any_creature_can_act()
+// to decide whether a monster-only round follows.
+bool mp_resolve_round( size_t player_count );
 
 // Runs one seat's plan under the seat's own context: `move`, `melee` and
 // `pass` are supported in this phase; `ranged`, `use_item` and `interact` are
@@ -46,7 +50,19 @@ void mon_tick_pre();
 // of every NPC's move loop. The round's share of the monster phase: a creature
 // that could take several steps this tick takes one per round. Cleans up the
 // dead afterwards.
-void mon_round_step();
+//
+// Returns whether any creature made progress: some monster's step ran, or some
+// NPC's move loop spent moves. A round where nothing progresses is stuck --
+// mon_step() zeroes a controlled monster's moves, and an NPC that never spends
+// moves makes none -- and the tick must close instead of running it again.
+bool mon_round_step();
+
+// Whether any creature could still act this tick: a living, in-bounds,
+// non-ridden monster with moves left, or an NPC its move loop would run. The
+// continuation rule is this AND mon_round_step()'s progress, so a monster-only
+// round keeps the tick open exactly as long as the creature's own AP lasts and
+// a stuck creature closes it instead of hanging the server.
+bool mp_resolve_any_creature_can_act();
 
 // The rest of the tick's world work: despawning monsters left outside the
 // bubble, overmap NPC travel, NPC morale, furniture/terrain field emission, the

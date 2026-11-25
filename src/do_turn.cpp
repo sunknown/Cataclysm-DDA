@@ -54,10 +54,16 @@
 #include "monster.h"
 #include "mp/mp_context.h"
 #include "mp/mp_mode.h"
+#include "mp/mp_plan.h"
 #include "mp/mp_resolve.h"
+#include "mp/mp_scene.h"
 #include "mp/mp_sched.h"
+#include "mp/mp_server_input.h"
 #include "mp/mp_server_main.h"
+#include "mp/mp_server_mask.h"
+#include "mp/mp_session.h"
 #include "mp/mp_tether.h"
+#include "mp/mp_transport.h"
 #include "mp/mp_turn.h"
 #include "mtype.h"
 #include "music.h"
@@ -669,9 +675,16 @@ void mon_tick_pre()
 }
 
 #if defined( MULTIPLAYER )
-void mon_round_step()
+bool mon_round_step()
 {
     map &m = get_map();
+    // Whether anything moved this round. A round in which no creature can
+    // spend anything is the end of the tick's creature work: the loop uses
+    // this together with mp_resolve_any_creature_can_act() to decide whether
+    // another monster-only round follows, so a stuck critter (a controlled
+    // monster whose step zeroes its moves, an NPC that will not spend) closes
+    // the tick instead of running it again for ever.
+    bool progress = false;
 
     // Monsters have no stable id to order by, so the round orders them by
     // where they stand, then by name. stable_sort keeps the tracker's order
@@ -711,6 +724,7 @@ void mon_round_step()
             continue;
         }
         mon_motion_alarm( *critter );
+        progress = true;
     }
     g->cleanup_dead();
 
@@ -718,11 +732,29 @@ void mon_round_step()
     // belongs to the single-player loop, which runs many iterations; a round
     // runs exactly one, so there is no loop for it to stop.
     for( npc &guy : g->all_npcs() ) {
-        if( npc_can_move( guy ) ) {
-            npc_step( guy );
+        if( npc_can_move( guy ) && npc_step( guy ).spent_moves ) {
+            progress = true;
         }
     }
     g->cleanup_dead();
+    return progress;
+}
+
+bool mp_resolve_any_creature_can_act()
+{
+    map &m = get_map();
+    for( monster &critter : g->all_monsters() ) {
+        if( !critter.is_dead() && !critter.has_effect( effect_ridden ) &&
+            m.inbounds( critter.pos_abs() ) && critter.get_moves() > 0 ) {
+            return true;
+        }
+    }
+    for( const npc &guy : g->all_npcs() ) {
+        if( npc_can_move( guy ) ) {
+            return true;
+        }
+    }
+    return false;
 }
 #endif // MULTIPLAYER
 
@@ -1050,6 +1082,153 @@ bool game::do_turn()
             // return player_act's `true` to, so it left it here.
             return end_session( *sched );
         }
+#if defined(MP_SERVER) && defined(MULTIPLAYER)
+        // One tick, one or more rounds. The tick opens once and stays open
+        // while any seat or creature can still act; every poll collects that
+        // seat's plan, hands the baton to a seat the session owes one, and
+        // resolves the round as soon as every seat that can act has committed
+        // or passed. A round that leaves somebody able to act starts the next
+        // round in the same tick; otherwise the tick closes here.
+        const bool opened_tick = !mp_turn_is_open();
+        if( opened_tick ) {
+            mp_turn_open_tick();
+        }
+
+        // A lost wire is a server-side fact. A seat parked in a menu notices it
+        // on its own, but a seat with no input never touches its wire, and a
+        // disconnected seat with moves would hold the round for ever.
+        for( size_t i = 0; i < player_slot_count(); ++i ) {
+            mp_session *const seat = mp_session_of_slot( i );
+            if( seat != nullptr && seat->transport && !seat->transport->connected() &&
+                !mp_player_is_disconnected( i ) ) {
+                mp_server_mark_disconnected( i );
+            }
+        }
+
+        // Pacing: one tick's time per tick, and a key never pays a poll
+        // interval. A queued key means grant it now; a round somebody is still
+        // planning in sleeps until a plan, a key or a dead wire arrives; a tick
+        // that opens with nobody planning in it still takes a tick (the
+        // single-player busy poll); and a continuation round -- the tick is
+        // already open, the round is settled, nobody holds a key -- runs back to
+        // back, which is what gives a 200-AP monster its later rounds.
+        bool any_seat_has_input = false;
+        for( size_t i = 0; i < player_slot_count(); ++i ) {
+            any_seat_has_input = any_seat_has_input || mp_server_seat_has_input( i );
+        }
+        if( !any_seat_has_input && ( !mp_turn_round_complete() || opened_tick ) ) {
+            mp_sched_trace_phase( "poll-begin" );
+            mp_server_wait_for_events( MP_POLL_MS );
+        }
+
+        // Round controls become plan state. The drain runs to the end on every
+        // poll: the event wait above is edge-triggered, so a single take per
+        // poll would strand the rest until the next event.
+        size_t control_slot = 0;
+        mp_control control;
+        while( mp_server_take_control( control_slot, control ) ) {
+            switch( control.kind ) {
+                case mp_control_kind::plan: {
+                    mp_plan plan;
+                    plan.kind = control.plan.kind;
+                    plan.cost = control.plan.cost;
+                    plan.seq = control.plan.seq;
+                    plan.label = control.plan.label;
+                    if( plan.kind != mp_plan_kind::pass ) {
+                        // A client has no map coordinates: its cells are the
+                        // seat's own scene grid, so the world translates them
+                        // under that seat's context and view. A pass names no
+                        // tile and skips this.
+                        std::optional<tripoint_bub_ms> target;
+                        mp_activate_player( control_slot );
+                        mp_scene_rect rect;
+                        if( mp_scene_mask_map_rect( rect ) ) {
+                            target = mp_scene_tile_at( rect, mp_active_context().ter_view_p,
+                                                       control.plan.x, control.plan.y );
+                        }
+                        mp_activate_world();
+                        if( !target ) {
+                            mp_plan_set_error( control_slot, "target is off the map" );
+                            break;
+                        }
+                        plan.target = *target;
+                    }
+                    std::string error;
+                    if( !mp_plan_submit( control_slot, plan, error ) ) {
+                        mp_plan_set_error( control_slot, error );
+                    }
+                    break;
+                }
+                case mp_control_kind::plan_ready: {
+                    std::string error;
+                    if( !mp_plan_ready( control_slot, error ) ) {
+                        mp_plan_set_error( control_slot, error );
+                    }
+                    break;
+                }
+                case mp_control_kind::plan_cancel:
+                    mp_plan_cancel( control_slot );
+                    // An intent withdrawn leaves the round waiting for the seat
+                    // again, which is the planning phase it reports.
+                    if( !mp_plan_is_ready( control_slot ) &&
+                        !mp_plan_is_passed( control_slot ) ) {
+                        mp_plan_set_phase( mp_round_phase::planning );
+                    }
+                    break;
+                case mp_control_kind::plan_pass:
+                    mp_plan_pass( control_slot );
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        // A parked seat is owed the baton when it has an event to deliver, a
+        // replacement to choose, or a quit to unwind. Those are the three
+        // things this thread can be parked for and nothing else: granting a
+        // seat that owes none of them would run its 125 ms input poll at the
+        // world's pace -- the spin the old barrier had. One seat at a time;
+        // yield_to returns once this thread holds the baton again.
+        //
+        // The event half covers the key a seat took out of its inbox before it
+        // parked (mp_server_seat_has_input), and the key that arrived while it
+        // was parked here (the inbox half of the same call).
+        for( size_t i = 0; i < player_slot_count(); ++i ) {
+            if( !sched->waiting_for_baton( i ) ) {
+                continue;
+            }
+            if( mp_server_seat_has_input( i ) || mp_player_needs_replacement( i ) ||
+                sched->quit_requested( i ) ) {
+                sched->yield_to( mp_sched::world, i );
+            }
+        }
+
+        if( mp_turn_round_complete() ) {
+            mp_sched_trace_phase( "resolve" );
+            const bool creature_progress = mp_resolve_round( player_slot_count() );
+            // The resolver leaves the settled round for this caller to forget;
+            // readiness does not survive into the next round.
+            mp_plan_reset_round();
+            bool anyone_can_act = false;
+            for( size_t i = 0; i < player_slot_count(); ++i ) {
+                anyone_can_act = anyone_can_act || mp_turn_player_can_act( i );
+            }
+            // Another round in this tick while a seat can still act, or while
+            // the creatures both can and did: the progress half is what ends a
+            // monster-only chain, because a creature that cannot spend (or that
+            // zeroed its own moves) makes no progress and the next round would
+            // be empty.
+            if( anyone_can_act ||
+                ( creature_progress && mp_resolve_any_creature_can_act() ) ) {
+                mp_plan_set_phase( mp_round_phase::planning );
+            } else {
+                mp_sched_trace_phase( "tail-begin" );
+                mp_turn_close_tick();
+                mp_sched_trace_phase( "tail-end" );
+            }
+        }
+        return false;
+#else
         if( !mp_turn_is_open() ) {
             mp_turn_reset(); // once per opened turn, not once per poll
             world_turn_pre();
@@ -1170,6 +1349,7 @@ bool game::do_turn()
 #endif
         debug_menu::debug_capture::tick_if_active();
         return false;
+#endif // defined(MP_SERVER) && defined(MULTIPLAYER)
     }
 
     if( is_game_over() ) {

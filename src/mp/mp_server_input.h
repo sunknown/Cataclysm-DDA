@@ -172,8 +172,20 @@ bool mp_server_wait_for_events( int timeout_ms );
 // is woken so it re-evaluates before its own timeout.
 bool mp_server_take_control( size_t &slot, mp_control &out );
 
-// Whether `slot` has a keystroke waiting. Cheap and non-blocking: it answers
-// "could this seat act now", not "will it".
+// Whether `slot` has an input event to deliver: a keystroke waiting in its
+// inbox, or one it already took out of the inbox and is parked on the baton
+// for. Cheap and non-blocking: it answers "could this seat act now", not "will
+// it", and it is exactly the question the world's grant asks.
 bool mp_server_seat_has_input( size_t slot );
+
+// Records whether `slot` holds an input event it has taken from its inbox but
+// not delivered yet: between the wait that consumed the event and the grant
+// that hands it the baton. The seat's own input wait is the only caller -- it
+// sets this before it parks and clears it once it holds the baton again -- and
+// nowhere else may, because the flag means "this seat is parked, owing the
+// world one event". Without it the world sees an empty inbox and a parked seat
+// and never grants, leaving the key undelivered. No-op when the seat has no
+// session.
+void mp_server_set_input_in_hand( size_t slot, bool in_hand );
 
 #endif // CATA_SRC_MP_MP_SERVER_INPUT_H

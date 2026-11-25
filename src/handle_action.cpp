@@ -74,6 +74,8 @@
 #include "move_mode.h"
 #include "mp/mp_context.h"
 #include "mp/mp_mode.h"
+#include "mp/mp_plan.h"
+#include "mp/mp_sched.h"
 #include "mp/mp_turn.h"
 #include "mtype.h"
 #include "mutation.h"
@@ -3489,6 +3491,20 @@ bool game::handle_action()
     // pace it. A timeout is not a keypress, so it does not count.
     if( mp_coop_active() && act != ACTION_TIMEOUT && !mp_action_is_free( act ) ) {
         mp_return_from_away( g->active_slot() );
+    }
+    // The planning phase's temporary gate: a time-costing key from the map is
+    // not how a co-op turn is taken -- the client sends a plan -- and letting
+    // one through would move the world outside a resolution. Menus never reach
+    // this function; they run their own input contexts. The base main-UI
+    // adaptor is depth 1, so anything deeper is a screen the seat is reading.
+    // A timeout is the idle poll, not a key, and must stay silent. Checked
+    // after the away return above: a costly key still brings a player back
+    // from away, it just does not act.
+    if( mp_active_sched() && mp_turn_is_open() && act != ACTION_TIMEOUT &&
+        !mp_action_is_free( act ) && mp_plan_phase() == mp_round_phase::planning &&
+        g->contexts[g->active_slot()].ui_stack.size() <= 1 ) {
+        add_msg( m_info, _( "use the plan keys: move, attack, 5" ) );
+        return false;
     }
 #endif
 

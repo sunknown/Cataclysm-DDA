@@ -7,6 +7,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -39,9 +40,12 @@
 #include "worldfactory.h"
 #include "mp/mp_context.h"
 #include "mp/mp_loopback_transport.h"
+#include "mp/mp_plan.h"
 #include "mp/mp_protocol.h"
+#include "mp/mp_scene.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_main.h"
+#include "mp/mp_server_mask.h"
 #include "mp/mp_session.h"
 #include "mp/mp_session_ui.h"
 #include "mp/mp_tether.h"
@@ -56,7 +60,84 @@
 #include "ui_manager.h"
 #include "units.h"
 
-static const vproto_id vehicle_prototype_test_shopping_cart( "test_shopping_cart" );
+namespace
+{
+// Hands the round loop the message a seat's reader would have queued. The wire
+// path itself -- a control frame parsed and routed into the seat's inbox -- is
+// covered by mp_server_io_test ("a_plan_frame_reaches_the_world_without_the
+// _baton"); a session test drives the loop with the message the reader
+// delivers, so it is about what the loop does with a plan, not about a second
+// protocol client.
+void queue_control( const size_t slot, const mp_control &msg )
+{
+    mp_session *const session = mp_session_of_slot( slot );
+    REQUIRE( session != nullptr );
+    {
+        std::lock_guard<std::mutex> lock( session->inbox_mutex );
+        session->control_inbox.push_back( msg );
+    }
+    session->inbox_cv.notify_all();
+}
+
+void queue_plan( const size_t slot, const mp_plan_kind kind, const int cell_x = 0,
+                 const int cell_y = 0, const uint32_t seq = 1 )
+{
+    mp_control msg;
+    msg.kind = mp_control_kind::plan;
+    msg.plan.kind = kind;
+    msg.plan.x = cell_x;
+    msg.plan.y = cell_y;
+    msg.plan.seq = seq;
+    queue_control( slot, msg );
+}
+
+void queue_plan_only( const size_t slot, const mp_control_kind kind )
+{
+    mp_control msg;
+    msg.kind = kind;
+    queue_control( slot, msg );
+}
+
+void queue_plan_ready( const size_t slot )
+{
+    queue_plan_only( slot, mp_control_kind::plan_ready );
+}
+
+void queue_plan_cancel( const size_t slot )
+{
+    queue_plan_only( slot, mp_control_kind::plan_cancel );
+}
+
+void queue_plan_pass( const size_t slot )
+{
+    queue_plan_only( slot, mp_control_kind::plan_pass );
+}
+
+// The scene cell a plan must name for `slot` to reach `tile`: the round loop
+// translates a plan's cells through the seat's own terrain window and view
+// centre with mp_scene_tile_at, so this inverts exactly that mapping instead of
+// duplicating the origin arithmetic.
+std::optional<point> plan_cell_for( const size_t slot, const tripoint_bub_ms &tile )
+{
+    mp_activate_player( slot );
+    mp_scene_rect rect;
+    const bool have_rect = mp_scene_mask_map_rect( rect );
+    const tripoint_bub_ms view = mp_active_context().ter_view_p;
+    mp_activate_world();
+    if( !have_rect ) {
+        return std::nullopt;
+    }
+    for( int y = rect.y; y < rect.y + rect.h; ++y ) {
+        for( int x = rect.x; x < rect.x + rect.w; ++x ) {
+            if( mp_scene_tile_at( rect, view, x, y ) == tile ) {
+                return point( x, y );
+            }
+        }
+    }
+    return std::nullopt;
+}
+} // namespace
+
 
 TEST_CASE( "a_server_debugmsg_reaches_every_player", "[mp]" )
 {
@@ -146,8 +227,10 @@ TEST_CASE( "every_player_sees_their_own_main_game_screen", "[mp]" )
     restore_active_state restore;
     mp_session_harness harness( 2 );
 
-    // Both actionable, no key pressed: each player sits on the main screen
-    // waiting for input, which is what a client sees for most of a session.
+    // Both actionable. A seat draws when the world hands it the baton, and the
+    // baton is owed for a queued key, so each player presses a free one (zoom,
+    // which opens no menu and spends nothing) and then sits on the main screen
+    // waiting for their next input -- what a client sees for most of a session.
     // The sidebar does not carry the character's name at this size, but it
     // does carry their strength, so give the two players far-apart ones. The
     // text is read off the character rather than written here: the sidebar
@@ -155,6 +238,8 @@ TEST_CASE( "every_player_sees_their_own_main_game_screen", "[mp]" )
     g->player_at( 0 ).set_moves( 100 );
     g->player_at( 1 ).set_moves( 100 );
     g->player_at( 1 ).set_str_base( 20 );
+    harness.press( 0, 'z' );
+    harness.press( 1, 'z' );
     const auto strength = []( const size_t slot ) {
         return string_format( "Str: %d ", g->player_at( slot ).get_str() );
     };
@@ -184,19 +269,20 @@ struct mp_heavy_menu {
 
 const mp_heavy_menu mp_menu_inventory{ 'i', "Item hotkeys assigned" };
 const mp_heavy_menu mp_menu_character_sheet{ '@', "ENCUMBRANCE" };
-const mp_heavy_menu mp_menu_crafting{ '&', "Craft, D[e]scribe" };
 const mp_heavy_menu mp_menu_map{ 'm', "Quick Reference" };
-// Examining the one vehicle next to the player auto-selects it and opens the
-// vehicle's action menu (a uilist, so this is also the case that has to unwind
-// through uilist's own cancel at teardown).
-const mp_heavy_menu mp_menu_vehicle{ 'e', "Examine vehicle" };
-const mp_heavy_menu mp_menu_construction{ '*', "Construction" };
 } // namespace
 
 // The six menus the design names as the heavy ones (inventory, crafting, map,
 // character sheet, vehicle, construction): each is a different UI path, and a
 // global leaked by any of them shows up as one player seeing the other's
 // screen. The keys are the DEFAULTMODE defaults.
+//
+// Only the heavy menus a seat can still open during a round are tabled. The
+// planning gate refuses a time-costing raw key from the map (crafting,
+// examining a vehicle, construction -- see mp_action_is_free), so those three
+// menus are reached by the 3D client's plans in a later phase, not by a
+// keystroke here; a case for them would compare two map screens and pass
+// while reproducing nothing.
 TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
 {
     restore_active_state restore;
@@ -207,27 +293,16 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
     };
     const std::vector<menu_case> menus = {
         { "inventory vs character sheet", mp_menu_inventory, mp_menu_character_sheet },
-        { "crafting vs map", mp_menu_crafting, mp_menu_map },
-        { "vehicle vs construction", mp_menu_vehicle, mp_menu_construction },
+        { "inventory vs map", mp_menu_inventory, mp_menu_map },
+        { "character sheet vs map", mp_menu_character_sheet, mp_menu_map },
     };
 
     for( const menu_case &c : menus ) {
         CAPTURE( c.name );
-        // The cart outlives the harness; nothing after this test expects it.
-        on_out_of_scope remove_vehicles( []() {
-            clear_vehicles();
-        } );
         mp_session_harness harness( 2 );
-        if( c.first.key == mp_menu_vehicle.key ) {
-            // Something to examine: without a vehicle in reach the key opens
-            // nothing, and the case would compare a menu with a blank screen.
-            REQUIRE( get_map().add_vehicle( vehicle_prototype_test_shopping_cart,
-                                            g->player_at( 0 ).pos_bub() + point::east,
-                                            0_degrees ) != nullptr );
-        }
 
         // The harness zeroes every slot's moves, which reads as "already acted":
-        // the barrier would close before either player is handed the baton, and
+        // the round would settle before either player is handed the baton, and
         // no key would be read. Give both their moves back so both are
         // actionable. Neither key costs time, so both players hold nothing and
         // both stay live -- which is the whole point of the per-player context.
@@ -383,50 +458,46 @@ TEST_CASE( "a_session_can_end_with_the_overmap_open", "[mp]" )
     SUCCEED( "teardown with an overmap open did not abort" );
 }
 
-TEST_CASE( "a_player_in_a_menu_does_not_freeze_their_partner", "[mp]" )
+// A player reading a menu with AP left has not said they are done: their seat
+// can still act, so the round cannot settle for however long the partner is
+// willing to wait. The partner's pass is not a substitute for this seat's own.
+TEST_CASE( "a_player_in_a_menu_holds_the_round", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
 
-    // Player 1 parks in a menu with moves left: they hold the barrier. The
-    // world may not outrun a thinking player. Fresh avatars start with zero
-    // moves, so the first do_turn is a full, closed turn in which neither
-    // player_act reads any input; the calendar advances when the SECOND do_turn
-    // opens a turn and player 1 parks in the menu. Every do_turn after that is
-    // a waiting turn that returns without advancing -- ten of them leave the
-    // calendar exactly one turn past turn_before.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
     harness.press( 1, mp_menu_inventory.key );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    } ) );
+
+    // Seat 0 is done for the tick; seat 1 is in a menu with AP and no plan.
+    // Ten polls take about a second, and the round must still be open at the
+    // end of them: a menu is a player thinking, not a player gone.
     const int turn_before = to_turn<int>( calendar::turn );
-    REQUIRE( harness.run_until( []() {
+    queue_plan_pass( 0 );
+    CHECK_FALSE( harness.run_until( []() {
         return false;
-    }, 10 ) == false );
-    CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
+    }, 10 ) );
+    CHECK( mp_turn_is_open() );
+    CHECK_FALSE( mp_turn_round_complete() );
+    CHECK( mp_plan_is_passed( 0 ) );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before );
     CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
 
-    // Player 0 hurries them. The key reaches the server through the wire, so
-    // wait for the press itself to be registered -- the manual countdown
-    // specifically: the shorter combat one arms on its own whenever a hostile
-    // can see a player, and would make this pass with nobody hurrying. The
-    // harness clears the map's creatures, so none should be armed.
-    harness.press( 0, '`' );
-    REQUIRE( harness.run_until( []() {
-        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
-    } ) );
-    CHECK( mp_hurry_remaining_ms( mp_hurry_source::combat ) < 0 );
-    // The press asks; it does not move the world by itself.
-    CHECK( to_turn<int>( calendar::turn ) == turn_before + 1 );
-
-    // Expire it. It drops everyone still holding -- player 0 too, who pressed
-    // hurry from the map and so still held the turn. Player 0 plays on: they
-    // wait a turn, and the world moves on past the frozen turn -- `+ 1` is
-    // where the first phase already left it -- while the partner's menu is
-    // still open: untouched, just not waited on.
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
-    harness.press( 0, '.' );
+    // Seat 1 closes the menu and passes: now nobody can act, the round settles
+    // and the tick closes -- the world was waiting for this seat, not for the
+    // clock.
+    harness.press( 1, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    }, 20 ) );
+    queue_plan_pass( 1 );
     CHECK( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before + 1;
+        return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
-    CHECK( mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker ) );
 }
 
 TEST_CASE( "another_players_key_does_not_close_a_mouse_view", "[mp]" )
@@ -434,7 +505,13 @@ TEST_CASE( "another_players_key_does_not_close_a_mouse_view", "[mp]" )
     restore_active_state restore;
     mp_session_harness harness( 2 );
 
-    // Both players' main screens are up, so the terrain window has its size.
+    // Both players' main screens must be up, so the terrain window has its
+    // size. A seat draws when it is granted the baton, and a free key is what
+    // buys that grant; the mouse position below is measured in that window.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 0, 'z' );
+    harness.press( 1, 'z' );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_nonblank_cells( harness.screen( 0 ) ) > 200 &&
                mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
@@ -459,12 +536,12 @@ TEST_CASE( "another_players_key_does_not_close_a_mouse_view", "[mp]" )
     // Player 1's terminal goes away with the hint still up...
     harness.drop_client( 1 );
 
-    // ...and player 0 presses a key. Player 0 has no hint of their own, and
+    // ...and player 0 ends their round. Player 0 has no hint of their own, and
     // player 1's adaptor registered in player 1's stack: one shared live_view
     // would destroy it here, under player 0's stack, and abort on
     // ~ui_adaptor's owner assert. Play has to continue instead.
     const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 0, '.' );
+    queue_plan_pass( 0 );
     REQUIRE( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     }, 20 ) );
@@ -479,6 +556,12 @@ TEST_CASE( "a_reconnected_seat_does_not_keep_the_old_terminals_mouse_hint", "[mp
     // Both terminals must have drawn before either seat's viewport geometry is
     // used for the coordinate: the active context here is seat 0's, and only
     // identical harness terminals make its window a valid target for seat 1.
+    // A seat draws when it is granted the baton, and a free key is what buys
+    // that grant.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 0, 'z' );
+    harness.press( 1, 'z' );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_nonblank_cells( harness.screen( 0 ) ) > 200 &&
                mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
@@ -504,9 +587,12 @@ TEST_CASE( "a_reconnected_seat_does_not_keep_the_old_terminals_mouse_hint", "[mp
 
     // The same character comes back on a new terminal. Its grid was reset by
     // the reconnect, so the first frame it receives is the first chance to see
-    // whether the old terminal's hint survived the handover.
+    // whether the old terminal's hint survived the handover. A seat is granted
+    // the baton for a queued key, so the fresh wire needs one (a free zoom,
+    // which opens no menu) before it draws at all.
     REQUIRE( harness.reconnect_client( 1, save_id ) );
     CHECK( g->contexts[1].liveview == nullptr );
+    harness.press( 1, 'z' );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_nonblank_cells( harness.screen( 1 ) ) > 200;
     }, 40 ) );
@@ -557,10 +643,11 @@ TEST_CASE( "a_voluntary_quit_leaves_the_table_without_a_replacement", "[mp]" )
     CHECK_FALSE( mp_player_owns_quit_latch( 1 ) );
     CHECK( g->uquit == QUIT_NO );
 
-    // The partner still plays.
+    // The partner still plays: a pass ends their round, and with the other seat
+    // gone nothing holds the tick, so it closes and the calendar moves.
     g->player_at( 0 ).set_moves( 100 );
     const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 0, '.' );
+    queue_plan_pass( 0 );
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
@@ -611,52 +698,31 @@ TEST_CASE( "the_main_screen_outlives_the_end_of_a_session", "[mp]" )
     game_test_helper::reset_player_slots();
     mp_sync_context_count();
 }
-TEST_CASE( "a_player_left_behind_by_a_hurry_does_not_let_the_world_run_free", "[mp]" )
-{
-    restore_active_state restore;
-    mp_session_harness harness( 1 );
-    g->player_at( 0 ).set_moves( 100 );
-    // The player sits at the map and presses hurry, which costs nothing: they
-    // are still holding the turn when the countdown runs out, so it drops them.
-    // So does a hostile's countdown with nobody pressing anything.
-    harness.press( 0, '`' );
-    REQUIRE( harness.run_until( []() {
-        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
-    } ) );
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
-    const int turn_before = to_turn<int>( calendar::turn );
-
-    // Twenty polls take about a second. The drop lasts while the player sits
-    // at the same input wait, so with nobody else to wait for, every turn
-    // would close the moment it opened and the world would run at CPU speed
-    // around a player who is only thinking.
-    harness.run_until( []() {
-        return false;
-    }, 20 );
-    CHECK( to_turn<int>( calendar::turn ) <= turn_before + 1 );
-}
-
-TEST_CASE( "a_dropped_player_keeps_playing_while_their_partner_holds", "[mp]" )
+// A seat inside a menu is parked on its own wire, not on the baton, and the
+// world is waiting on somebody else: a key that arrives for the menu seat still
+// has to be granted and read, or a menu becomes unclosable while the partner
+// takes their time.
+TEST_CASE( "a_player_in_a_menu_keeps_receiving_its_keys", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
-    // Player 1 reads their inventory; player 0 has acted (fresh avatars have
-    // no moves). Hurrying drops player 1 for as long as they read.
+    g->player_at( 0 ).set_moves( 100 );
     g->player_at( 1 ).set_moves( 100 );
     harness.press( 1, mp_menu_inventory.key );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
     } ) );
-    mp_request_hurry();
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
-    const int turn_before = to_turn<int>( calendar::turn );
-    REQUIRE( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before;
-    } ) );
 
-    // Next turn player 0 has moves and sits at the map: now they hold the
-    // turn. Player 1 closes their inventory. Their key has to be read even
-    // though the world is waiting on somebody else.
+    // Seat 1 is reading its menu; seat 0 is present with AP and no plan, so the
+    // round is held open on seat 0 and the world waits on it.
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( mp_turn_is_open() );
+    CHECK_FALSE( mp_turn_round_complete() );
+
+    // The menu seat's key is read even though the world is waiting on somebody
+    // else.
     harness.press( 1, KEY_ESCAPE );
     CHECK( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
@@ -900,12 +966,13 @@ TEST_CASE( "a_new_client_can_take_a_dead_disconnected_seat", "[mp]" )
     CHECK( harness.message_log_contains( "joined" ) );
 
     // And the seat does not hold the party back: with both terminals at the
-    // keyboard, their next turn still closes and moves the calendar.
+    // keyboard, a pass each settles the round and the next tick closes and
+    // moves the calendar.
     const int turn_before = to_turn<int>( calendar::turn );
     g->player_at( 0 ).set_moves( 100 );
     g->player_at( 1 ).set_moves( 100 );
-    harness.press( 0, '.' );
-    harness.press( 1, '.' );
+    queue_plan_pass( 0 );
+    queue_plan_pass( 1 );
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
@@ -967,19 +1034,35 @@ TEST_CASE( "abandoning_a_character_opens_a_replacement", "[mp]" )
     mp_session_harness harness( 2 );
     avatar &quitter = g->player_at( 1 );
     const tripoint_bub_ms corpse = quitter.pos_bub();
-    // ACTION_SUICIDE does exactly this and leaves hp alone. The seat has to act
-    // once for handle_action() to return into is_game_over(); the wait action
-    // is the cheapest way to do that from a test.
+    // ACTION_SUICIDE does exactly this and leaves hp alone.
     quitter.set_moves( 100 );
     quitter.place_corpse( &get_map() );
     g->uquit = QUIT_SUICIDE;
-    harness.press( 1, '.' );
 
-    // The in-turn death still shows the single-player death screen. Confirm it
-    // so is_game_over() returns and the ended branch can route the abandon.
+    // The seat has to act once for handle_action() to return into
+    // is_game_over(); the planning gate refuses the raw wait key, but a refusal
+    // still returns into that check, which is all the death screen needs. The
+    // latch becoming this seat's is the moment the verdict was recorded.
+    harness.press( 1, '.' );
+    REQUIRE( harness.run_until( []() {
+        return mp_player_owns_quit_latch( 1 );
+    }, 10 ) );
+
+    // The in-turn death still shows the single-player death screen. It is a
+    // cataimgui window: one frame lays it out and the next one draws it, and a
+    // seat is granted the baton once per queued key. Let the first frame happen
+    // (a couple of idle polls), then buy the drawing frame with a free key
+    // (Task 6 moves the flush to the world side and may drop this press).
+    harness.run_until( []() {
+        return false;
+    }, 2 );
+    harness.press( 1, 'z' );
     REQUIRE( harness.run_until( [&harness]() {
         return mp_grid_contains( harness.screen( 1 ), "The End" );
-    }, 10 ) );
+    }, 20 ) );
+
+    // Confirm it so is_game_over() returns and the ended branch routes the
+    // abandon.
     harness.press( 1, '\n' );
 
     // Abandoning is a death, not a disconnect: the one global quit is cleared,
@@ -1167,28 +1250,40 @@ TEST_CASE( "a_replacement_character_gets_its_own_card", "[mp]" )
     CHECK( g->player_at( 1 ).get_save_id() == save_id );
 }
 
-TEST_CASE( "a_session_where_everyone_is_away_does_not_advance_the_world", "[mp]" )
+// Away is "done for this tick", not "hold the world": nobody is at a keyboard,
+// so nothing is waiting for a plan. What must not happen is the other extreme --
+// the world free-running at CPU speed around absent players. A tick takes a
+// tick's time: one poll interval each, and no baton traffic at all.
+TEST_CASE( "an_all_away_party_advances_at_a_ticks_pace", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
     mp_set_away( 0, true );
     mp_set_away( 1, true );
+    mp_sched *const sched = mp_active_sched();
+    REQUIRE( sched != nullptr );
     const int turn_before = to_turn<int>( calendar::turn );
+    const size_t handoffs_before = sched->holder_generation();
+    const auto started = std::chrono::steady_clock::now();
 
-    // Ten polls take about a second. With every living player away there is
-    // nobody to wait for and nobody to pace: the turn must not close at all.
+    // Ten polls take about half a second. Every one of them opens a tick,
+    // resolves an empty round and closes it, so the calendar moves once per
+    // poll -- and nobody is granted the baton, because no seat has a key, a
+    // replacement or a quit to deliver.
     CHECK_FALSE( harness.run_until( []() {
         return false;
     }, 10 ) );
-    CHECK( to_turn<int>( calendar::turn ) == turn_before );
-
-    // One comes back and waits out a turn; the world moves again.
-    mp_set_away( 0, false );
-    g->player_at( 0 ).set_moves( 100 );
-    harness.press( 0, '.' );
-    CHECK( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before;
-    } ) );
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started );
+    const int advanced = to_turn<int>( calendar::turn ) - turn_before;
+    CHECK( advanced > 0 );
+    CHECK( advanced <= 12 );
+    CHECK( sched->holder_generation() == handoffs_before );
+    // One poll interval per tick is the floor. Two intervals of slack cover
+    // scheduler jitter; a free run would be milliseconds, not hundreds.
+    CHECK( elapsed >= std::chrono::milliseconds( MP_POLL_MS * 8 ) );
 }
 
 TEST_CASE( "an_away_player_does_not_slow_a_busy_partner", "[mp]" )
@@ -1220,6 +1315,136 @@ TEST_CASE( "two_busy_players_do_not_hold_the_world", "[mp]" )
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before + 20;
     }, 400 ) );
+}
+
+// The tick and round loop end to end: plans travel the loop, a complete round
+// resolves, the round state resets, and the tick closes once no seat can act --
+// handing moves back, which is what gives the next tick a round again.
+TEST_CASE( "a_tick_runs_a_round_to_resolution_and_closes", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+
+    // A seat is handed the baton only for queued input, and the terrain window
+    // a plan's scene cells are measured in is produced by the seat's own draw.
+    // A zoom key is free and opens no menu, so this runs each seat once without
+    // spending the AP the case is about. The pool is generous on purpose: a
+    // step costs more than the 100 a turn hands out (the character's own run
+    // cost), and what it leaves behind is the next round's business.
+    g->player_at( 0 ).set_moves( 1000 );
+    g->player_at( 1 ).set_moves( 1000 );
+    harness.press( 0, 'z' );
+    harness.press( 1, 'z' );
+    REQUIRE( harness.run_until( []() {
+        return g->contexts[0].w_terrain && g->contexts[1].w_terrain &&
+               mp_turn_is_open() && mp_plan_phase() == mp_round_phase::planning;
+    }, 10 ) );
+
+    const int tick_turn = to_turn<int>( calendar::turn );
+    const tripoint_bub_ms start_a = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms start_b = g->player_at( 1 ).pos_bub();
+
+    // Both seats want the tile east of them: the round resolves, both take the
+    // step, and the AP it leaves keeps the tick going -- banked AP is another
+    // round, not the end of the turn.
+    for( const size_t slot : { size_t( 0 ), size_t( 1 ) } ) {
+        const tripoint_bub_ms target = g->player_at( slot ).pos_bub() + tripoint_rel_ms::east;
+        const std::optional<point> cell = plan_cell_for( slot, target );
+        REQUIRE( cell );
+        queue_plan( slot, mp_plan_kind::move, cell->x, cell->y );
+        queue_plan_ready( slot );
+    }
+    REQUIRE( harness.run_until( [&]() {
+        return g->player_at( 0 ).pos_bub() == start_a + tripoint_rel_ms::east &&
+               g->player_at( 1 ).pos_bub() == start_b + tripoint_rel_ms::east;
+    }, 10 ) );
+    CHECK( g->player_at( 0 ).get_moves() < 1000 );
+    CHECK( g->player_at( 1 ).get_moves() < 1000 );
+    CHECK( mp_turn_is_open() );
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+    CHECK_FALSE( mp_turn_round_complete() );
+    // One tick so far, and it has not closed: the calendar moved once, at the
+    // tick's open, and does not move again while the tick runs.
+    CHECK( to_turn<int>( calendar::turn ) == tick_turn );
+
+    // Passing is the other way a seat says it is done for the tick: it spends
+    // what is left, the round settles with nothing to run, and the tick closes.
+    queue_plan_pass( 0 );
+    queue_plan_pass( 1 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_turn_is_open();
+    }, 5 ) );
+    CHECK( mp_plan_phase() == mp_round_phase::done );
+    CHECK( to_turn<int>( calendar::turn ) == tick_turn );
+
+    // The close handed the moves back, so the next tick opens with a round in
+    // it -- and takes exactly one calendar step.
+    REQUIRE( harness.run_until( []() {
+        return mp_turn_is_open() && mp_plan_phase() == mp_round_phase::planning;
+    }, 5 ) );
+    CHECK( to_turn<int>( calendar::turn ) == tick_turn + 1 );
+    CHECK( g->player_at( 0 ).get_moves() > 0 );
+    CHECK( g->player_at( 1 ).get_moves() > 0 );
+
+    // A seat that commits and then cancels within the same round leaves the
+    // round waiting for itself; the client's observable state is planning.
+    const std::optional<point> cell = plan_cell_for( 0,
+                                     g->player_at( 0 ).pos_bub() + tripoint_rel_ms::west );
+    REQUIRE( cell );
+    queue_plan( 0, mp_plan_kind::ranged, cell->x, cell->y, 2 );
+    queue_plan_ready( 0 );
+    queue_plan_cancel( 0 );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( mp_plan_phase() == mp_round_phase::planning );
+    CHECK_FALSE( mp_plan_is_ready( 0 ) );
+    CHECK_FALSE( mp_turn_round_complete() );
+    CHECK( mp_turn_is_open() );
+    CHECK( to_turn<int>( calendar::turn ) == tick_turn + 1 );
+
+    // A plan whose cells are not in the seat's scene is refused with the reason
+    // the party snapshot carries, and nothing is left holding the round.
+    queue_plan( 1, mp_plan_kind::move, 100000, 100000, 3 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_plan_error( 1 ).empty();
+    }, 3 ) );
+    CHECK( mp_plan_error( 1 ) == "target is off the map" );
+
+    // The pass message, again: both seats are done for the tick, so the tick
+    // that has been open since the fresh start closes without another calendar
+    // step of its own.
+    queue_plan_pass( 0 );
+    queue_plan_pass( 1 );
+    REQUIRE( harness.run_until( []() {
+        return !mp_turn_is_open();
+    }, 5 ) );
+    CHECK( mp_plan_phase() == mp_round_phase::done );
+    CHECK( to_turn<int>( calendar::turn ) == tick_turn + 1 );
+}
+
+// Temporary Phase 1 rule: outside a menu, a time-costing key is refused while
+// the round waits for this seat's plan. The client sends plans instead; a text
+// client's raw movement key must not walk the map outside a resolution.
+TEST_CASE( "a_raw_costly_key_is_refused_while_a_plan_is_expected", "[mp]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    g->player_at( 0 ).set_moves( 100 );
+    Messages::clear_messages();
+    const int turn_before = to_turn<int>( calendar::turn );
+    const tripoint_bub_ms before = g->player_at( 0 ).pos_bub();
+
+    // 'h' is the default "move west" key.
+    harness.press( 0, 'h' );
+    REQUIRE( harness.run_until( [&harness]() {
+        return harness.message_log_contains( "use the plan keys: move, attack, 5" );
+    }, 5 ) );
+
+    // Refused, not performed: no step, no AP, and the world did not move.
+    CHECK( g->player_at( 0 ).pos_bub() == before );
+    CHECK( g->player_at( 0 ).get_moves() == 100 );
+    CHECK( to_turn<int>( calendar::turn ) == turn_before );
 }
 
 TEST_CASE( "an_away_players_activity_advances_while_a_partner_plays", "[mp]" )
@@ -1254,55 +1479,43 @@ TEST_CASE( "an_away_player_carrying_an_activity_can_still_come_back", "[mp]" )
     mp_session_harness harness( 2 );
 
     // A long activity spends the player's moves before game::player_act()
-    // reaches its input wait, so neither player sets the input-wait flag on
-    // its own. Mark both away through the same state the ':' key sets; then
-    // give their activities a turn to drain.
+    // reaches its input wait, so neither player is granted for anything but a
+    // key. Mark both away through the same state the ':' key sets; then give
+    // their activities a turn to drain. Away is done for the tick, so the world
+    // runs -- the subject here is that the way back still works.
     for( size_t i = 0; i < 2; ++i ) {
         g->player_at( i ).assign_activity( wait_activity_actor( 10_minutes ) );
         mp_set_away( i, true );
     }
     harness.run_until( []() { return false; }, 3 );
-
-    const int turn_before = to_turn<int>( calendar::turn );
-    // Every living player is away: the turn stays open and the world stands
-    // still, although neither player has got to an input wait of their own.
-    CHECK_FALSE( harness.run_until( []() { return false; }, 10 ) );
-    CHECK( to_turn<int>( calendar::turn ) == turn_before );
+    REQUIRE( mp_player_is_away( 0 ) );
 
     // ':' is the documented way back. The key is read on this player's own
-    // input loop, and the world must move again once they return.
+    // input loop -- the grant reaches a seat whose activity has not got it to
+    // an input wait of its own.
     harness.press( 0, ':' );
-    CHECK( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before;
+    CHECK( harness.run_until( []() {
+        return !mp_player_is_away( 0 );
     }, 20 ) );
+    CHECK( mp_player_is_away( 1 ) );
 }
 
 TEST_CASE( "an_away_player_at_an_input_wait_still_gets_the_baton", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
-    // Let both threads reach their input waits -- the first turn only hands
-    // moves back, so run until both are parked holding the barrier. The key
-    // below is then one a parked player really holds, with the turn already
-    // open, so the calendar below cannot move for the wrong reason.
-    REQUIRE( harness.run_until( []() {
-        return mp_player_state_of( 0 ) == mp_player_state::holding &&
-               mp_player_state_of( 1 ) == mp_player_state::holding;
-    } ) );
+    // Both seats have AP, so both can act and the round waits for a plan: that
+    // is the "world is waiting on somebody else" state the away key has to
+    // survive. Seat 0 then leaves the keyboard.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
     mp_set_away( 0, true );
-    mp_set_away( 1, true );
     const int turn_before = to_turn<int>( calendar::turn );
 
-    // Nobody owes the turn and nobody paces it: the world holds it open.
-    CHECK_FALSE( harness.run_until( []() {
-        return false;
-    }, 10 ) );
-    CHECK( to_turn<int>( calendar::turn ) == turn_before );
-
     // Going away is not abandoning the terminal. The away player's key has to
-    // reach the game even though the world is frozen -- otherwise it is read
-    // off the wire and never dispatched, and the only way back from "away" is
-    // a key that never arrives.
+    // reach the game while the round waits for the partner -- otherwise it is
+    // read off the wire and never dispatched, and the only way back from
+    // "away" is a key that never arrives.
     harness.press( 0, mp_menu_inventory.key );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
@@ -1313,7 +1526,10 @@ TEST_CASE( "an_away_player_at_an_input_wait_still_gets_the_baton", "[mp]" )
         return !mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
     } ) );
 
-    // Reading a menu while away is still not playing: the world has not moved.
+    // Reading a menu while away is still not playing: the free key does not
+    // bring the seat back, and the round is still open on the partner.
+    CHECK( mp_player_is_away( 0 ) );
+    CHECK( mp_turn_is_open() );
     CHECK( to_turn<int>( calendar::turn ) == turn_before );
 }
 
@@ -1464,11 +1680,11 @@ TEST_CASE( "a_partner_disconnect_does_not_end_the_session", "[mp]" )
     CHECK( harness.message_log_contains( "Player 2 (" + name + ") disconnected" ) );
 
     // The partner keeps playing: the disconnected seat no longer holds the
-    // barrier, so a turn taken by the player who is still there advances the
-    // calendar.
+    // round, so a pass by the player who is still there settles it and the
+    // calendar moves.
     g->player_at( 0 ).set_moves( 100 );
     const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 0, '.' );
+    queue_plan_pass( 0 );
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
@@ -1682,10 +1898,11 @@ TEST_CASE( "a_connection_without_a_matching_card_is_refused", "[mp]" )
     CHECK( g->player_at( 1 ).get_name() == name );
     CHECK_FALSE( mp_session_end_requested() );
 
-    // And play goes on: the partner's turn still advances the calendar.
+    // And play goes on: the partner's pass settles the round, so the tick
+    // closes and the calendar moves.
     g->player_at( 0 ).set_moves( 100 );
     const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 0, '.' );
+    queue_plan_pass( 0 );
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } ) );
@@ -1736,78 +1953,51 @@ static long long process_cpu_us()
 }
 #endif
 
-// F1 guard: with one seat dropped and the other simply sitting at the map, the
-// baton must not be handed around faster than the remaining player's own input
-// polling produces. Measurement on 2026-11-19 (rng-seed 1): 1400 driven turns
-// took 58.0 s and produced 934 handoffs -- at most 2 per turn, mean 0.67, and
-// the sampled trace ring names only the connected seat -- while the process
-// spent 140 ms of CPU, i.e. 0.24% of one core. Two handoffs (one release_to +
-// one yield_to) is one input poll cycle, and the idle player's map loop polls
-// every 125 ms (handle_action.cpp:334,468): 934 / 2 / 58.0 s = one cycle per
-// 124 ms. That is the designed waiting path, not a spin.
+// F1 guard: a present seat with AP and no plan holds the round, and the world
+// must wait for it instead of running its input poll at the world's own pace.
+// Under the round model a parked seat is granted for one of three things only
+// -- a key to deliver, a replacement to choose, a quit to unwind -- and a seat
+// that owes none of them gets no grant at all. What must still hold is the
+// waiting side: one poll interval per turn, no baton traffic, and the waiting
+// path asleep rather than spinning.
 //
-// Two bounds, because they see different regressions. The per-turn count does
-// not depend on machine speed and catches an intra-turn busy loop, but it
-// cannot see the input poll itself get faster: halving the poll to 62 ms would
-// keep 2 handoffs per turn and double the rate. The cycle-time lower bound
-// pins the rate the spec caps (one cycle per input timeout, with 20% slack for
-// a slow machine); CPU pins that the waiting path sleeps rather than spins.
+// Three bounds, because they see different regressions. No handoff at all
+// catches any grant a parked seat should not have got. The elapsed-time floor
+// catches a loop that stopped waiting. CPU pins that the wait sleeps.
 TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
-    harness.drop_client( 1 );
-    harness.run_until( []() {
-        return false;
-    }, 5 );
+    // Both seats can act and nobody has a plan: the round is open and waits
+    // for them, which is the state a session spends most of its life in.
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
     mp_sched *const sched = mp_active_sched();
     REQUIRE( sched != nullptr );
     REQUIRE( harness.run_until( []() {
-        return mp_player_is_disconnected( 1 );
-    }, 10 ) );
+        return mp_turn_is_open();
+    }, 5 ) );
 
-    // One release_to + one yield_to per input poll is the normal cycle; four
-    // handoffs per turn is two cycles, which leaves room for a turn that
-    // catches the player's second re-park while still failing at the first
-    // order of magnitude of a spin. A busy loop produces thousands per turn.
-    constexpr size_t handoffs_per_turn_bound = 4;
-    constexpr int idle_turns = 200;
+    constexpr int idle_turns = 20;
     const size_t g0 = sched->holder_generation();
     const std::vector<std::string> trace0 = sched->trace_snapshot();
     const int turn0 = to_turn<int>( calendar::turn );
-    size_t last = g0;
-    size_t max_per_turn = 0;
-    std::map<size_t, int> per_turn;
     const auto wall0 = std::chrono::steady_clock::now();
     const long long cpu0 = process_cpu_us();
-    harness.run_until( [&]() {
-        const size_t now = sched->holder_generation();
-        ++per_turn[now - last];
-        max_per_turn = std::max( max_per_turn, now - last );
-        last = now;
+    CHECK_FALSE( harness.run_until( []() {
         return false;
-    }, idle_turns );
+    }, idle_turns ) );
     const auto wall1 = std::chrono::steady_clock::now();
     const long long cpu1 = process_cpu_us();
     const size_t delta = sched->holder_generation() - g0;
-    const int turns = idle_turns;
     const int calendar_turns = to_turn<int>( calendar::turn ) - turn0;
     const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      wall1 - wall0 ).count();
-    std::string histogram;
-    for( const auto &entry : per_turn ) {
-        histogram += std::to_string( entry.first ) + "/turn=" +
-                     std::to_string( entry.second ) + " ";
-    }
 
-    // Reasons and destinations of the handoffs still in the ring, which is the
-    // test-visible copy of what MP_SCHED_TRACE mirrors. The ring is 256 entries
-    // and the measured window outlives it, so this is a sample of the last
-    // cycles, not the whole run -- enough to name the seat being woken: a grant
-    // to slot 1 would record holder "1" and appear here many times per second.
+    // Reasons and destinations of whatever handoffs landed in the ring, the
+    // test-visible copy of what MP_SCHED_TRACE mirrors. Nothing should be here:
+    // no seat owes the world a key, a replacement or a quit.
     std::map<std::string, int> by_reason;
-    std::map<std::string, int> by_holder;
-    int grants_to_disconnected = 0;
     for( const std::string &entry : sched->trace_snapshot() ) {
         std::istringstream in( entry );
         size_t generation = 0;
@@ -1818,50 +2008,33 @@ TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
             continue;
         }
         ++by_reason[reason];
-        ++by_holder[holder];
-        if( holder == "1" && ( reason == "release_to" || reason == "yield_to" ) ) {
-            ++grants_to_disconnected;
-        }
     }
     std::string reasons;
     for( const auto &entry : by_reason ) {
         reasons += entry.first + "=" + std::to_string( entry.second ) + " ";
     }
-    std::string holders;
-    for( const auto &entry : by_holder ) {
-        holders += entry.first + "=" + std::to_string( entry.second ) + " ";
-    }
-    WARN( "idle handoffs: turns=" << turns << " calendar_turns=" << calendar_turns
-          << " delta=" << delta << " max_per_turn=" << max_per_turn
-          << " elapsed_ms=" << elapsed_ms << " cpu_ms=" << ( cpu1 - cpu0 ) / 1000
-          << " trace_entries_before=" << trace0.size() );
-    WARN( "idle handoffs per-turn histogram: " << histogram );
-    WARN( "idle handoffs by reason: " << reasons );
-    WARN( "idle handoffs by destination: " << holders );
 
-    INFO( "handoffs=" << delta << " over " << turns << " turns, max_per_turn="
-          << max_per_turn << " elapsed_ms=" << elapsed_ms );
-    CHECK( max_per_turn <= handoffs_per_turn_bound );
-    CHECK( delta <= handoffs_per_turn_bound * static_cast<size_t>( turns ) );
-    // Each complete cycle is 2 handoffs and is gated by the idle seat's 125 ms
-    // input poll. 100 ms per cycle leaves the poll 20% of slack and is a lower
-    // bound only, so a slow or loaded machine raises elapsed_ms and stays
-    // green; only a faster poll (or a cycle that stopped waiting) fails. A
-    // per-turn count cannot see that: the same 2 handoffs per turn at a 62 ms
-    // poll is twice the rate.
-    if( delta >= 4 ) {
-        CHECK( elapsed_ms >= 100 * static_cast<long long>( delta / 2 ) );
-    }
-    // The waiting path sleeps: measured 0.24% of one core. Under 50% still
-    // separates "a blocking input wait" from any spin by two orders of
-    // magnitude. The probe is Linux-only and report-only otherwise; on a
-    // platform without it both samples are -1 and the check is skipped.
+    WARN( "idle handoffs: turns=" << idle_turns << " calendar_turns=" << calendar_turns
+          << " delta=" << delta << " elapsed_ms=" << elapsed_ms
+          << " cpu_ms=" << ( cpu1 - cpu0 ) / 1000 << " trace_entries_before=" << trace0.size() );
+    WARN( "idle handoffs by reason: " << reasons );
+
+    INFO( "handoffs=" << delta << " over " << idle_turns << " turns, elapsed_ms="
+          << elapsed_ms );
+    // The round never settled, so the calendar never moved and the seat was
+    // never granted the baton for a poll cycle.
+    CHECK( calendar_turns == 0 );
+    CHECK( delta == 0 );
+    // One poll interval per turn, with two intervals of slack for a loaded
+    // machine. A loop that stopped waiting finishes in milliseconds.
+    CHECK( elapsed_ms >= MP_POLL_MS * ( idle_turns - 2 ) );
+    // The waiting path sleeps. Under 50% still separates "a blocking wait" from
+    // any spin by two orders of magnitude. The probe is Linux-only and
+    // report-only otherwise; on a platform without it both samples are -1 and
+    // the check is skipped.
     if( cpu0 >= 0 && cpu1 >= 0 && elapsed_ms > 0 ) {
         CHECK( ( cpu1 - cpu0 ) * 2 < elapsed_ms * 1000 );
     }
-    // The dropped seat is not the one being woken: every handoff in the sampled
-    // ring names the connected seat (the ring is a tail sample, see above).
-    CHECK( grants_to_disconnected == 0 );
 }
 
 // The field sequence that killed the server: open the inventory, press the
@@ -1873,14 +2046,15 @@ TEST_CASE( "an_idle_session_does_not_spin_the_baton", "[mp]" )
 // direct member such as the wielded item and expires its anchor. No keypress is
 // needed for the expiry; the next return from the input wait is what resolves
 // the key against the dead row.
-// Both seats are driven so the turn barrier and the per-turn context switches
+// Both seats are driven so the round loop and the per-turn context switches
 // run exactly as they do on a live server.
 TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
-    // Both seats can act. A player with moves who opens a free menu holds the
-    // barrier, so the partner's hurry is what lets the world move under them.
+    // Both seats can act. Seat 0 opens a free menu; closing the tick under it
+    // is what the pass below does, and the partner's pass makes the round
+    // settle while seat 0 is still reading.
     g->player_at( 0 ).set_moves( 100 );
     g->player_at( 1 ).set_moves( 100 );
     // A wielded item lives directly in the avatar, so it travels with the
@@ -1896,25 +2070,21 @@ TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
         CAPTURE( cycle );
         harness.press( 0, mp_menu_inventory.key );
         REQUIRE( harness.run_until( inventory_is_open ) );
-        // Seat 1 hurries. When the countdown expires seat 0 is dropped from
-        // the barrier for this turn, and the world takes seat 1's action while
-        // seat 0's menu stays open -- the spec's accepted "your choice may
-        // have gone stale" case. The turn boundary swaps the active avatar
-        // out and back; the entries built above are not rebuilt by any of it.
-        harness.press( 1, '`' );
-        REQUIRE( harness.run_until( []() {
-            return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
-        } ) );
-        mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
+        // Seat 0 is done for the tick (its plan is a pass) and so is seat 1,
+        // so the round settles and the tick closes while seat 0's menu stays
+        // open -- the spec's accepted "your choice may have gone stale" case.
+        // The turn boundary swaps the active avatar out and back; the entries
+        // built above are not rebuilt by any of it.
         const int turn_before = to_turn<int>( calendar::turn );
-        harness.press( 1, '.' );
+        queue_plan_pass( 0 );
+        queue_plan_pass( 1 );
         REQUIRE( harness.run_until( [turn_before]() {
             return to_turn<int>( calendar::turn ) > turn_before;
         } ) );
-        // The calendar moving only proves the barrier let seat 1 act. The pin is
-        // only real if seat 0 is still parked in the pick selector when the
-        // hotkey is delivered: otherwise the press lands on the map screen and
-        // the test goes green while reproducing nothing.
+        // The calendar moving only proves the round settled. The pin is only
+        // real if seat 0 is still parked in the pick selector when the hotkey
+        // is delivered: otherwise the press lands on the map screen and the
+        // test goes green while reproducing nothing.
         CHECK( inventory_is_open() );
         // The hotkey lookup is the frame that dereferenced the stale location.
         harness.press( 0, 'a' );
@@ -1929,179 +2099,31 @@ TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
     SUCCEED( "four inventory reopen cycles did not crash the server" );
 }
 
-// The multiselector branch of the same crash. Marking the wielded item fills
-// to_use with an item_location the turn boundary then kills; the drop menu's
-// header stats and selection pane dereference to_use, so the post-wait drop has
-// to discard the dead pair before it rebuilds the layout. Without that, the
-// keypress that ends the wait dies in inventory_drop_selector::get_raw_stats().
-TEST_CASE( "a_dead_drop_selection_is_discarded_without_a_crash", "[mp]" )
-{
-    restore_active_state restore;
-    mp_session_harness harness( 2 );
-    g->player_at( 0 ).set_moves( 100 );
-    g->player_at( 1 ).set_moves( 100 );
-    // Direct item member of the avatar: the turn boundary's avatar swap is what
-    // expires its item_location.
-    g->player_at( 0 ).set_wielded_item( item( itype_id( "rock" ) ) );
-
-    const auto drop_menu_is_open = [&]() {
-        return mp_grid_contains( harness.screen( 0 ), "Multidrop" );
-    };
-    const auto screen_text = [&]() {
-        const mp_screen_grid &grid = harness.screen( 0 );
-        std::string text;
-        for( int y = 0; y < grid.height(); ++y ) {
-            for( int x = 0; x < grid.width(); ++x ) {
-                text += grid.at( x, y ).ch;
-            }
-            text += '\n';
-        }
-        return text;
-    };
-    // The item row and the selection pane both render the marked item's name, on
-    // the same screen row when the columns fit side by side, so count occurrences.
-    const auto rock_cells = [&]() {
-        const mp_screen_grid &grid = harness.screen( 0 );
-        int hits = 0;
-        for( int y = 0; y < grid.height(); ++y ) {
-            std::string row;
-            for( int x = 0; x < grid.width(); ++x ) {
-                row += grid.at( x, y ).ch;
-            }
-            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
-                 pos = row.find( "rock", pos + 1 ) ) {
-                ++hits;
-            }
-        }
-        return hits;
-    };
-
-    // 'd' opens the multidrop menu with the cleared avatar's one item. The
-    // wielded item lives in the gear column, which is not the initially active
-    // (empty) inventory column, so step to it first; TOGGLE_ENTRY then marks the
-    // highlighted rock and fills to_use.
-    harness.press( 0, 'd' );
-    REQUIRE( harness.run_until( drop_menu_is_open ) );
-    harness.press( 0, 'h' );
-    harness.press( 0, 'l' );
-    const bool marked = harness.run_until( [&]() {
-        return rock_cells() == 2;
-    } );
-    INFO( screen_text() );
-    REQUIRE( marked );
-
-    harness.press( 1, '`' );
-    REQUIRE( harness.run_until( []() {
-        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
-    } ) );
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
-    const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 1, '.' );
-    REQUIRE( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before;
-    } ) );
-    // The world moved under the open menu and the marked row's location died.
-    CHECK( drop_menu_is_open() );
-    CHECK( g->player_at( 0 ).get_wielded_item() );
-
-    // This keypress is the one that used to dereference the dead to_use pair.
-    harness.press( 0, 'l' );
-    REQUIRE( harness.run_until( [&]() {
-        return rock_cells() == 0;
-    }, 20 ) );
-    CHECK( drop_menu_is_open() );
-
-    // Cancel: the dead selection is discarded rather than reaching the drop.
-    harness.press( 0, KEY_ESCAPE );
-    REQUIRE( harness.run_until( [&]() {
-        return !drop_menu_is_open();
-    }, 20 ) );
-    CHECK( g->player_at( 0 ).get_wielded_item() );
-}
-
-// After a hurry drop and a partner's disconnect the only player left reads a
-// menu, so the world has nobody at the keyboard to pace it. The countdown that
-// dropped the reader is what has to pace it instead; without that floor the
-// turn loop closes turns as fast as the CPU can run them (observed live: eight
-// minutes of game time in nineteen seconds).
-TEST_CASE( "a_left_behind_player_paces_the_world_after_the_partner_disconnects", "[mp]" )
-{
-    restore_active_state restore;
-    mp_session_harness harness( 2 );
-    // The harness constructor calls mp_turn_reset_all(), which puts the shipped
-    // countdown lengths back: shorten them after it, not before.
-    REQUIRE( mp_set_hurry_lengths( 1000, 1000 ) );
-    g->player_at( 0 ).set_moves( 100 );
-    g->player_at( 1 ).set_moves( 100 );
-
-    const auto inventory_is_open = [&]() {
-        return mp_grid_contains( harness.screen( 0 ), mp_menu_inventory.marker );
-    };
-    harness.press( 0, mp_menu_inventory.key );
-    REQUIRE( harness.run_until( inventory_is_open ) );
-
-    // Seat 1 hurries; the expiry drops seat 0 from the barrier for as long as it
-    // sits in the menu it was dropped in.
-    harness.press( 1, '`' );
-    REQUIRE( harness.run_until( []() {
-        return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
-    } ) );
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
-    // Seat 1 takes the turn it hurried through. That is what releases its own
-    // drop at the turn boundary: unlike seat 0 it is not sitting in a menu, so
-    // it is holding again when the partner's client leaves. Without this step
-    // the countdown drops both seats and the left-behind floor is armed by
-    // seat 1 too, which hides the defect under test.
-    const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 1, '.' );
-    REQUIRE( harness.run_until( [turn_before]() {
-        return to_turn<int>( calendar::turn ) > turn_before;
-    } ) );
-    REQUIRE( harness.run_until( []() {
-        return mp_player_state_of( 0 ) == mp_player_state::not_waited;
-    } ) );
-    REQUIRE_FALSE( mp_player_left_behind( 1 ) );
-    CHECK( inventory_is_open() );
-
-    // The partner's client leaves; the session continues by design.
-    harness.drop_client( 1 );
-    REQUIRE( harness.run_until( []() {
-        return mp_player_is_disconnected( 1 );
-    } ) );
-
-    // The world may keep moving, but a turn nobody plays in lasts the countdown
-    // it was dropped by: two turns must not flash past in milliseconds.
-    // run_until's turns are polls, not calendar turns: a paced turn stays open
-    // and returns from do_turn on every poll until the floor expires, so the
-    // budget covers 1000 ms of floor at MP_POLL_MS (50 ms) per turn with slack.
-    const int before = to_turn<int>( calendar::turn );
-    const auto started = std::chrono::steady_clock::now();
-    REQUIRE( harness.run_until( [before]() {
-        return to_turn<int>( calendar::turn ) >= before + 2;
-    }, 100 ) );
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now() - started );
-    CHECK( elapsed >= std::chrono::milliseconds( 1500 ) );
-}
+// The multiselector branch of the same crash used to be pinned here: 'd' opened
+// the multidrop menu and a tick boundary killed the marked item_location under
+// it. The planning gate refuses a time-costing raw key from the map
+// (mp_action_is_free), and the drop menu has no other entry point in a session,
+// so the scenario is unreachable for the text client this harness drives. The
+// same stale-location mechanism is still covered through the inventory, which
+// a free key does open (a_prune_does_not_move_the_confirmed_row,
+// paging_survives_a_cleared_highlight,
+// a_dead_row_is_not_replaced_under_the_filter_prompt,
+// inventory_reopen_cycles_do_not_crash).
 
 namespace
 {
-// Makes seat 1 hurry, lets the countdown expire and takes its turn, so the world
-// ticks while seat 0's menu is open: the spec's accepted "your choice may have
-// gone stale" case. The turn boundary is what expires the wielded item's
-// item_location (a direct avatar member is move-assigned by the avatar swap, and
-// a move-assigned item installs a fresh safe_reference anchor).
+// Ends the tick while seat 0 sits in a menu: both seats are done for the round
+// (a pass each), so the round settles and the tick closes under the open menu --
+// the spec's accepted "your choice may have gone stale" case. The turn boundary
+// is what expires the wielded item's item_location (a direct avatar member is
+// move-assigned by the avatar swap, and a move-assigned item installs a fresh
+// safe_reference anchor). Returns false when the boundary did not arrive within
+// the budget.
 bool take_a_partner_turn( mp_session_harness &harness )
 {
-    harness.press( 1, '`' );
-    if( !harness.run_until( []() {
-    return mp_hurry_remaining_ms( mp_hurry_source::manual ) > 0;
-    } ) ) {
-        return false;
-    }
-    mp_advance_hurry_for_test( MP_HURRY_MS + 1, mp_hurry_source::manual );
     const int turn_before = to_turn<int>( calendar::turn );
-    harness.press( 1, '.' );
+    queue_plan_pass( 0 );
+    queue_plan_pass( 1 );
     return harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
     } );
@@ -2248,100 +2270,14 @@ TEST_CASE( "a_dead_row_is_not_replaced_under_the_filter_prompt", "[mp]" )
         return !inventory_is_open();
     }, 20 ) );
 }
-
-// The compare selector kept its selection as raw item pointers. An item on the
-// map is not an avatar member, so a partner's turn that removes it frees the
-// object instead of leaving a moved-from copy behind: the pointer really
-// dangles, and it used to be handed straight to compare_item_menu once a second
-// item was marked. The selection has to be held as item_location and the dead
-// one dropped by the post-wait prune.
-TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
-{
-    restore_active_state restore;
-    mp_session_harness harness( 2 );
-    // Both live items are worn: inventory list nodes survive the avatar swap that
-    // ends the partner's turn, unlike the wielded item's direct member. The map
-    // rock is then the only selection that can expire under the menu.
-    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "longshirt" ) ), false ) );
-    REQUIRE( g->player_at( 0 ).wear_item( item( itype_id( "socks" ) ), false ) );
-    g->player_at( 0 ).set_moves( 100 );
-    g->player_at( 1 ).set_moves( 100 );
-
-    // The rock sits on the partner's tile: adjacent to seat 0, so the compare
-    // menu's nearby-items pass lists it, and on the tile the partner's turn can
-    // remove it from.
-    g->player_at( 1 ).setpos( get_map(),
-                              g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 1, 0, 0 ) );
-    const tripoint_bub_ms rock_pos = g->player_at( 1 ).pos_bub();
-    get_map().add_item_or_charges( rock_pos, item( itype_id( "rock" ) ) );
-
-    const auto compare_is_open = [&]() {
-        return mp_grid_contains( harness.screen( 0 ), "ITEMS TO COMPARE" );
-    };
-    // The item row and the selection pane both render the marked item's name, on
-    // the same screen row when the columns fit side by side, so count occurrences.
-    const auto rock_cells = [&]() {
-        const mp_screen_grid &grid = harness.screen( 0 );
-        int hits = 0;
-        for( int y = 0; y < grid.height(); ++y ) {
-            std::string row;
-            for( int x = 0; x < grid.width(); ++x ) {
-                row += grid.at( x, y ).ch;
-            }
-            for( std::string::size_type pos = row.find( "rock" ); pos != std::string::npos;
-                 pos = row.find( "rock", pos + 1 ) ) {
-                ++hits;
-            }
-        }
-        return hits;
-    };
-
-    harness.press( 0, 'I' );
-    REQUIRE( harness.run_until( compare_is_open ) );
-
-    // At this terminal width the columns are merged into one, and the map item
-    // is added after the character's gear, so it is the last row. Mark it.
-    harness.press( 0, KEY_END );
-    harness.press( 0, 'l' );
-    REQUIRE( harness.run_until( [&]() {
-        return rock_cells() == 2;
-    }, 20 ) );
-
-    // A pickup would move the rock into an inventory and destroy it at the old
-    // address just the same, so clearing the tile is the partner's turn as far
-    // as the saved location is concerned: it expires while the menu waits.
-    get_map().i_clear( rock_pos );
-    REQUIRE( take_a_partner_turn( harness ) );
-    CHECK( compare_is_open() );
-
-    // Mark one of the live items. The dead rock must already be gone from the
-    // selection; a raw pointer kept across the wait would complete the pair
-    // here and open the comparison window instead. The first key after the
-    // wait is also the one that runs the prune, so it only sets the highlight.
-    harness.press( 0, KEY_HOME );
-    harness.press( 0, 'l' );
-    harness.run_until( []() {
-        return false;
-    }, 3 );
-    CHECK( compare_is_open() );
-
-    // A second live item completes a live pair, which does open the comparison.
-    harness.press( 0, KEY_END );
-    harness.press( 0, 'l' );
-    REQUIRE( harness.run_until( [&]() {
-        return !compare_is_open();
-    }, 20 ) );
-
-    // Close the comparison; the compare selector reopens, so Escape twice returns
-    // to the main screen. Reaching it proves the pair was usable and the server
-    // survived the case.
-    harness.press( 0, KEY_ESCAPE );
-    REQUIRE( harness.run_until( compare_is_open, 20 ) );
-    harness.press( 0, KEY_ESCAPE );
-    REQUIRE( harness.run_until( [&]() {
-        return !compare_is_open();
-    }, 20 ) );
-}
+// The compare selector's stale-selection regression used to be pinned here: 'I'
+// opened the compare menu, a partner's turn freed a map item, and the raw
+// pointer it had kept dangled into compare_item_menu. The planning gate refuses
+// a time-costing raw key from the map (mp_action_is_free), and compare has no
+// other entry point in a session, so the scenario is unreachable for the text
+// client this harness drives. The item_location-not-pointer rule the fix
+// introduced is still exercised wherever a menu survives a tick boundary in the
+// inventory tests above.
 
 TEST_CASE( "mp_session_ui", "[mp]" )
 {

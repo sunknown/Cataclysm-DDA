@@ -310,3 +310,37 @@ bool mp_action_is_free( action_id act );
 // both.
 void mp_advance_hurry_for_test( int ms, mp_hurry_source source );
 void mp_advance_hurry_for_test( int ms );
+
+// --- A planning tick -------------------------------------------------------
+//
+// A co-op turn is one tick with one or more rounds. The orchestrator
+// (game::do_turn) opens the tick, collects each seat's plan, resolves a round
+// once every seat that can still act has committed or passed, and closes the
+// tick when no seat can act any more. The world work around that sequence is
+// split into mon_tick_pre(), mon_round_step() and world_turn_post_tail() (see
+// mp_resolve.h); these three entry points are the tick's own bookkeeping.
+//
+// All of them run on the world thread while it holds the baton, never from a
+// player thread.
+
+// Whether `slot` can still take part in a round: alive, connected, not away,
+// with moves to spend, no running activity, no travel destination -- and not
+// passed. Only such a seat holds a round open; everybody else is done for the
+// tick.
+bool mp_turn_player_can_act( size_t slot );
+
+// True when every seat that can still act has committed a plan or passed. An
+// empty eligible set is vacuously complete: nobody can act, so the round
+// resolves an empty player batch and the monsters take their step.
+bool mp_turn_round_complete();
+
+// Opens a tick: forgets the last tick's hurry bookkeeping, runs the world's
+// pre-turn work and every player's turn preamble under that player's own
+// context, and leaves the world active with the turn open and the round phase
+// in planning.
+void mp_turn_open_tick();
+
+// Closes a tick: runs the world's post-turn tail, hands every player's moves
+// back under their own context, re-centres the bubble on the group and marks
+// the turn closed.
+void mp_turn_close_tick();
