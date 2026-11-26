@@ -187,9 +187,9 @@ void mp_shift_context_views( const point_rel_sm &shift )
         return;
     }
     for( player_context &ctx : g->contexts ) {
-        // The engine rewrites a bubble coordinate as `coord -= shift * SEE`:
-        // a positive shift moves the map west (or north), so a cell's bubble
-        // coordinate grows by the same amount. z is not part of the bubble
+        // The engine rewrites a bubble coordinate as `coord -= shift * SEE`;
+        // a positive shift grows the map's absolute origin, so a cell's bubble
+        // coordinate shrinks by the same amount. z is not part of the bubble
         // origin and stays untouched.
         ctx.ter_view_p.x() += -shift.x() * SEEX;
         ctx.ter_view_p.y() += -shift.y() * SEEY;
