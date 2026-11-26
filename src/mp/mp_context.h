@@ -54,6 +54,12 @@ struct player_context {
     catacurses::window w_terrain, w_overmap, w_omlegend, w_minimap, w_pixel_minimap;
     catacurses::window w_terrain_ptr, w_minimap_ptr;
     tripoint_bub_ms ter_view_p;
+    // True while this seat's look_around() loop is open. Look mode moves
+    // ter_view_p to its cursor, and the loop's input wait releases the baton to
+    // the world, so the world can open a tick while it is parked. The tick-open
+    // recentre skips such a seat and lets its own final draw restore the centre
+    // on exit.
+    bool in_look_mode = false;                                       // NOLINT(cata-serialize)
     point_rel_ms driving_view_offset;
     std::deque<input_event> input_queue;
     int input_timeout_ms = -1;
@@ -163,6 +169,19 @@ struct player_context {
 
 player_context &mp_active_context();       // asserts a non-null active context
 player_context *mp_active_context_ptr();   // raw pointer, may be nullptr (for reset/tests)
+
+// Moves every seat's view centre by the bubble-cell delta a map shift applied
+// to creatures and avatars. ter_view_p is a cached bubble coordinate; the
+// engine relocates positions but not this cache.
+void mp_shift_context_views( const point_rel_sm &shift );
+
+// Puts every seat's view centre back on its own character, except a seat whose
+// look loop is open: look mode is the only thing that moves the centre away on
+// its own, and its loop can be parked on the wire (the world holds the baton)
+// when a tick opens. That seat keeps its cursor and its own draw restores the
+// centre when look ends.
+void mp_recenter_context_views();
+
 // The active player's mouse-view hint, created on first use (like wait_popup).
 // Being per player is the point: its ui_adaptor registers in the active
 // context's ui stack and is destroyed there, so no other player's key can

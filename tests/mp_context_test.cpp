@@ -7,6 +7,7 @@
 #include "game.h"
 #include "game_test_helper.h"
 #include "live_view.h"
+#include "map.h"
 #include "mp/mp_context.h"
 #include "output.h"
 #include "panels.h"
@@ -89,6 +90,77 @@ TEST_CASE( "view_state_written_under_one_context_is_invisible_to_another", "[mp]
     mp_set_active_context( &a );
     CHECK( mp_active_context().ter_view_p == tripoint_bub_ms( 5, 6, 0 ) );
     CHECK( mp_active_context().driving_view_offset == point_rel_ms( 1, 2 ) );
+}
+
+// ter_view_p is a cached bubble cell, and the map shift relocates creatures
+// but not that cache. Both seats have to move by the delta the shift applied,
+// from their own centres, or every seat's frame names a tile one submap away.
+TEST_CASE( "mp_shift_context_views_moves_every_seat_by_the_map_delta", "[mp][view]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+
+    // The seats stand at different places and different z: a shift has to be
+    // applied to each centre on its own, not to one spread across the others.
+    g->contexts[0].ter_view_p = tripoint_bub_ms( 10, 20, -1 );
+    g->contexts[1].ter_view_p = tripoint_bub_ms( 70, 30, 0 );
+
+    // One submap west and two south: the map's origin moves that way, so every
+    // bubble cell loses a submap -- x grows by SEEX, y drops by 2*SEEY.
+    mp_shift_context_views( point_rel_sm( -1, 2 ) );
+
+    CHECK( g->contexts[0].ter_view_p == tripoint_bub_ms( 10 + SEEX, 20 - 2 * SEEY, -1 ) );
+    CHECK( g->contexts[1].ter_view_p == tripoint_bub_ms( 70 + SEEX, 30 - 2 * SEEY, 0 ) );
+
+    // A zero shift moved nothing: the no-op lives in the function, not in the
+    // callers, so a caller that forwards every computed shift is safe.
+    const tripoint_bub_ms kept_0 = g->contexts[0].ter_view_p;
+    const tripoint_bub_ms kept_1 = g->contexts[1].ter_view_p;
+    mp_shift_context_views( point_rel_sm::zero );
+    CHECK( g->contexts[0].ter_view_p == kept_0 );
+    CHECK( g->contexts[1].ter_view_p == kept_1 );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+// The view centre only leaves the character while look mode runs. A tick opens
+// with the world holding the baton, so the tick start puts every seat back on
+// its own cell before the preamble reads it.
+TEST_CASE( "mp_recenter_context_views_puts_each_seat_on_its_character", "[mp][view]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+
+    avatar &seat0 = g->player_at( 0 );
+    avatar &seat1 = g->player_at( 1 );
+    // Seat 0 stays where the test harness put it; only seat 1 is placed, so
+    // nothing outside this case inherits a moved leader.
+    seat1.setpos( get_map(), seat0.pos_bub() + tripoint_rel_ms( 2, 1, 0 ) );
+    REQUIRE( seat1.pos_bub() != seat0.pos_bub() );
+
+    g->contexts[0].ter_view_p = seat0.pos_bub();
+    g->contexts[1].ter_view_p = seat1.pos_bub() + tripoint_rel_ms( 6, 6, 0 );
+
+    mp_recenter_context_views();
+
+    CHECK( g->contexts[0].ter_view_p == seat0.pos_bub() );
+    CHECK( g->contexts[1].ter_view_p == seat1.pos_bub() );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
 }
 
 TEST_CASE( "each_context_keeps_its_own_overmap_view", "[mp]" )

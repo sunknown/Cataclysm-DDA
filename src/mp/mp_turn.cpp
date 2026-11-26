@@ -717,6 +717,11 @@ void mp_turn_open_tick()
     // keeps interleaving it with the move loop; a tick takes it up front and
     // lets each round take one step (mp_resolve.h).
     mon_tick_pre();
+    // Puts every seat's view back on its character before the preamble reads
+    // the body, the vehicle and any running activity. A look loop's input wait
+    // releases the baton, so the world can open a tick while one is parked; the
+    // recentre skips that seat, whose own draw restores its centre on exit.
+    mp_recenter_context_views();
     // Each player's turn preamble runs under that player's own context: it
     // touches the body, the vehicle and any running activity, and a shared
     // world context would run it all against slot 0's avatar.

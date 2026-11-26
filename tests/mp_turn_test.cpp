@@ -997,6 +997,64 @@ TEST_CASE( "a_new_tick_clears_the_pass", "[mp][ap_debt]" )
     tear_down_two_planning_seats();
 }
 
+// A seat's scene is built around its context's cached view centre, and only
+// look mode moves that off the character. A tick opens with the world holding
+// the baton; a seat already in look is left to its own draw (next case), and
+// everybody else is put back on their own cell before the preamble reads it.
+TEST_CASE( "a_new_tick_recentres_each_seat_on_its_character", "[mp][view]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+    REQUIRE( g->contexts.size() == 2 );
+
+    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub();
+    g->contexts[1].ter_view_p = g->player_at( 1 ).pos_bub() + tripoint_rel_ms( 8, -7, 0 );
+    // The second seat's centre is the one that strayed: without the opening
+    // recentre it would stay on the far cell and its frame would be built
+    // around a tile it no longer stands on.
+    REQUIRE( g->contexts[1].ter_view_p != g->player_at( 1 ).pos_bub() );
+
+    // A bare test owns no gamemode; world_turn_pre() advances the real one.
+    // The game-start branch is the one a harness tick takes.
+    g->new_game = true;
+    mp_turn_open_tick();
+
+    CHECK( g->contexts[0].ter_view_p == g->player_at( 0 ).pos_bub() );
+    CHECK( g->contexts[1].ter_view_p == g->player_at( 1 ).pos_bub() );
+
+    tear_down_two_planning_seats();
+}
+
+// A look loop's input wait releases the baton, so the world can open a tick
+// while that seat is still examining. Its centre is the cursor its frame is
+// built around, so the tick must not move it; the look loop's own draw puts the
+// centre back on the character when it ends.
+TEST_CASE( "a_new_tick_leaves_a_looking_seat_alone", "[mp][view]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    set_up_two_planning_seats();
+    REQUIRE( g->contexts.size() == 2 );
+
+    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub() + tripoint_rel_ms( 5, 4, 0 );
+    const tripoint_bub_ms look_centre =
+        g->player_at( 1 ).pos_bub() + tripoint_rel_ms( 8, -7, 0 );
+    g->contexts[1].ter_view_p = look_centre;
+    g->contexts[1].in_look_mode = true;
+
+    // Same game-start branch as the case above: a bare test has no gamemode.
+    g->new_game = true;
+    mp_turn_open_tick();
+
+    // The seat at the keyboard is centred; the examining seat keeps its cursor.
+    CHECK( g->contexts[0].ter_view_p == g->player_at( 0 ).pos_bub() );
+    CHECK( g->contexts[1].ter_view_p == look_centre );
+    CHECK( g->contexts[1].ter_view_p != g->player_at( 1 ).pos_bub() );
+
+    tear_down_two_planning_seats();
+}
+
 TEST_CASE( "an_absent_seat_forfeits_only_the_positive_part", "[mp][ap_debt]" )
 {
     restore_active_state restore;

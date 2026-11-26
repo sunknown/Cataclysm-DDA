@@ -1,5 +1,6 @@
 #include "mp/mp_context.h"
 
+#include <algorithm>
 #include <cassert>
 
 #include "auto_note.h"
@@ -175,6 +176,41 @@ player_context &mp_active_context()
 player_context *mp_active_context_ptr()
 {
     return active_context;
+}
+
+void mp_shift_context_views( const point_rel_sm &shift )
+{
+    if( shift == point_rel_sm::zero ) {
+        // Every caller forwards the shift it computed; the no-op belongs here
+        // so a zero shift can never move a centre by zero and still cost a pass
+        // over every context.
+        return;
+    }
+    for( player_context &ctx : g->contexts ) {
+        // The engine rewrites a bubble coordinate as `coord -= shift * SEE`:
+        // a positive shift moves the map west (or north), so a cell's bubble
+        // coordinate grows by the same amount. z is not part of the bubble
+        // origin and stays untouched.
+        ctx.ter_view_p.x() += -shift.x() * SEEX;
+        ctx.ter_view_p.y() += -shift.y() * SEEY;
+    }
+}
+
+void mp_recenter_context_views()
+{
+    // Bounded by both: a seat may have a character but no context yet (the
+    // roster grows before mp_sync_context_count runs), and a context may
+    // outlive its slot during teardown.
+    const size_t seats = std::min( g->player_slot_count(), g->contexts.size() );
+    for( size_t slot = 0; slot < seats; ++slot ) {
+        if( g->contexts[slot].in_look_mode ) {
+            // The look loop is parked on its wire while the world owns this
+            // tick; overwriting its centre would move the cursor's frame. Its
+            // own final draw puts the centre back on the character.
+            continue;
+        }
+        g->contexts[slot].ter_view_p = g->player_at( slot ).pos_bub();
+    }
 }
 
 live_view &mp_active_live_view()

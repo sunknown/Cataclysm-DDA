@@ -6441,6 +6441,8 @@ look_around_result game::look_around(
     add_draw_callback( zone_cb );
 
     is_looking = true;
+    // The MP tick path reads this to leave a parked look loop's centre alone.
+    mp_active_context().in_look_mode = true;
     const tripoint_rel_ms prev_offset = u.view_offset;
 #if defined(TILES)
     const int prev_tileset_zoom = uistate.tileset_zoom;
@@ -6611,6 +6613,7 @@ look_around_result game::look_around(
     u.view_offset = prev_offset;
     zone_cb = nullptr;
     is_looking = false;
+    mp_active_context().in_look_mode = false;
 
     reenter_fullscreen();
     bVMonsterLookFire = true;
@@ -10509,6 +10512,10 @@ void game::shift_map_center( const tripoint_abs_ms &target )
         remaining_shift -= this_shift;
     }
 
+    // Same cache, same map shift: the view centres have to move with the
+    // creatures, or they name a tile one submap away.
+    mp_shift_context_views( shift );
+
     // Shift monsters
     shift_monsters( { shift, 0 } );
     const point_rel_ms shift_ms = coords::project_to<coords::ms>( shift );
@@ -10640,6 +10647,10 @@ point_rel_sm game::update_map( int &x, int &y, bool z_level_changed )
         here.shift( point_rel_sm( this_shift ) );
         remaining_shift -= this_shift;
     }
+
+    // The map moved under every seat: their cached view centres name bubble
+    // cells, and the engine relocates positions but never this cache.
+    mp_shift_context_views( shift );
 
     // Shift monsters
     shift_monsters( { shift, 0 } );

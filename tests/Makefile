@@ -7,6 +7,15 @@
 SOURCES = $(wildcard *.cpp)
 OBJS = $(sort $(SOURCES:%.cpp=$(ODIR)/%.o))
 
+# Every source header, a prerequisite of the PCH and of every object, exactly
+# as the master Makefile does for the game objects. The compiler's -MMD output
+# cannot be relied on here: a header the PCH already contains is omitted from
+# each object's .d, so without this a struct-layout edit would leave the PCH and
+# every test object compiled against the old layout while the library uses the
+# new one.
+SOURCE_HDRS = $(wildcard ../src/*.h) $(wildcard ../src/*/*.h) \
+              $(wildcard ../src/*/*/*.h)
+
 CATA_LIB=../$(BUILD_PREFIX)cataclysm.a
 
 # If you invoke this makefile directly and the parent directory was
@@ -70,7 +79,7 @@ tests: $(TEST_TARGET)
 $(TEST_TARGET): $(OBJS) $(CATA_LIB)
 	+$(CXX) $(W32FLAGS) -o $@ $(DEFINES) $(OBJS) $(CATA_LIB) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS)
 
-$(PCH_P): $(PCH_H)
+$(PCH_P): $(PCH_H) $(SOURCE_HDRS)
 	-$(CXX) $(CPPFLAGS) $(DEFINES) $(CXXFLAGS) -MMD -MP -Wno-error -Wno-non-virtual-dtor -Wno-unused-macros -I. -c $(PCH_H) -o $(PCH_P)
 
 TEST_BATCHES = "crafting_skill_gain" "[slow]\ ~crafting_skill_gain" "~[slow]\ ~[.]"
@@ -91,7 +100,7 @@ clean:
 $(shell mkdir -p $(ODIR) $(dir $(PCH_P)))
 
 # Adding ../tests/ so that the directory appears in __FILE__ for log messages
-$(ODIR)/%.o: %.cpp $(PCH_P)
+$(ODIR)/%.o: %.cpp $(PCH_P) $(SOURCE_HDRS)
 	$(CXX) $(CPPFLAGS) $(DEFINES) $(CXXFLAGS) -MMD -MP $(subst main-pch,tests-pch,$(PCHFLAGS)) -c ../tests/$< -o $@
 
 $(ODIR)/%.inc: %.cpp

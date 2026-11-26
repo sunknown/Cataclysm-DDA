@@ -1798,6 +1798,60 @@ TEST_CASE( "the_party_broadcast_shows_both_plans", "[mp]" )
     CHECK( ( to_seat0.vx != to_seat1.vx || to_seat0.vy != to_seat1.vy ) );
 }
 
+// The view centre is a cached bubble cell. A map shift relocates every avatar
+// -- bubble coordinates change, absolute ones do not -- but not that cache, so
+// without the shift carrying the centres along each seat's frame would name a
+// tile one submap away from its character and stay there.
+TEST_CASE( "a_map_shift_carries_every_seats_view_with_it", "[mp][view]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    clear_map();
+    clear_avatar();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+
+    avatar &seat0 = g->player_at( 0 );
+    avatar &seat1 = g->player_at( 1 );
+    // Two seats on two cells, and a centre for each standing exactly on its own
+    // character: the state a tick's opening leaves behind.
+    seat0.setpos( get_map(), tripoint_bub_ms( HALF_MAPSIZE_X, HALF_MAPSIZE_Y, seat0.pos_bub().z() ) );
+    seat1.setpos( get_map(), seat0.pos_bub() + tripoint_rel_ms( 4, 3, 0 ) );
+    g->contexts[0].ter_view_p = seat0.pos_bub();
+    g->contexts[1].ter_view_p = seat1.pos_bub();
+
+    const tripoint_abs_ms abs0 = seat0.pos_abs();
+    const tripoint_abs_ms abs1 = seat1.pos_abs();
+    const tripoint_bub_ms bub0 = seat0.pos_bub();
+    const tripoint_bub_ms bub1 = seat1.pos_bub();
+    REQUIRE( bub0 != bub1 );
+
+    // Ask for a centre two submaps east of where the map already is centred.
+    const tripoint_bub_ms target_bub( HALF_MAPSIZE_X + 2 * SEEX, HALF_MAPSIZE_Y, bub0.z() );
+    g->shift_map_center( get_map().get_abs( target_bub ) );
+
+    // The shift happened: each avatar's absolute cell is unchanged while its
+    // bubble cell moved two submaps west with the map.
+    REQUIRE( seat0.pos_abs() == abs0 );
+    REQUIRE( seat1.pos_abs() == abs1 );
+    REQUIRE( seat0.pos_bub() == bub0 + tripoint_rel_ms( -2 * SEEX, 0, 0 ) );
+    REQUIRE( seat1.pos_bub() == bub1 + tripoint_rel_ms( -2 * SEEX, 0, 0 ) );
+
+    // And each seat's centre moved with it, instead of naming the cell the
+    // character left behind.
+    CHECK( g->contexts[0].ter_view_p == seat0.pos_bub() );
+    CHECK( g->contexts[1].ter_view_p == seat1.pos_bub() );
+    CHECK( g->contexts[0].ter_view_p != bub0 );
+    CHECK( g->contexts[1].ter_view_p != bub1 );
+
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
 TEST_CASE( "a_waiting_seat_gets_its_scene_after_resolution", "[mp]" )
 {
     restore_active_state restore;
