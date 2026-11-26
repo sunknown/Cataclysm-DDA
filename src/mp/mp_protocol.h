@@ -11,7 +11,7 @@
 // Version of the wire protocol. Sent in the client's first message; a
 // mismatch is refused with an explanation rather than tolerated, because the
 // failure mode of a silent mismatch is a garbled screen.
-constexpr int MP_PROTOCOL_VERSION = 5;
+constexpr int MP_PROTOCOL_VERSION = 6;
 
 // Capability bits. A client asks for streams in its hello; the server answers
 // with the set it can serve in the hello_ack, so a client never waits for a
@@ -200,6 +200,11 @@ struct mp_party_seat {
     mp_plan_kind plan = mp_plan_kind::none;
     int px = 0;
     int py = 0;
+    // The seat's own avatar bubble cell (`player_at( slot ).pos_bub()`), the
+    // start of its route. Read without activating the seat; unlike the header's
+    // `ax`/`ay` this is the same for every recipient.
+    int sx = 0;
+    int sy = 0;
     int pcost = 0;
     // The menu label while the seat is in one, empty otherwise.
     std::string menu;
@@ -224,7 +229,9 @@ struct mp_party_seat {
 // frame: `you` is its slot, and `ax`/`ay` are the avatar's bubble cell
 // (`g->player_at( slot ).pos_bub()`). The client's target cell is therefore
 // `frame.AvatarDx + px - ax`, and the same for y: the view centre, the examine
-// cursor and any scene origin are not part of the geometry. When
+// cursor and any scene origin are not part of the geometry. Each seat also
+// carries its own avatar cell in `sx`/`sy`, converted the same way, so a route
+// starts at its owner on every recipient rather than at the observer. When
 // `anchor_known` is false the client must draw no ghost rather than read the
 // anchor as cell (0,0). Each recipient gets its own body; the seats are shared.
 struct mp_party_msg {

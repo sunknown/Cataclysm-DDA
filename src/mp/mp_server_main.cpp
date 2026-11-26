@@ -275,12 +275,17 @@ static std::vector<mp_party_seat> party_seats()
         const int cost = mp_plan_cost( slot, plan );
         const std::string error = mp_plan_error( slot );
         avatar &ava = g->player_at( slot );
+        // Straight read, no activation: this is the same avatar the recipient
+        // header reads, and a menu broadcast must not swap a seat's avatar.
+        const tripoint_bub_ms pos = ava.pos_bub();
 
         mp_party_seat seat;
         seat.slot = static_cast<uint8_t>( slot );
         seat.name = ava.get_name();
         seat.moves = ava.get_moves();
         seat.speed = ava.get_speed();
+        seat.sx = pos.x();
+        seat.sy = pos.y();
         seat.ready = ready;
         seat.passed = passed;
         seat.connected = !mp_player_is_disconnected( slot );

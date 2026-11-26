@@ -457,10 +457,12 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     mp_party_seat a;
     a.slot = 0; a.moves = 120; a.speed = 120; a.ready = true;
     a.plan = mp_plan_kind::move; a.px = 10; a.py = 11; a.pcost = 100; a.menu = "inventory";
+    a.sx = -5; a.sy = 7;
     a.name = "Alice";
     a.availability = "available";
     mp_party_seat b;
     b.slot = 1; b.moves = 0; b.speed = 100; b.passed = true; b.connected = true;
+    b.sx = 9; b.sy = -8;
     b.name = "Bob";
     b.error = "needs 100 AP, you have 65";
     b.availability = "recovering";
@@ -495,6 +497,8 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     CHECK( got.party.seats[0].plan == mp_plan_kind::move );
     CHECK( got.party.seats[0].px == 10 );
     CHECK( got.party.seats[0].py == 11 );
+    CHECK( got.party.seats[0].sx == -5 );
+    CHECK( got.party.seats[0].sy == 7 );
     CHECK( got.party.seats[0].pcost == 100 );
     CHECK( got.party.seats[0].menu == "inventory" );
     CHECK( got.party.seats[0].name == "Alice" );
@@ -504,7 +508,31 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     CHECK( got.party.seats[1].connected );
     CHECK( got.party.seats[1].name == "Bob" );
     CHECK( got.party.seats[1].error == "needs 100 AP, you have 65" );
+    CHECK( got.party.seats[1].sx == 9 );
+    CHECK( got.party.seats[1].sy == -8 );
     CHECK( got.party.seats[1].availability == "recovering" );
+}
+
+TEST_CASE( "mp_control_party_requires_known_seat_cells", "[mp][anchor]" )
+{
+    // The seat's own avatar cell is what a route starts from; a body without
+    // it is one this client cannot draw, so it is refused like a missing
+    // availability rather than read as cell 0,0.
+    const std::string seat_start =
+        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,)"
+        R"("ready":false,"passed":false,"connected":true,"away":false,)"
+        R"("plan":"none","px":0,"py":0,"pcost":0,"menu":"","name":"A","error":"",)"
+        R"("availability":"available")";
+    const std::string seat_end = "}]}";
+    mp_control got;
+
+    CHECK_FALSE( mp_control_from_json( seat_start + ",\"sy\":1" + seat_end, got ) );
+    CHECK_FALSE( mp_control_from_json( seat_start + ",\"sx\":1" + seat_end, got ) );
+    REQUIRE( mp_control_from_json(
+                 seat_start + ",\"sx\":1,\"sy\":2" + seat_end, got ) );
+    REQUIRE( got.party.seats.size() == 1 );
+    CHECK( got.party.seats[0].sx == 1 );
+    CHECK( got.party.seats[0].sy == 2 );
 }
 
 TEST_CASE( "mp_control_party_requires_a_known_availability", "[mp][ap_debt]" )
@@ -514,11 +542,11 @@ TEST_CASE( "mp_control_party_requires_a_known_availability", "[mp][ap_debt]" )
     // recovery.
     mp_control got;
     CHECK_FALSE( mp_control_from_json(
-        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,"ready":false,"passed":false,"connected":true,"away":false,"plan":"none","px":0,"py":0,"pcost":0,"menu":"","name":"A","error":""}]})",
+        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,"ready":false,"passed":false,"connected":true,"away":false,"plan":"none","px":0,"py":0,"sx":0,"sy":0,"pcost":0,"menu":"","name":"A","error":""}]})",
         got ) );
     // An unknown state is refused as well, not carried as text.
     CHECK_FALSE( mp_control_from_json(
-        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,"ready":false,"passed":false,"connected":true,"away":false,"plan":"none","px":0,"py":0,"pcost":0,"menu":"","name":"A","error":"","availability":"tired"}]})",
+        R"({"t":"party","phase":0,"seats":[{"slot":0,"moves":5,"speed":100,"ready":false,"passed":false,"connected":true,"away":false,"plan":"none","px":0,"py":0,"sx":0,"sy":0,"pcost":0,"menu":"","name":"A","error":"","availability":"tired"}]})",
         got ) );
 
     // Every state the server can send round-trips by name.
@@ -603,7 +631,8 @@ TEST_CASE( "mp_control_rejects_an_unknown_plan_kind", "[mp]" )
     CHECK_FALSE( mp_control_from_json(
                      R"({"t":"party","phase":1,"seats":[{"slot":0,"moves":0,"speed":0,"ready":false,)"
                      R"("passed":false,"connected":false,"away":false,"plan":"nonsense",)"
-                     R"("px":0,"py":0,"pcost":0,"menu":"","name":"","error":""}]})",
+                     R"("px":0,"py":0,"sx":0,"sy":0,"pcost":0,"menu":"","name":"","error":"",)"
+                     R"("availability":"available"}]})",
                      got ) );
 }
 

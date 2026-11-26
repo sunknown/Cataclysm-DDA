@@ -292,7 +292,7 @@ TEST_CASE( "mp_scene_stream_hello_without_caps_still_connects", "[mp]" )
 
     // The shortest hello a text client can send: no caps, no zl.
     send_hello_json( *pair.b,
-                     R"({"t":"hello","proto":5,"name":"text","w":80,"h":24,"c256":false})" );
+                     R"({"t":"hello","proto":6,"name":"text","w":80,"h":24,"c256":false})" );
 
     std::string reason;
     REQUIRE( mp_server_handshake( *pair.a, session, reason ) );
@@ -320,14 +320,14 @@ TEST_CASE( "mp_scene_stream_hello_caps_and_z_levels_round_trip", "[mp]" )
     // A request below the floor and one above the ceiling are clamped at parse
     // time; an unknown member is ignored rather than refused.
     REQUIRE( mp_control_from_json(
-                 R"({"t":"hello","proto":5,"name":"n","w":80,"h":24,"c256":false,)"
+                 R"({"t":"hello","proto":6,"name":"n","w":80,"h":24,"c256":false,)"
                  R"("caps":1,"zl":0,"future":true})",
                  got ) );
     CHECK( got.hello.caps == 1 );
     CHECK( got.hello.z_levels == 1 );
 
     REQUIRE( mp_control_from_json(
-                 R"({"t":"hello","proto":5,"name":"n","w":80,"h":24,"c256":false,)"
+                 R"({"t":"hello","proto":6,"name":"n","w":80,"h":24,"c256":false,)"
                  R"("caps":1,"zl":99,"future":true})",
                  got ) );
     CHECK( got.hello.z_levels == 10 );

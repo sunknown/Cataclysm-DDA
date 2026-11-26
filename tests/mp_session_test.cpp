@@ -1732,6 +1732,8 @@ TEST_CASE( "the_party_header_carries_each_recipients_avatar_cell", "[mp][anchor]
         CHECK( a.plan == b.plan );
         CHECK( a.px == b.px );
         CHECK( a.py == b.py );
+        CHECK( a.sx == b.sx );
+        CHECK( a.sy == b.sy );
         CHECK( a.pcost == b.pcost );
         CHECK( a.menu == b.menu );
         CHECK( a.error == b.error );
@@ -1767,6 +1769,13 @@ TEST_CASE( "the_party_header_carries_each_recipients_avatar_cell", "[mp][anchor]
     CHECK( to_seat1.ay == anchor1.y() );
     CHECK( ( anchor0.x() != anchor1.x() || anchor0.y() != anchor1.y() ) );
     CHECK( ( to_seat0.ax != to_seat1.ax || to_seat0.ay != to_seat1.ay ) );
+    // Each seat's own avatar cell rides on the shared body, so every recipient
+    // can start that seat's route at its owner.
+    REQUIRE( to_seat0.seats.size() == 2 );
+    CHECK( to_seat0.seats[0].sx == g->player_at( 0 ).pos_bub().x() );
+    CHECK( to_seat0.seats[0].sy == g->player_at( 0 ).pos_bub().y() );
+    CHECK( to_seat0.seats[1].sx == g->player_at( 1 ).pos_bub().x() );
+    CHECK( to_seat0.seats[1].sy == g->player_at( 1 ).pos_bub().y() );
     // The bodies really differ on the wire, and only in their headers.
     mp_control body0;
     body0.kind = mp_control_kind::party;

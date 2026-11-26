@@ -1895,6 +1895,15 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_avatar_cell", "[mp][anchor
     CHECK( ( to_first.party.ax != to_second.party.ax ||
              to_first.party.ay != to_second.party.ay ) );
 
+    // Each seat carries its own avatar cell, the route's start, and the two
+    // seats stand on distinct cells so a shared default would fail.
+    CHECK( to_first.party.seats[0].sx == g->player_at( 0 ).pos_bub().x() );
+    CHECK( to_first.party.seats[0].sy == g->player_at( 0 ).pos_bub().y() );
+    CHECK( to_first.party.seats[1].sx == g->player_at( 1 ).pos_bub().x() );
+    CHECK( to_first.party.seats[1].sy == g->player_at( 1 ).pos_bub().y() );
+    CHECK( ( to_first.party.seats[0].sx != to_first.party.seats[1].sx ||
+             to_first.party.seats[0].sy != to_first.party.seats[1].sy ) );
+
     // The seats are the same body for everyone.
     REQUIRE( to_first.party.seats.size() == 2 );
     REQUIRE( to_second.party.seats.size() == 2 );
@@ -1912,6 +1921,8 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_avatar_cell", "[mp][anchor
         CHECK( a.plan == b.plan );
         CHECK( a.px == b.px );
         CHECK( a.py == b.py );
+        CHECK( a.sx == b.sx );
+        CHECK( a.sy == b.sy );
         CHECK( a.pcost == b.pcost );
         CHECK( a.menu == b.menu );
         CHECK( a.error == b.error );

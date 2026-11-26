@@ -378,6 +378,8 @@ std::string mp_control_to_json( const mp_control &msg )
                 jo.member( "plan", std::string( plan_kind_to_string( seat.plan ) ) );
                 jo.member( "px", seat.px );
                 jo.member( "py", seat.py );
+                jo.member( "sx", seat.sx );
+                jo.member( "sy", seat.sy );
                 jo.member( "pcost", seat.pcost );
                 jo.member( "menu", seat.menu );
                 jo.member( "name", seat.name );
@@ -569,6 +571,13 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                     }
                     out_seat.px = seat.get_int( "px" );
                     out_seat.py = seat.get_int( "py" );
+                    // Mandatory like availability: a seat without its own
+                    // cell has no route start, so the body cannot be drawn.
+                    if( !seat.has_int( "sx" ) || !seat.has_int( "sy" ) ) {
+                        return false;
+                    }
+                    out_seat.sx = seat.get_int( "sx" );
+                    out_seat.sy = seat.get_int( "sy" );
                     out_seat.pcost = seat.get_int( "pcost" );
                     out_seat.menu = seat.get_string( "menu" );
                     out_seat.name = seat.get_string( "name" );
