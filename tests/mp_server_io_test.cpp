@@ -1895,6 +1895,10 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_avatar_cell", "[mp][anchor
     CHECK( ( to_first.party.ax != to_second.party.ax ||
              to_first.party.ay != to_second.party.ay ) );
 
+    // The seats are the same body for everyone.
+    REQUIRE( to_first.party.seats.size() == 2 );
+    REQUIRE( to_second.party.seats.size() == 2 );
+
     // Each seat carries its own avatar cell, the route's start, and the two
     // seats stand on distinct cells so a shared default would fail.
     CHECK( to_first.party.seats[0].sx == g->player_at( 0 ).pos_bub().x() );
@@ -1904,9 +1908,6 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_avatar_cell", "[mp][anchor
     CHECK( ( to_first.party.seats[0].sx != to_first.party.seats[1].sx ||
              to_first.party.seats[0].sy != to_first.party.seats[1].sy ) );
 
-    // The seats are the same body for everyone.
-    REQUIRE( to_first.party.seats.size() == 2 );
-    REQUIRE( to_second.party.seats.size() == 2 );
     for( size_t i = 0; i < 2; ++i ) {
         const mp_party_seat &a = to_first.party.seats[i];
         const mp_party_seat &b = to_second.party.seats[i];
