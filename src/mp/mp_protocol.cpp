@@ -361,9 +361,9 @@ std::string mp_control_to_json( const mp_control &msg )
         case mp_control_kind::party:
             jo.member( "phase", static_cast<int>( msg.party.phase ) );
             jo.member( "you", static_cast<int>( msg.party.you ) );
-            jo.member( "view_known", msg.party.view_known );
-            jo.member( "vx", msg.party.vx );
-            jo.member( "vy", msg.party.vy );
+            jo.member( "anchor_known", msg.party.anchor_known );
+            jo.member( "ax", msg.party.ax );
+            jo.member( "ay", msg.party.ay );
             jo.member( "seats" );
             jo.start_array();
             for( const mp_party_seat &seat : msg.party.seats ) {
@@ -540,12 +540,13 @@ bool mp_control_from_json( const std::string &text, mp_control &out )
                 msg.party.phase = byte( obj.get_int( "phase" ) );
                 // Absent in a body from before the header existed: the default
                 // -1/false/0 tells the client it has no anchor and must not
-                // place plans.
+                // place plans. The removed v4 names are unknown members here
+                // and are ignored, never read as an anchor.
                 msg.party.you = static_cast<int8_t>(
                                     std::clamp( obj.get_int( "you", -1 ), -1, 127 ) );
-                msg.party.view_known = obj.get_bool( "view_known", false );
-                msg.party.vx = obj.get_int( "vx", 0 );
-                msg.party.vy = obj.get_int( "vy", 0 );
+                msg.party.anchor_known = obj.get_bool( "anchor_known", false );
+                msg.party.ax = obj.get_int( "ax", 0 );
+                msg.party.ay = obj.get_int( "ay", 0 );
                 JsonArray seats = obj.get_array( "seats" );
                 msg.party.seats.reserve( seats.size() );
                 for( size_t i = 0; i < seats.size(); i++ ) {

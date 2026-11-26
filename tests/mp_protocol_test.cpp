@@ -451,9 +451,9 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     sent.kind = mp_control_kind::party;
     sent.party.phase = 1;
     sent.party.you = 1;
-    sent.party.view_known = true;
-    sent.party.vx = -37;
-    sent.party.vy = 42;
+    sent.party.anchor_known = true;
+    sent.party.ax = -37;
+    sent.party.ay = 42;
     mp_party_seat a;
     a.slot = 0; a.moves = 120; a.speed = 120; a.ready = true;
     a.plan = mp_plan_kind::move; a.px = 10; a.py = 11; a.pcost = 100; a.menu = "inventory";
@@ -466,14 +466,24 @@ TEST_CASE( "mp_control_round_trips_a_party", "[mp]" )
     b.availability = "recovering";
     sent.party.seats = { a, b };
 
+    // The header's removed v4 names must never appear: an old peer has to be
+    // refused at the handshake, not fed a body it would read as an anchor.
+    const std::string json = mp_control_to_json( sent );
+    CHECK( json.find( "\"vx\"" ) == std::string::npos );
+    CHECK( json.find( "\"vy\"" ) == std::string::npos );
+    CHECK( json.find( "\"view_known\"" ) == std::string::npos );
+    CHECK( json.find( "\"anchor_known\":true" ) != std::string::npos );
+    CHECK( json.find( "\"ax\":-37" ) != std::string::npos );
+    CHECK( json.find( "\"ay\":42" ) != std::string::npos );
+
     mp_control got;
-    REQUIRE( mp_control_from_json( mp_control_to_json( sent ), got ) );
+    REQUIRE( mp_control_from_json( json, got ) );
     CHECK( got.kind == mp_control_kind::party );
     CHECK( got.party.phase == 1 );
     CHECK( got.party.you == 1 );
-    CHECK( got.party.view_known );
-    CHECK( got.party.vx == -37 );
-    CHECK( got.party.vy == 42 );
+    CHECK( got.party.anchor_known );
+    CHECK( got.party.ax == -37 );
+    CHECK( got.party.ay == 42 );
     REQUIRE( got.party.seats.size() == 2 );
     CHECK( got.party.seats[0].slot == 0 );
     CHECK( got.party.seats[0].moves == 120 );
@@ -534,16 +544,26 @@ TEST_CASE( "mp_control_party_requires_a_known_availability", "[mp][ap_debt]" )
 
 TEST_CASE( "mp_control_party_without_the_header_defaults_to_no_anchor", "[mp]" )
 {
-    // Bodies from before the header existed carry no you/view_known/vx/vy.
+    // Bodies from before the header existed carry no you/anchor_known/ax/ay.
     // The decoder must default them rather than refuse the message: a client
     // (or an older peer) with no anchor simply does not place plans.
     mp_control got;
     REQUIRE( mp_control_from_json( R"({"t":"party","phase":2,"seats":[]})", got ) );
     CHECK( got.party.phase == 2 );
     CHECK( got.party.you == -1 );
-    CHECK_FALSE( got.party.view_known );
-    CHECK( got.party.vx == 0 );
-    CHECK( got.party.vy == 0 );
+    CHECK_FALSE( got.party.anchor_known );
+    CHECK( got.party.ax == 0 );
+    CHECK( got.party.ay == 0 );
+
+    // The removed v4 members are unknown names to this reader, not an anchor:
+    // they are ignored and the body still reads as "do not place".
+    mp_control old;
+    REQUIRE( mp_control_from_json(
+                 R"({"t":"party","phase":2,"view_known":true,"vx":5,"vy":6,"seats":[]})",
+                 old ) );
+    CHECK_FALSE( old.party.anchor_known );
+    CHECK( old.party.ax == 0 );
+    CHECK( old.party.ay == 0 );
 }
 
 TEST_CASE( "mp_control_round_trips_plan_ready_and_phase", "[mp]" )

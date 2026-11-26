@@ -127,8 +127,8 @@ struct mp_scene {
 
 // The top-left bubble cell of `rect` placed by the rule the builder uses:
 // origin = view_centre - ( rect.w / 2, rect.h / 2 ). Kept public because the
-// party snapshot carries a seat's scene origin to its client, and a second copy
-// of this arithmetic there would drift from the frame it describes.
+// scene builder and the plan's incoming cell translation must share one copy
+// of this arithmetic; a second copy would drift from the frame it describes.
 tripoint_bub_ms mp_scene_origin( const mp_scene_rect &rect,
                                  const tripoint_bub_ms &view_centre );
 

@@ -122,13 +122,14 @@ struct mp_session {
     // baton, and inbox_mutex orders the accesses regardless.
     bool menu_reported = false;
     bool menu_dirty = false;
-    // The anchor (scene origin) the last full party body carried for this
-    // recipient. A menu-state broadcast reuses it rather than activating the
-    // seat to recompute it: activation swaps avatars, and a menu open across
-    // that swap holds item locations the swap would expire.
-    bool party_view_known = false;
-    int party_vx = 0;
-    int party_vy = 0;
+    // The recipient's own avatar cell the last full party body carried. A
+    // menu-state broadcast reuses it rather than activating the seat to
+    // recompute it: a menu does not move the character, and activation swaps
+    // avatars, which a menu open across that swap would see its item locations
+    // expire under.
+    bool party_anchor_known = false;
+    int party_ax = 0;
+    int party_ay = 0;
     // True while this seat holds an input event it already took out of
     // input_inbox and is parked on the baton to deliver: the inbox is empty by
     // then, so without this the world has nothing to grant the seat for, and

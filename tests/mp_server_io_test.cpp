@@ -1788,7 +1788,7 @@ TEST_CASE( "a_replacement_wire_is_claimed_by_its_reader_before_it_is_visible", "
     CHECK( got.sequence == std::vector<int> { 'z' } );
 }
 
-TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
+TEST_CASE( "party_snapshot_carries_each_receivers_own_avatar_cell", "[mp][anchor]" )
 {
     restore_active_state restore;
     mp_ensure_player_context();
@@ -1814,14 +1814,6 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     // field must carry the real figure; give seat 0 room to commit it.
     g->player_at( 0 ).set_moves( 1000 );
     mp_activate_player( 0 );
-
-    // Seat 0 has a map window, so its scene origin is known. Seat 1 has none --
-    // a context can be between resizes -- and its body must say so instead of
-    // carrying a meaningless (0,0).
-    g->contexts[0].ter_view_p = g->player_at( 0 ).pos_bub();
-    g->contexts[0].w_terrain = catacurses::newwin( 10, 40, point( 10, 0 ) );
-    g->contexts[1].ter_view_p = g->player_at( 1 ).pos_bub();
-    g->contexts[1].w_terrain = catacurses::window();
 
     mp_sessions_reset_for_test();
     mp_loopback_pair first_pair = mp_make_loopback_pair();
@@ -1856,25 +1848,16 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     mp_plan_set_error( 1, "needs 100 AP, you have 65" );
     mp_plan_set_phase( mp_round_phase::resolving );
 
-    // The expected anchor for seat 0, from the same rect the broadcast reads.
-    mp_scene_rect rect0;
-    REQUIRE( mp_scene_mask_map_rect( rect0 ) );
-    CHECK( rect0.w == 40 );
-    CHECK( rect0.h == 10 );
-    CHECK( rect0.x == 10 );
-    CHECK( rect0.y == 0 );
-    const tripoint_bub_ms origin0 = mp_scene_origin( rect0, g->contexts[0].ter_view_p );
-
     {
         // Seat 1 is inside a menu: its base main-UI adaptor plus the menu's.
-        // The adaptors must be destroyed under their own stack, so the seat is
-        // reactivated after the broadcast, which ends in the world phase.
+        // The broadcast no longer activates any seat -- the anchor is read
+        // straight from the avatar -- so the seat stays on its own stack and
+        // the adaptors are destroyed by this scope.
         mp_activate_player( 1 );
         ui_adaptor base_ui;
         ui_adaptor menu_ui;
         REQUIRE( g->contexts[1].ui_stack.size() == 2 );
         mp_server_broadcast_party();
-        mp_activate_player( 1 );
     }
     mp_activate_world();
 
@@ -1898,15 +1881,19 @@ TEST_CASE( "party_snapshot_carries_each_receivers_own_frame", "[mp]" )
     CHECK( to_first.party.phase == static_cast<uint8_t>( mp_round_phase::resolving ) );
     CHECK( to_second.party.phase == static_cast<uint8_t>( mp_round_phase::resolving ) );
 
-    // Every recipient's header is its own: its slot and its own scene origin.
+    // Every recipient's header is its own: its slot and its own avatar cell.
+    // Both seats have a context, so both anchors are known, and each names its
+    // own character rather than any view or scene origin.
     CHECK( to_first.party.you == 0 );
-    CHECK( to_first.party.view_known );
-    CHECK( to_first.party.vx == origin0.x() );
-    CHECK( to_first.party.vy == origin0.y() );
+    CHECK( to_first.party.anchor_known );
+    CHECK( to_first.party.ax == g->player_at( 0 ).pos_bub().x() );
+    CHECK( to_first.party.ay == g->player_at( 0 ).pos_bub().y() );
     CHECK( to_second.party.you == 1 );
-    CHECK_FALSE( to_second.party.view_known );
-    CHECK( to_second.party.vx == 0 );
-    CHECK( to_second.party.vy == 0 );
+    CHECK( to_second.party.anchor_known );
+    CHECK( to_second.party.ax == g->player_at( 1 ).pos_bub().x() );
+    CHECK( to_second.party.ay == g->player_at( 1 ).pos_bub().y() );
+    CHECK( ( to_first.party.ax != to_second.party.ax ||
+             to_first.party.ay != to_second.party.ay ) );
 
     // The seats are the same body for everyone.
     REQUIRE( to_first.party.seats.size() == 2 );

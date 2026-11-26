@@ -11,7 +11,7 @@
 // Version of the wire protocol. Sent in the client's first message; a
 // mismatch is refused with an explanation rather than tolerated, because the
 // failure mode of a silent mismatch is a garbled screen.
-constexpr int MP_PROTOCOL_VERSION = 4;
+constexpr int MP_PROTOCOL_VERSION = 5;
 
 // Capability bits. A client asks for streams in its hello; the server answers
 // with the set it can serve in the hello_ack, so a client never waits for a
@@ -218,20 +218,24 @@ struct mp_party_seat {
 // Server to client: the whole party's round state, sent whenever it changes.
 //
 // A scene cell exists only in its sender's rect -- each seat's frame is
-// centred on that seat's own view and window -- so a partner's plan cannot be
-// placed by cell index. The header therefore carries the receiver's own frame:
-// `you` is its slot, and `vx`/`vy` are that seat's scene origin in bubble
-// coordinates. Every seat's `px`/`py` are bubble tiles, and the client maps
-// them through its own anchor. Each recipient gets its own body; the seats are
-// shared.
+// centred on that seat's own avatar and window -- so a partner's plan cannot be
+// placed by cell index. Every seat's `px`/`py` are absolute bubble tiles, and
+// the header carries where the receiver's own character stands in that same
+// frame: `you` is its slot, and `ax`/`ay` are the avatar's bubble cell
+// (`g->player_at( slot ).pos_bub()`). The client's target cell is therefore
+// `frame.AvatarDx + px - ax`, and the same for y: the view centre, the examine
+// cursor and any scene origin are not part of the geometry. When
+// `anchor_known` is false the client must draw no ghost rather than read the
+// anchor as cell (0,0). Each recipient gets its own body; the seats are shared.
 struct mp_party_msg {
     uint8_t phase = 0;
     // The recipient's slot, or -1 when it has no context behind it.
     int8_t you = -1;
-    // Whether `vx`/`vy` are this recipient's scene origin, or merely 0.
-    bool view_known = false;
-    int vx = 0;
-    int vy = 0;
+    // Whether `ax`/`ay` are this recipient's avatar cell, or merely 0.
+    bool anchor_known = false;
+    // The recipient avatar's bubble cell, when `anchor_known`.
+    int ax = 0;
+    int ay = 0;
     std::vector<mp_party_seat> seats;
 };
 

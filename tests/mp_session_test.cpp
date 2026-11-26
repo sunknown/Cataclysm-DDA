@@ -185,33 +185,6 @@ void prepare_two_seat_round( mp_session_harness &harness, const int moves )
     }, 20 ) );
 }
 
-struct scene_anchor_point {
-    int x = 0;
-    int y = 0;
-
-    bool operator!=( const scene_anchor_point &other ) const {
-        return x != other.x || y != other.y;
-    }
-};
-
-// The anchor the party header carries for `slot`: that seat's scene origin in
-// bubble coordinates, computed from the same rect and view centre the broadcast
-// reads. The seat is activated to read its own context and the world is put
-// back afterwards, as the broadcast does.
-std::optional<scene_anchor_point> party_anchor_for( const size_t slot )
-{
-    mp_activate_player( slot );
-    mp_scene_rect rect;
-    const bool have_rect = mp_scene_mask_map_rect( rect );
-    std::optional<scene_anchor_point> result;
-    if( have_rect ) {
-        const tripoint_bub_ms origin = mp_scene_origin( rect, mp_active_context().ter_view_p );
-        result = scene_anchor_point{ origin.x(), origin.y() };
-    }
-    mp_activate_world();
-    return result;
-}
-
 } // namespace
 
 
@@ -1716,7 +1689,7 @@ TEST_CASE( "a_seat_with_no_moves_does_not_hold_the_round", "[mp]" )
     CHECK( mp_plan_phase() == mp_round_phase::done );
 }
 
-TEST_CASE( "the_party_broadcast_shows_both_plans", "[mp]" )
+TEST_CASE( "the_party_header_carries_each_recipients_avatar_cell", "[mp][anchor]" )
 {
     restore_active_state restore;
     mp_session_harness harness( 2 );
@@ -1778,24 +1751,30 @@ TEST_CASE( "the_party_broadcast_shows_both_plans", "[mp]" )
     CHECK( to_seat0.phase == static_cast<uint8_t>( mp_round_phase::planning ) );
     CHECK( to_seat1.phase == to_seat0.phase );
 
-    // Each body's header is the recipient's own: its slot and its own scene
-    // origin, so a partner's bubble target can be placed through it. The seats
-    // stand two tiles apart, so their views differ -- and the headers differ in
-    // exactly the same way, while the seats do not.
+    // Each body's header is the recipient's own: its slot and its own avatar
+    // cell, so a partner's bubble target can be placed through it. The seats
+    // stand two tiles apart, so their avatar cells differ -- and the headers
+    // differ in exactly the same way, while the seats do not.
     CHECK( to_seat0.you == 0 );
     CHECK( to_seat1.you == 1 );
-    REQUIRE( to_seat0.view_known );
-    REQUIRE( to_seat1.view_known );
-    const std::optional<scene_anchor_point> anchor0 = party_anchor_for( 0 );
-    const std::optional<scene_anchor_point> anchor1 = party_anchor_for( 1 );
-    REQUIRE( anchor0 );
-    REQUIRE( anchor1 );
-    CHECK( to_seat0.vx == anchor0->x );
-    CHECK( to_seat0.vy == anchor0->y );
-    CHECK( to_seat1.vx == anchor1->x );
-    CHECK( to_seat1.vy == anchor1->y );
-    CHECK( *anchor0 != *anchor1 );
-    CHECK( ( to_seat0.vx != to_seat1.vx || to_seat0.vy != to_seat1.vy ) );
+    REQUIRE( to_seat0.anchor_known );
+    REQUIRE( to_seat1.anchor_known );
+    const tripoint_bub_ms anchor0 = g->player_at( 0 ).pos_bub();
+    const tripoint_bub_ms anchor1 = g->player_at( 1 ).pos_bub();
+    CHECK( to_seat0.ax == anchor0.x() );
+    CHECK( to_seat0.ay == anchor0.y() );
+    CHECK( to_seat1.ax == anchor1.x() );
+    CHECK( to_seat1.ay == anchor1.y() );
+    CHECK( ( anchor0.x() != anchor1.x() || anchor0.y() != anchor1.y() ) );
+    CHECK( ( to_seat0.ax != to_seat1.ax || to_seat0.ay != to_seat1.ay ) );
+    // The bodies really differ on the wire, and only in their headers.
+    mp_control body0;
+    body0.kind = mp_control_kind::party;
+    body0.party = to_seat0;
+    mp_control body1;
+    body1.kind = mp_control_kind::party;
+    body1.party = to_seat1;
+    CHECK( mp_control_to_json( body0 ) != mp_control_to_json( body1 ) );
 }
 
 // The view centre is a cached bubble cell. A map shift relocates every avatar

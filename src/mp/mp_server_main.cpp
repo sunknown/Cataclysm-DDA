@@ -33,11 +33,9 @@
 #include "mp/mp_placement.h"
 #include "mp/mp_plan.h"
 #include "mp/mp_protocol.h"
-#include "mp/mp_scene.h"
 #include "mp/mp_sched.h"
 #include "mp/mp_server_input.h"
 #include "mp/mp_server_log.h"
-#include "mp/mp_server_mask.h"
 #include "mp/mp_server_screen.h"
 #include "mp/mp_session.h"
 #include "mp/mp_session_ui.h"
@@ -291,7 +289,7 @@ static std::vector<mp_party_seat> party_seats()
         if( plan.kind != mp_plan_kind::none ) {
             // A plan's target is stored in bubble coordinates -- the client's
             // own cells were translated when the plan arrived -- and that is
-            // what the recipient places through its header anchor.
+            // what every recipient converts through its own avatar anchor.
             seat.px = plan.target.x();
             seat.py = plan.target.y();
         }
@@ -322,44 +320,38 @@ void mp_server_broadcast_party()
         mp_session &session = *holder;
         const size_t slot = session.context_index;
         const bool has_slot = slot < g->player_slot_count() && slot < g->contexts.size();
-        bool view_known = false;
-        int vx = 0;
-        int vy = 0;
+        bool anchor_known = false;
+        int ax = 0;
+        int ay = 0;
         if( has_slot ) {
-            // The anchor is the recipient's own scene origin: its rect and view
-            // centre, in the coordinates the seats' plan targets use. Every
-            // recipient's body therefore differs here even though the seats do
-            // not.
-            mp_activate_player( slot );
-            mp_scene_rect rect;
-            if( mp_scene_mask_map_rect( rect ) && rect.w != 0 && rect.h != 0 ) {
-                const tripoint_bub_ms origin = mp_scene_origin( rect,
-                                                mp_active_context().ter_view_p );
-                vx = origin.x();
-                vy = origin.y();
-                view_known = true;
-            }
+            // The anchor is the recipient's own avatar cell in the world, not a
+            // view-dependent scene origin: the character's bubble cell is what
+            // its frame is centred on, so a partner's bubble target can be
+            // placed through it whatever the examine cursor does. Reading it
+            // needs no seat activation, which is why the previous avatar swap
+            // is gone from this path.
+            const tripoint_bub_ms anchor = g->player_at( slot ).pos_bub();
+            ax = anchor.x();
+            ay = anchor.y();
+            anchor_known = true;
         }
-        // Called by the world: do not leave a seat's context active whether or
-        // not this recipient had one.
-        mp_activate_world();
 
         // Remember what this recipient's anchor was, so a menu-state broadcast
         // can send a body without activating the seat (and swapping avatars).
         {
             std::lock_guard<std::mutex> lock( session.inbox_mutex );
-            session.party_view_known = view_known;
-            session.party_vx = vx;
-            session.party_vy = vy;
+            session.party_anchor_known = anchor_known;
+            session.party_ax = ax;
+            session.party_ay = ay;
         }
 
         mp_control msg;
         msg.kind = mp_control_kind::party;
         msg.party.phase = static_cast<uint8_t>( mp_plan_phase() );
         msg.party.you = has_slot ? static_cast<int8_t>( slot ) : static_cast<int8_t>( -1 );
-        msg.party.view_known = view_known;
-        msg.party.vx = vx;
-        msg.party.vy = vy;
+        msg.party.anchor_known = anchor_known;
+        msg.party.ax = ax;
+        msg.party.ay = ay;
         msg.party.seats = seats;
         send_control( session, msg );
         // This body is now the client's own baseline for the `menu` flag: the
@@ -389,13 +381,13 @@ void mp_server_broadcast_party_ui()
         msg.kind = mp_control_kind::party;
         msg.party.phase = static_cast<uint8_t>( mp_plan_phase() );
         msg.party.you = has_slot ? static_cast<int8_t>( slot ) : static_cast<int8_t>( -1 );
-        // A menu does not move the view, so the anchor from the last full body
-        // is still this recipient's own. Recomputing it would mean activating
-        // the seat, and that avatar swap is what a menu must not have happen
-        // under it.
-        msg.party.view_known = session.party_view_known;
-        msg.party.vx = session.party_vx;
-        msg.party.vy = session.party_vy;
+        // A menu does not move the character, so the avatar cell from the last
+        // full body is still this recipient's own. Recomputing it would mean
+        // activating the seat, and that avatar swap is what a menu must not
+        // have happen under it.
+        msg.party.anchor_known = session.party_anchor_known;
+        msg.party.ax = session.party_ax;
+        msg.party.ay = session.party_ay;
         msg.party.seats = seats;
         send_control( session, msg );
         {

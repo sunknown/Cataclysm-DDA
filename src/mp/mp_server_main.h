@@ -278,20 +278,23 @@ bool mp_server_accept_new_client( std::unique_ptr<mp_session> session, std::stri
 void mp_server_poll_new_clients();
 
 // The party snapshot: every seat's public round state, one body per session
-// because the header carries the receiver's own frame (its slot `you` and its
-// scene origin `vx`/`vy`, in bubble coordinates). Every seat's `px`/`py` are
-// the plan target in the same bubble coordinates -- a plan reaches the wire as
-// scene cells and is translated to the world's own map frame on receipt, so no
-// client can place it by cell index. The `menu` label is phase 1's generic
-// "menu" while the seat is inside one. Call from the world holding the baton,
-// once per poll, after something the client can see has changed.
+// because the header carries the receiver's own avatar cell (its slot `you`
+// and `ax`/`ay`, the bubble cell `g->player_at( slot ).pos_bub()`). Every
+// seat's `px`/`py` are the plan target as absolute bubble tiles -- a plan
+// reaches the wire as scene cells and is translated to the world's own map
+// frame on receipt, so no client can place it by cell index. The client's own
+// target cell is `frame.AvatarDx + px - ax`; a body whose `anchor_known` is
+// false names the plan but gives it no cell. The `menu` label is phase 1's
+// generic "menu" while the seat is inside one. Call from the world holding the
+// baton, once per poll, after something the client can see has changed.
 void mp_server_broadcast_party();
 
 // The same party body for a menu-state change alone. It sends the fresh seats
 // (including the `menu` flag the client gates its plan keys on) but reuses each
 // recipient's last anchor instead of activating the seat to recompute it: the
 // world may be broadcasting while a seat is inside a menu, and activation
-// swaps avatars, which expires item locations a menu is holding. Same baton
+// swaps avatars, which expires item locations a menu is holding. A menu does
+// not move the character, so the cached avatar cell stays correct. Same baton
 // rules as mp_server_broadcast_party(), which must have run once first.
 void mp_server_broadcast_party_ui();
 
