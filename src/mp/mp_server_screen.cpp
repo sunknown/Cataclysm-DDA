@@ -11,6 +11,7 @@
 #include "avatar.h"
 #include "cached_options.h"
 #include "game.h"
+#include "map.h"
 #include "mp/mp_context.h"
 #include "mp/mp_describe.h"
 #include "mp/mp_protocol.h"
@@ -368,6 +369,13 @@ void mp_server_flush_scenes_all()
         // identical, which is the silence a no-op round wants.
         seat->scene_terrain_dirty = true;
         mp_activate_player( slot );
+        // Activation only marks the visibility cache dirty; a seat's own flush
+        // rebuilds it in draw_ter before sending. A parked seat never draws,
+        // so build it here for this avatar, exactly as draw_ter would, or the
+        // frame carries the last drawer's sight.
+        const int zlev = mp_active_context().ter_view_p.z();
+        get_map().build_map_cache( zlev );
+        get_map().update_visibility_cache( zlev );
         mp_server_flush_scene();
     }
     // The caller is the world: put the process back in the phase it entered

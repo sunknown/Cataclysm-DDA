@@ -146,6 +146,24 @@ mp_scene decode_only_scene( const std::vector<wire_frame> &frames )
     return scene;
 }
 
+// The scene codec does not export its terrain flags; these are the builder's
+// visible/memorized bits (src/mp/mp_scene.cpp).
+constexpr uint8_t scene_terrain_visible = 0x1;
+
+uint8_t scene_flags_at( const mp_scene &scene, const int x, const int y )
+{
+    REQUIRE_FALSE( scene.levels.empty() );
+    const mp_scene_level &level = scene.levels.front();
+    size_t flat = static_cast<size_t>( y ) * scene.tiles_w + static_cast<size_t>( x );
+    for( const mp_scene_terrain_run &run : level.terrain ) {
+        if( flat < run.repeat ) {
+            return run.flags;
+        }
+        flat -= run.repeat;
+    }
+    return 0;
+}
+
 // Runs `mp_server_flush_screen()` on a player thread that actually holds the
 // baton. There is no seam that sets the holder directly, so the world yields to
 // the slot, the player flushes and hands the baton back, and the world joins.
@@ -475,6 +493,45 @@ TEST_CASE( "a_waiting_seat_gets_its_own_scene", "[mp]" )
     mp_set_active_sched( nullptr );
     CHECK( count_of_kind( drain_frames( *first ), mp_msg_kind::scene ) == 0 );
     CHECK( count_of_kind( drain_frames( *second_wire ), mp_msg_kind::scene ) == 0 );
+
+    teardown_two_seat_stream_world();
+}
+
+TEST_CASE( "a_waiting_seats_visibility_comes_from_its_own_avatar", "[mp]" )
+{
+    restore_active_state restore;
+    prepare_two_seat_stream_world();
+
+    std::shared_ptr<mp_transport> first = install_session( 0 );
+    std::shared_ptr<mp_transport> second_wire = install_session( 1 );
+    REQUIRE( mp_session_of_slot( 0 ) != nullptr );
+    REQUIRE( mp_session_of_slot( 1 ) != nullptr );
+    mp_session_of_slot( 0 )->caps = 1;
+    mp_session_of_slot( 1 )->caps = 1;
+
+    // Seat 1 is boomered, seat 0 is not. Build seat 1's cache last: a flush
+    // that activates a seat without refreshing the cache hands seat 1's sight
+    // to both frames, which is the visible bug -- every seat sees the last
+    // drawn avatar's visibility.
+    mp_activate_player( 1 );
+    g->player_at( 1 ).add_effect( effect_boomered, 1_minutes );
+    get_map().invalidate_visibility_cache();
+    get_map().update_visibility_cache( g->player_at( 1 ).pos_bub().z() );
+    REQUIRE( get_map().get_visibility_variables_cache().u_is_boomered );
+
+    mp_sched sched( 2 );
+    mp_set_active_sched( &sched );
+    mp_server_flush_scenes_all();
+    mp_set_active_sched( nullptr );
+
+    const mp_scene scene0 = decode_only_scene( drain_frames( *first ) );
+    const mp_scene scene1 = decode_only_scene( drain_frames( *second_wire ) );
+
+    // The avatar's own cell is always clear to its own sight; with the other
+    // seat's cache it is not. A frame built from the wrong avatar therefore
+    // stops showing the seat where it stands.
+    CHECK( scene_flags_at( scene0, scene0.avatar_dx, scene0.avatar_dy )
+           & scene_terrain_visible );
 
     teardown_two_seat_stream_world();
 }
