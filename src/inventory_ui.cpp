@@ -41,6 +41,7 @@
 #include "map_selector.h"
 #include "memory_fast.h"
 #include "messages.h"
+#include "mp/mp_context.h"
 #include "options.h"
 #include "output.h"
 #include "point.h"
@@ -365,7 +366,7 @@ void uistatedata::serialize( JsonOut &json ) const
     const unsigned int input_history_save_max = 25;
     json.start_object();
 
-    transfer_save.serialize( json, "transfer_save_" );
+    mp_context_transfer_save( 0 ).serialize( json, "transfer_save_" );
     save_inv_state( json );
 
     /**** if you want to save whatever so it's whatever when the game is started next, declare here and.... ****/
@@ -466,7 +467,7 @@ void uistatedata::deserialize( const JsonObject &jo )
 {
     jo.allow_omitted_members();
 
-    transfer_save.deserialize( jo, "transfer_save_" );
+    mp_context_transfer_save( 0 ).deserialize( jo, "transfer_save_" );
     load_inv_state( jo );
     // the rest
     jo.read( "ags_pay_gas_selected_pump", ags_pay_gas_selected_pump );
@@ -5388,7 +5389,7 @@ bool pickup_selector::wear()
 void pickup_selector::reopen_menu( const item_location &next_item )
 {
     // copy the member variables to still be valid on call
-    uistate.open_menu = [where = where, to_use = to_use, next_item]() {
+    mp_active_open_menu() = [where = where, to_use = to_use, next_item]() {
         Pickup::pick_info pickup_info;
         pickup_info.highlight = next_item;
         get_player_character().pick_up( game_menus::inv::pickup( where, to_use, pickup_info ) );

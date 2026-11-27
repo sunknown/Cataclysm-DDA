@@ -1,11 +1,15 @@
 #include "cata_catch.h"
 
 #include <memory>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "cata_scope_helpers.h"
 #include "game.h"
 #include "game_test_helper.h"
+#include "json.h"
+#include "json_loader.h"
 #include "live_view.h"
 #include "map.h"
 #include "mp/mp_context.h"
@@ -13,6 +17,7 @@
 #include "panels.h"
 #include "popup.h"
 #include "ui_manager.h"
+#include "uistate.h"
 
 TEST_CASE( "mp_apply_viewport_params_computes_metrics_from_the_context", "[mp]" )
 {
@@ -57,6 +62,267 @@ class restore_active_context
 };
 
 } // namespace
+
+// OB-8: the deferred menu used to be process-wide, so seat A's AIM re-entry or
+// consume menu ran under whichever seat dispatched an action next. Each seat
+// owns its pending callback now, and only that seat's action runs it.
+TEST_CASE( "pending_menus_run_only_for_their_own_seat", "[mp][menu]" )
+{
+    restore_active_context restore;
+    player_context a;
+    player_context b;
+    int ran_a = 0;
+    int ran_b = 0;
+
+    mp_set_active_context( &a );
+    mp_active_open_menu() = [&ran_a, &a]() {
+        CHECK( &mp_active_context() == &a );
+        ++ran_a;
+    };
+
+    mp_set_active_context( &b );
+    mp_active_open_menu() = [&ran_b, &b]() {
+        CHECK( &mp_active_context() == &b );
+        ++ran_b;
+    };
+
+    // B's action dispatches B's pending menu and leaves A's alone.
+    CHECK( mp_run_open_menu() );
+    CHECK( ran_b == 1 );
+    CHECK( ran_a == 0 );
+    // The slot was cleared before the callback ran, not after it.
+    CHECK_FALSE( mp_run_open_menu() );
+
+    mp_set_active_context( &a );
+    REQUIRE( mp_active_open_menu().has_value() );
+    CHECK( mp_run_open_menu() );
+    CHECK( ran_a == 1 );
+    CHECK( ran_b == 1 );
+    CHECK_FALSE( mp_run_open_menu() );
+}
+
+// A menu that returns for an activity installs its own re-entry from inside the
+// callback that is running. The dispatch has to clear the slot before the call,
+// or the re-entry is destroyed by the same dispatch that created it.
+TEST_CASE( "a_deferred_menu_can_schedule_its_next_reentry", "[mp][menu]" )
+{
+    restore_active_context restore;
+    player_context seat;
+    std::vector<int> ran;
+
+    mp_set_active_context( &seat );
+    mp_active_open_menu() = [&ran, &seat]() {
+        CHECK( &mp_active_context() == &seat );
+        ran.push_back( 1 );
+        mp_active_open_menu() = [&ran, &seat]() {
+            CHECK( &mp_active_context() == &seat );
+            ran.push_back( 2 );
+        };
+    };
+
+    CHECK( mp_run_open_menu() );
+    CHECK( ran == std::vector<int>{ 1 } );
+    REQUIRE( mp_active_open_menu().has_value() );
+
+    CHECK( mp_run_open_menu() );
+    CHECK( ran == std::vector<int>{ 1, 2 } );
+    CHECK_FALSE( mp_active_open_menu().has_value() );
+
+    CHECK_FALSE( mp_run_open_menu() );
+    CHECK( ran.size() == 2 );
+}
+
+// The AIM pane state (which area, which pane is active, the filter) used to be
+// one uistate field for the whole process, so one seat's AIM reopened with the
+// other seat's panes -- or with the panes of whoever opened it last. Each seat
+// owns its save state now, and switching seats must neither move nor replace
+// the object: an AIM that stays open across turns holds a pointer to it.
+TEST_CASE( "aim_transfer_state_is_per_seat", "[mp][menu]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot().set_body();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+
+    mp_activate_player( 0 );
+    advanced_inv_save_state &seat0 = mp_active_transfer_save();
+    const advanced_inv_save_state saved0 = seat0;
+    // Repeated access hands back the same object, not a fresh default.
+    CHECK( &mp_context_transfer_save( 0 ) == &seat0 );
+    CHECK( &mp_context_transfer_save( 0 ) == &seat0 );
+
+    seat0.saved_area = 2;
+    seat0.active_left = false;
+    seat0.pane.filter = "seat zero filter";
+
+    mp_activate_player( 1 );
+    advanced_inv_save_state &seat1 = mp_active_transfer_save();
+    CHECK( &seat1 != &seat0 );
+    // A fresh seat starts from the struct's defaults, not from seat 0's state.
+    CHECK( seat1.saved_area != seat0.saved_area );
+    CHECK( seat1.pane.filter != seat0.pane.filter );
+
+    // Reading slot 0 through the indexed accessor must not follow the active
+    // seat, nor switch the avatar, context or ui stack.
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
+    CHECK( ui_manager::get_active_stack() == &g->contexts[1].ui_stack );
+    CHECK( &get_avatar() == &g->player_at( 1 ) );
+    CHECK( &mp_context_transfer_save( 0 ) == &seat0 );
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
+    CHECK( ui_manager::get_active_stack() == &g->contexts[1].ui_stack );
+    CHECK( &get_avatar() == &g->player_at( 1 ) );
+
+    seat1.saved_area = 7;
+    seat1.active_left = true;
+    seat1.pane.filter = "seat one filter";
+
+    // Back and forth: the addresses and the values both survive the switches.
+    mp_activate_player( 0 );
+    CHECK( &mp_active_transfer_save() == &seat0 );
+    CHECK( seat0.saved_area == 2 );
+    CHECK_FALSE( seat0.active_left );
+    CHECK( seat0.pane.filter == "seat zero filter" );
+
+    mp_activate_player( 1 );
+    CHECK( &mp_active_transfer_save() == &seat1 );
+    CHECK( &mp_context_transfer_save( 1 ) == &seat1 );
+    CHECK( seat1.saved_area == 7 );
+    CHECK( seat1.active_left );
+    CHECK( seat1.pane.filter == "seat one filter" );
+
+    seat0 = saved0;
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
+
+namespace {
+
+// The save state exactly as uistate.json writes its transfer_save_* members,
+// minus the surrounding object's braces, so it can be compared with the prefix
+// of a real document.
+std::string serialized_transfer_save_members( const advanced_inv_save_state &state )
+{
+    std::ostringstream os;
+    JsonOut jsout( os );
+    jsout.start_object();
+    state.serialize( jsout, "transfer_save_" );
+    jsout.end_object();
+    const std::string doc = os.str();
+    return doc.substr( 1, doc.size() - 2 );
+}
+
+} // namespace
+
+// uistate.json is one file for the whole session, so its transfer_save_*
+// members must always describe slot 0 -- never the seat that happened to hold
+// the baton when the file was written or read. Single-player is the same path
+// with only slot 0 existing, and the JSON stays byte-compatible.
+TEST_CASE( "uistate_transfer_save_roundtrip_always_targets_slot_zero", "[mp][menu]" )
+{
+    restore_active_state restore;
+    mp_ensure_player_context();
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+    g->add_player_slot().set_body();
+    mp_sync_context_count();
+    REQUIRE( g->contexts.size() == 2 );
+
+    advanced_inv_save_state &seat0 = mp_context_transfer_save( 0 );
+    const advanced_inv_save_state saved0 = seat0;
+    // A non-default value for every serialized member, so a member read from
+    // or written into the wrong seat is visible.
+    seat0.exit_code = aim_exit::okay;
+    seat0.re_enter_move_all = aim_entry::VEHICLE;
+    seat0.aim_all_location = 2;
+    seat0.active_left = false;
+    seat0.last_popup_dest = 3;
+    seat0.saved_area = 4;
+    seat0.saved_area_right = 5;
+    seat0.pane.sort_idx = 6;
+    seat0.pane.filter = "slot zero left";
+    seat0.pane.area_idx = 4;
+    seat0.pane.selected_idx = 7;
+    seat0.pane.in_vehicle = true;
+    seat0.pane.container_base_loc = 8;
+    seat0.pane_right.sort_idx = 9;
+    seat0.pane_right.filter = "slot zero right";
+    seat0.pane_right.selected_idx = 10;
+
+    // Serialize with another seat active: the writer must still pick slot 0.
+    mp_activate_player( 1 );
+    advanced_inv_save_state &seat1 = mp_active_transfer_save();
+    const advanced_inv_save_state saved1 = seat1;
+    seat1.saved_area = 20;
+    seat1.active_left = true;
+    seat1.pane.filter = "slot one left";
+
+    std::ostringstream ui_out;
+    {
+        JsonOut jsout( ui_out );
+        uistate.serialize( jsout );
+    }
+    const std::string doc = ui_out.str();
+    const JsonObject jo = json_loader::from_string( doc ).get_object();
+
+    // Every existing transfer_save_* member, not just the three probed below,
+    // came from slot 0: the leading member sequence of uistate.json is
+    // byte-identical to the same save state serialized directly under the old
+    // prefix.
+    const std::string direct = serialized_transfer_save_members( seat0 );
+    // Guard the prefix comparison from passing vacuously.
+    REQUIRE_FALSE( direct.empty() );
+    CHECK( direct.rfind( "\"transfer_save_", 0 ) == 0 );
+    CHECK( doc.compare( 1, direct.size(), direct ) == 0 );
+    CHECK( jo.get_int( "transfer_save_saved_area" ) == seat0.saved_area );
+    CHECK( jo.get_bool( "transfer_save_active_left" ) == seat0.active_left );
+    CHECK( jo.get_string( "transfer_save_pane_filter" ) == seat0.pane.filter );
+
+    // Load it back with seat 1 still active: the reader must target slot 0 too.
+    mp_context_transfer_save( 0 ).saved_area = 42;
+    mp_context_transfer_save( 0 ).pane.filter = "clobbered";
+    uistate.deserialize( jo );
+
+    CHECK( mp_context_transfer_save( 0 ).saved_area == 4 );
+    CHECK( mp_context_transfer_save( 0 ).pane.filter == "slot zero left" );
+    CHECK( mp_context_transfer_save( 0 ).exit_code == aim_exit::okay );
+    CHECK( mp_context_transfer_save( 0 ).re_enter_move_all == aim_entry::VEHICLE );
+    CHECK( mp_context_transfer_save( 0 ).pane_right.filter == "slot zero right" );
+    CHECK( mp_context_transfer_save( 0 ).pane_right.selected_idx == 10 );
+    // The active seat's state was not the target of either operation.
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
+    CHECK( mp_active_transfer_save().saved_area == 20 );
+    CHECK( mp_active_transfer_save().pane.filter == "slot one left" );
+
+    // An older uistate.json may omit the optional pane members; `jo.read`
+    // leaves the current value in place rather than resetting it to the
+    // struct default.
+    mp_context_transfer_save( 0 ).pane.filter = "kept";
+    mp_context_transfer_save( 0 ).pane.sort_idx = 3;
+    mp_context_transfer_save( 0 ).saved_area_right = 12;
+    const std::string old_json =
+        R"({"transfer_save_saved_area": 2, "transfer_save_active_left": false})";
+    uistate.deserialize( json_loader::from_string( old_json ).get_object() );
+
+    CHECK( mp_context_transfer_save( 0 ).saved_area == 2 );
+    CHECK_FALSE( mp_context_transfer_save( 0 ).active_left );
+    // deserialize seeds the pane from saved_area before reading the pane.
+    CHECK( mp_context_transfer_save( 0 ).pane.area_idx == 2 );
+    CHECK( mp_context_transfer_save( 0 ).pane.filter == "kept" );
+    CHECK( mp_context_transfer_save( 0 ).pane.sort_idx == 3 );
+    CHECK( mp_context_transfer_save( 0 ).saved_area_right == 12 );
+    CHECK( mp_active_context_ptr() == &g->contexts[1] );
+    CHECK( mp_active_transfer_save().saved_area == 20 );
+
+    seat0 = saved0;
+    seat1 = saved1;
+    mp_activate_player( 0 );
+    game_test_helper::reset_player_slots();
+    mp_sync_context_count();
+}
 
 TEST_CASE( "mp_active_context_follows_the_last_set_context", "[mp]" )
 {

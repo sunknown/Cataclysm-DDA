@@ -560,6 +560,9 @@ bool mp_action_is_free( const action_id act )
         case ACTION_TAKE_OFF:
         case ACTION_UNLOAD:
         case ACTION_ITEMACTION:
+        // AIM's key only opens the inventory-management menu; the moves it
+        // confirms inside are the same menu-action class as drop/craft above.
+        case ACTION_ADVANCEDINV:
         // The read menu opens first and the reading activity starts only on its
         // confirmed choice, and phase 1 keeps a menu's confirmed action
         // immediate, so the key itself spends nothing.

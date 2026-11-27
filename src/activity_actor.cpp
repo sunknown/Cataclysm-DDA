@@ -97,6 +97,7 @@
 #include "messages.h"
 #include "mongroup.h"
 #include "monster.h"
+#include "mp/mp_context.h"
 #include "mtype.h"
 #include "npc.h"
 #include "npc_opinion.h"
@@ -5826,7 +5827,7 @@ void consume_activity_actor::finish( player_activity &act, Character & )
     }
 
     if( !avatar_action::eat_here( player_character ) && reprompt_consume_menu ) {
-        uistate.open_menu = []() {
+        mp_active_open_menu() = []() {
             avatar_action::eat_or_use( get_avatar(),
                                        game_menus::inv::consume( uistate.consume_uistate.consume_menu_comestype ) );
         };
@@ -10421,7 +10422,7 @@ void firstaid_activity_actor::finish( player_activity &act, Character &who )
     act.values.clear();
 
     if( who.is_avatar() ) {
-        uistate.open_menu = []() {
+        mp_active_open_menu() = []() {
             avatar_action::eat_or_use( get_avatar(),
                                        game_menus::inv::consume( uistate.consume_uistate.consume_menu_comestype ) );
         };

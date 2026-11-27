@@ -5,6 +5,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "coordinates.h"    // tripoint_bub_ms, point_rel_ms
 #include "cursesdef.h"      // catacurses::window
@@ -12,11 +13,13 @@
 #include "ui_manager.h"     // ui_stack_t, ui_adaptor
 #include "memory_fast.h"    // weak_ptr_fast
 
+class advanced_inventory;
 class live_view;
 class memorial_logger;
 class safemode;
 class static_popup;
 class zone_manager;
+struct advanced_inv_save_state;
 struct character_creator_uistate;
 namespace auto_pickup
 {
@@ -97,6 +100,26 @@ struct player_context {
     // process-wide view let one seat's movement keys move the other seat's
     // cursor and map. Access through mp_active_overmap_view() below.
     overmap_view_state overmap_view; // NOLINT(cata-serialize)
+
+    // This seat's AIM pane state (selected areas, active pane, filters). It
+    // used to be one uistate field for the whole process, so a second seat's
+    // AIM reopened with the first seat's panes. Created on first access and
+    // never replaced: an AIM retained across turns holds its address. Declared
+    // before `aim` so it outlives it -- ~advanced_inventory() writes the panes
+    // back through its save_state pointer.
+    std::unique_ptr<advanced_inv_save_state> transfer_save; // NOLINT(cata-serialize)
+    // This seat's retained AIM. It used to be a file-static in advanced_inv.cpp,
+    // so whichever seat opened AIM last owned it and another seat's action
+    // could close it. Per seat also fixes teardown: the instance's ui_adaptor
+    // must die under the ui stack it registered in.
+    std::unique_ptr<advanced_inventory> aim; // NOLINT(cata-serialize)
+
+    // The menu this seat's last action deferred to its next one (AIM re-entry,
+    // consume, armor layers, pickup, overmap look). It used to be process-wide
+    // in `uistate`, so seat A's callback ran under whichever seat acted next
+    // (OB-8). Not serialized, and not game state: only a UI re-entry.
+    // Access through mp_active_open_menu() below.
+    std::optional<std::function<void()>> open_menu; // NOLINT(cata-serialize)
 
     // This player's character-creator menu state (newcharacter.cpp's
     // cc_uistate). It is per player for the same reason everything else here
@@ -197,6 +220,23 @@ std::shared_ptr<ui_adaptor> &mp_active_overmap_ui();
 // above: every in-tree caller installs a context (single-player too, as
 // contexts[0]), so it is currently unreached.
 overmap_view_state &mp_active_overmap_view();
+// The active seat's deferred menu callback. Every writer (AIM re-entry,
+// consume, armor layers, pickup, overmap look) installs here, so the callback
+// runs under the seat that installed it, not whichever seat acts next (OB-8).
+std::optional<std::function<void()>> &mp_active_open_menu();
+// Runs the active seat's deferred menu, if any: moves the callback out and
+// clears the slot before invoking it, because the callback may install the
+// next re-entry (AIM returning for an activity). False when none is pending.
+bool mp_run_open_menu();
+// The active seat's AIM pane state, created on first use. It is the pointer
+// the seat's retained AIM holds, so it must never be replaced while that AIM
+// lives.
+advanced_inv_save_state &mp_active_transfer_save();
+// The AIM pane state of a specific seat, created on first use. The shared
+// uistate.json serializer writes and reads slot 0 through this, never the
+// active seat's. Requires g->contexts[slot]; does not touch the active avatar,
+// context or ui stack.
+advanced_inv_save_state &mp_context_transfer_save( size_t slot );
 void mp_set_active_context( player_context *ctx ); // nullptr = reset; reading asserts
 
 void mp_apply_viewport_params( const player_context &ctx );

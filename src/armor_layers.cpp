@@ -30,6 +30,7 @@
 #include "item.h"
 #include "item_location.h"
 #include "itype.h"
+#include "mp/mp_context.h"
 #include "output.h"
 #include "pimpl.h"
 #include "point.h"
@@ -38,7 +39,6 @@
 #include "translations.h"
 #include "type_id.h"
 #include "uilist.h"
-#include "uistate.h"
 #include "ui_manager.h"
 #include "units.h"
 #include "units_utility.h"
@@ -692,7 +692,7 @@ void outfit::sort_armor( Character &guy )
 
     Character &player_character = get_player_character();
     auto do_return_entry = [this, guy_ptr = &guy]() {
-        uistate.open_menu = [this, guy_ptr]() {
+        mp_active_open_menu() = [this, guy_ptr]() {
             sort_armor( *guy_ptr );
         };
     };
@@ -1224,5 +1224,5 @@ void outfit::sort_armor( Character &guy )
             exit = true;
         }
     }
-    uistate.open_menu.reset();
+    mp_active_open_menu().reset();
 }

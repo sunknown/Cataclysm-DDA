@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "cata_scope_helpers.h"
 
 #include "activity_actor_definitions.h"
+#include "advanced_inv_area.h"
 #include "avatar.h"
 #include "bodypart.h"
 #include "catacharset.h"
@@ -62,6 +64,7 @@
 #include "trap.h"
 #include "type_id.h"
 #include "ui_manager.h"
+#include "uistate.h"
 #include "units.h"
 
 static const vproto_id vehicle_prototype_test_shopping_cart( "test_shopping_cart" );
@@ -81,6 +84,23 @@ void queue_control( const size_t slot, const mp_control &msg )
     {
         std::lock_guard<std::mutex> lock( session->inbox_mutex );
         session->control_inbox.push_back( msg );
+    }
+    session->inbox_cv.notify_all();
+}
+
+// A text-entry event, queued exactly where the seat's reader puts a decoded
+// keystroke. press() carries no ev.text (the harness's control message has a
+// key only), but a real client's text field gets one, and the filter prompt is
+// a text field: without the text every FILTER key would leave the field empty.
+void queue_input_text( const size_t slot, const std::string &text )
+{
+    mp_session *const session = mp_session_of_slot( slot );
+    REQUIRE( session != nullptr );
+    input_event ev( static_cast<int>( text.front() ), input_event_t::keyboard_char );
+    ev.text = text;
+    {
+        std::lock_guard<std::mutex> lock( session->inbox_mutex );
+        session->input_inbox.push_back( ev );
     }
     session->inbox_cv.notify_all();
 }
@@ -182,7 +202,7 @@ void prepare_two_seat_round( mp_session_harness &harness, const int moves )
     REQUIRE( harness.run_until( []() {
         return g->contexts[0].w_terrain && g->contexts[1].w_terrain &&
                mp_turn_is_open() && mp_plan_phase() == mp_round_phase::planning;
-    }, 20 ) );
+    }, 200 ) );
 }
 
 } // namespace
@@ -325,6 +345,21 @@ const mp_heavy_menu mp_menu_map{ 'm', "Quick Reference" };
 // through uilist's own cancel at teardown).
 const mp_heavy_menu mp_menu_vehicle{ 'e', "Examine vehicle" };
 const mp_heavy_menu mp_menu_construction{ '*', "Construction" };
+// AIM's header carries the sort line in its own render (advanced_inv.cpp:877),
+// not a title invented here.
+const mp_heavy_menu mp_menu_aim{ '/', "Sort: " };
+
+// A case starts from no deferred menu: the AIM unit test drives process_action
+// directly, so its re-entry callback stays pending in context 0, and a session
+// case would dispatch that before its own key. No AIM may be left either (it
+// would have a live adaptor that must be dropped under its owner's stack, not
+// here).
+void reset_seat_menu_state( size_t slot )
+{
+    REQUIRE( g->contexts[slot].aim == nullptr );
+    g->contexts[slot].open_menu.reset();
+    mp_context_transfer_save( slot ) = advanced_inv_save_state{};
+}
 } // namespace
 
 // The six menus the design names as the heavy ones (inventory, crafting, map,
@@ -342,6 +377,7 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
     };
     const std::vector<menu_case> menus = {
         { "inventory vs character sheet", mp_menu_inventory, mp_menu_character_sheet },
+        { "AIM vs character sheet", mp_menu_aim, mp_menu_character_sheet },
         { "crafting vs map", mp_menu_crafting, mp_menu_map },
         { "vehicle vs construction", mp_menu_vehicle, mp_menu_construction },
     };
@@ -353,6 +389,8 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
             clear_vehicles();
         } );
         mp_session_harness harness( 2 );
+        reset_seat_menu_state( 0 );
+        reset_seat_menu_state( 1 );
         if( c.first.key == mp_menu_vehicle.key ) {
             // Something to examine: without a vehicle in reach the key opens
             // nothing, and the case would compare a menu with a blank screen.
@@ -381,7 +419,537 @@ TEST_CASE( "two_players_sit_in_different_heavy_menus", "[mp]" )
         // wrong session's grid.
         CHECK_FALSE( mp_grid_contains( harness.screen( 0 ), c.second.marker ) );
         CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), c.first.marker ) );
+        // AIM is retained in the player context, not on the thread stack, so
+        // unlike the other menus it does not unwind by itself when the harness
+        // stops the threads; close it so the next case starts from no AIM.
+        if( c.first.key == mp_menu_aim.key ) {
+            harness.press( 0, KEY_ESCAPE );
+            // The object, not the client grid: this harness's grids die with
+            // the scope, and the next case builds its own. What must not
+            // outlive the case is context 0's retained AIM.
+            REQUIRE( harness.run_until( [&]() {
+                return g->contexts[0].aim == nullptr;
+            }, 200 ) );
+        }
     }
+}
+
+namespace
+{
+const itype_id itype_knife_combat( "knife_combat" );
+const itype_id itype_backpack( "backpack" );
+const itype_id itype_rock( "rock" );
+const itype_id itype_stick( "stick" );
+
+// The same marker the AIM render carries (advanced_inv.cpp redraw_pane): every
+// pane draws its sort line, and no other menu here does.
+bool aim_shown( const mp_session_harness &harness, size_t slot )
+{
+    return mp_grid_contains( harness.screen( slot ), mp_menu_aim.marker );
+}
+
+// Item names in a pane's list, not the filter footer on the last screen row
+// ("< [f] Filter: rock >" would otherwise satisfy a plain text search). Both
+// panes' footers share that row, so skipping it removes both filter labels.
+bool item_row_shown( const mp_session_harness &harness, size_t slot, const std::string &text )
+{
+    const mp_screen_grid &grid = harness.screen( slot );
+    for( int y = 0; y + 1 < grid.height(); ++y ) {
+        std::string row;
+        for( int x = 0; x < grid.width(); ++x ) {
+            row += grid.at( x, y ).ch;
+        }
+        if( row.find( text ) != std::string::npos ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void open_aim( mp_session_harness &harness, size_t slot )
+{
+    harness.press( slot, mp_menu_aim.key );
+    REQUIRE( harness.run_until( [&]() {
+        return aim_shown( harness, slot );
+    }, 200 ) );
+}
+
+void seed_knives( const tripoint_bub_ms &pos, int count )
+{
+    for( int i = 0; i < count; ++i ) {
+        get_map().add_item( pos, item( itype_knife_combat ) );
+    }
+}
+
+int ground_knives( const tripoint_bub_ms &pos )
+{
+    int count = 0;
+    for( const item &it : get_map().i_at( pos ) ) {
+        if( it.typeId() == itype_knife_combat ) {
+            count += it.count();
+        }
+    }
+    return count;
+}
+
+// Source pane to the tile under the avatar, with the DEFAULTMODE default '5'
+// (ITEMS_CE), so the move below goes ground -> inventory.
+void choose_center_pane( mp_session_harness &harness, size_t slot )
+{
+    harness.press( slot, '5' );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( slot ), "Directly below you" );
+    }, 200 ) );
+}
+
+void set_aim_filter( mp_session_harness &harness, size_t slot, const std::string &text )
+{
+    harness.press( slot, 'f' );
+    // The prompt is a text field; wait until its help is drawn before feeding
+    // it, so the wire key and the typed event stay in order. "shirt" is the
+    // help's example item and appears nowhere else on these panes.
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( slot ), "shirt" );
+    }, 200 ) );
+    queue_input_text( slot, text );
+    // What a terminal sends for Enter; the string field's confirm action is
+    // bound to RETURN ('\n'), not to the keypad code. The prompt is gone once
+    // the edit mode ends; whether the text was kept is asserted by the pane's
+    // filtered list and the preference saved on close.
+    harness.press( slot, '\n' );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( slot ), "shirt" );
+    }, 200 ) );
+}
+
+// The retained state a real move-all leaves: this seat's AIM still owns the
+// menu object, its save state says the menu returns after the activity, and
+// the callback that reopens it is still pending.
+bool aim_is_retained( size_t slot )
+{
+    return g->contexts.size() > slot && g->contexts[slot].aim != nullptr &&
+           mp_context_transfer_save( slot ).exit_code == aim_exit::re_entry &&
+           g->contexts[slot].open_menu.has_value();
+}
+
+void wait_holding( mp_session_harness &harness, size_t slot )
+{
+    REQUIRE( harness.run_until( [&]() {
+        return mp_player_state_of( slot ) == mp_player_state::holding;
+    }, 200 ) );
+}
+
+// Drives a retained AIM to the real move-all result: 20 separate knives under
+// the actor, a free action's worth of moves so one grant cannot finish it.
+void retain_aim_with_unfinished_activity( mp_session_harness &harness, size_t slot )
+{
+    // A previous case's panes/filters and pending menu persist in the seat's
+    // store (the file is per world); a clean state is what makes this case's
+    // area and filter the ones being tested.
+    reset_seat_menu_state( slot );
+    // Step 4's sections put the backpack on before taking the baseline; do not
+    // stack a second one and charge its encumbrance to the AIM exit.
+    if( g->player_at( slot ).amount_worn( itype_backpack ) == 0 ) {
+        REQUIRE( g->player_at( slot ).wear_item( item( itype_backpack ), false ).has_value() );
+    }
+    const tripoint_bub_ms pos = g->player_at( slot ).pos_bub();
+    seed_knives( pos, 20 );
+    g->player_at( slot ).set_moves( 100 );
+    open_aim( harness, slot );
+    choose_center_pane( harness, slot );
+    // Enough for one or two knives; the grant cannot finish the move-all.
+    g->player_at( slot ).set_moves( 150 );
+    harness.press( slot, ',' );
+    // Real thread scheduling decides how many polls the key and its grant
+    // take; the bound only has to be generous, not tight.
+    REQUIRE( harness.run_until( [&]() {
+        return aim_is_retained( slot ) && !g->player_at( slot ).activity.is_null();
+    }, 200 ) );
+    CAPTURE( ground_knives( pos ) );
+    REQUIRE( ground_knives( pos ) < 20 );
+}
+
+// Brings the seat's pending reopen into display(). The callback is taken
+// before it runs, so an empty slot plus a still-owned AIM is the proof the
+// menu is live: create_advanced_inv either blocks in display() or resets the
+// AIM after display() returns; it cannot leave both true otherwise. A seat
+// parked inside a previous player_act step consumes one key without reaching
+// handle_action, hence the retries.
+void dispatch_aim_return( mp_session_harness &harness, size_t slot )
+{
+    for( int i = 0; i < 6 && g->contexts[slot].open_menu.has_value(); ++i ) {
+        g->player_at( slot ).set_moves( 100 );
+        harness.press( slot, 'z' );
+        harness.run_until( [&]() {
+            return !g->contexts[slot].open_menu.has_value();
+        }, 3 );
+    }
+    REQUIRE_FALSE( g->contexts[slot].open_menu.has_value() );
+    REQUIRE( g->contexts[slot].aim != nullptr );
+}
+
+int torso_encumbrance( size_t slot )
+{
+    return g->player_at( slot ).encumb( bodypart_id( "torso" ) );
+}
+} // namespace
+
+// Two AIMs at once: each seat's pane area, filter and saved preferences are
+// its own. The check is not "the same marker is on both grids" -- it is that
+// each grid shows its own area and filter, that closing one leaves the other
+// untouched, and that the closed seat's preferences were the ones saved.
+TEST_CASE( "two_players_can_hold_aim_open_at_once", "[mp][menu]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    reset_seat_menu_state( 0 );
+    reset_seat_menu_state( 1 );
+    g->player_at( 0 ).set_moves( 100 );
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 0, mp_menu_aim.key );
+    harness.press( 1, mp_menu_aim.key );
+    REQUIRE( harness.run_until( [&]() {
+        return aim_shown( harness, 0 ) && aim_shown( harness, 1 );
+    }, 200 ) );
+
+    const advanced_inv_save_state slot0_before = mp_context_transfer_save( 0 );
+
+    // Different ground panes through the default area keys, each with the same
+    // two item kinds under it. Different filters then keep different items, so
+    // the screens differ for a reason beyond their area names.
+    const tripoint_bub_ms a_sw = g->player_at( 0 ).pos_bub() + tripoint_rel_ms( -1, 1, 0 );
+    const tripoint_bub_ms b_ne = g->player_at( 1 ).pos_bub() + tripoint_rel_ms( 1, -1, 0 );
+    for( const tripoint_bub_ms &pos : {
+             a_sw, b_ne
+         } ) {
+        get_map().add_item( pos, item( itype_rock ) );
+        get_map().add_item( pos, item( itype_stick ) );
+    }
+    harness.press( 0, '1' );
+    harness.press( 1, '9' );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 0 ), "South West" ) &&
+               mp_grid_contains( harness.screen( 1 ), "North East" );
+    }, 200 ) );
+    // Both ground panes list both item kinds before a filter narrows them.
+    REQUIRE( harness.run_until( [&]() {
+        return item_row_shown( harness, 0, "rock" ) &&
+               item_row_shown( harness, 0, "stick" ) &&
+               item_row_shown( harness, 1, "rock" ) &&
+               item_row_shown( harness, 1, "stick" );
+    }, 200 ) );
+    set_aim_filter( harness, 0, "rock" );
+    set_aim_filter( harness, 1, "stick" );
+    // Each pane keeps the item its own filter matches and hides the other's.
+    REQUIRE( harness.run_until( [&]() {
+        return item_row_shown( harness, 0, "rock" ) &&
+               !item_row_shown( harness, 0, "stick" ) &&
+               item_row_shown( harness, 1, "stick" ) &&
+               !item_row_shown( harness, 1, "rock" );
+    }, 200 ) );
+    CHECK_FALSE( mp_grid_contains( harness.screen( 0 ), "North East" ) );
+    CHECK_FALSE( mp_grid_contains( harness.screen( 1 ), "South West" ) );
+
+    // Seat 1 closes. Its own preferences are saved; seat 0's store is not the
+    // one written, and its open AIM keeps drawing its own state.
+    harness.press( 1, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !aim_shown( harness, 1 );
+    }, 200 ) );
+    CHECK( mp_context_transfer_save( 1 ).pane.filter == "stick" );
+    CHECK( mp_context_transfer_save( 1 ).pane.area_idx == AIM_NORTHEAST );
+    CHECK( mp_context_transfer_save( 0 ).pane.filter == slot0_before.pane.filter );
+    CHECK( mp_context_transfer_save( 0 ).pane.area_idx == slot0_before.pane.area_idx );
+
+    harness.press( 0, 'j' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( aim_shown( harness, 0 ) );
+    CHECK( item_row_shown( harness, 0, "rock" ) );
+    CHECK_FALSE( item_row_shown( harness, 0, "stick" ) );
+    CHECK( mp_grid_contains( harness.screen( 0 ), "South West" ) );
+    CHECK_FALSE( aim_shown( harness, 1 ) );
+
+    // The reverse order: seat 1 reopens with its saved panes and filter, then
+    // seat 0 closes and seat 1 keeps browsing.
+    harness.press( 1, mp_menu_aim.key );
+    REQUIRE( harness.run_until( [&]() {
+        return aim_shown( harness, 0 ) && aim_shown( harness, 1 );
+    }, 200 ) );
+    CHECK( item_row_shown( harness, 1, "stick" ) );
+    CHECK_FALSE( item_row_shown( harness, 1, "rock" ) );
+    CHECK( mp_grid_contains( harness.screen( 1 ), "North East" ) );
+
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !aim_shown( harness, 0 );
+    }, 200 ) );
+    CHECK( mp_context_transfer_save( 0 ).pane.filter == "rock" );
+    CHECK( mp_context_transfer_save( 0 ).pane.area_idx == AIM_SOUTHWEST );
+
+    harness.press( 1, 'k' );
+    harness.run_until( []() {
+        return false;
+    }, 3 );
+    CHECK( aim_shown( harness, 1 ) );
+    CHECK( item_row_shown( harness, 1, "stick" ) );
+    CHECK_FALSE( aim_shown( harness, 0 ) );
+}
+
+// A move-all leaves AIM retained for its seat, not file-static state: while
+// seat A's activity is unfinished and its reopen callback is pending, seat B's
+// free action neither owns that AIM nor resets it, and A's menu returns after
+// the activity with the knives really moved.
+TEST_CASE( "aim_activity_reentry_belongs_to_its_seat", "[mp][menu]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 2 );
+    const tripoint_bub_ms apos = g->player_at( 0 ).pos_bub();
+    retain_aim_with_unfinished_activity( harness, 0 );
+    const advanced_inventory *const retained = g->contexts[0].aim.get();
+    REQUIRE( retained != nullptr );
+    REQUIRE_FALSE( g->player_at( 0 ).activity.is_null() );
+
+    // B takes a free action while A is retained: the inventory opens on B's
+    // own screen, which proves the key was dispatched, not merely queued. B
+    // has no AIM of its own and A's object, save state and callback are
+    // untouched. The menu is closed again so B is free for the rest.
+    g->player_at( 1 ).set_moves( 100 );
+    harness.press( 1, 'i' );
+    REQUIRE( harness.run_until( [&]() {
+        return mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    }, 200 ) );
+    CHECK( g->contexts[1].aim == nullptr );
+    CHECK( g->contexts[0].aim.get() == retained );
+    CHECK( aim_is_retained( 0 ) );
+    CHECK_FALSE( g->player_at( 0 ).activity.is_null() );
+    harness.press( 1, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
+    }, 200 ) );
+    CHECK_FALSE( aim_shown( harness, 1 ) );
+
+    // Finish A's activity on real grants, then let its next action dispatch the
+    // pending re-entry.
+    for( int i = 0; i < 40 && !g->player_at( 0 ).activity.is_null(); ++i ) {
+        g->player_at( 0 ).set_moves( 200 );
+        harness.press( 0, 'z' );
+        harness.run_until( [&]() {
+            return g->player_at( 0 ).activity.is_null();
+        }, 3 );
+    }
+    REQUIRE( g->player_at( 0 ).activity.is_null() );
+    // A grant now dispatches the pending reopen. load_settings clears the
+    // re-entry marker only when the menu actually displays, so that is the
+    // proof the return happened -- a retained client grid can still carry the
+    // old marker from before the move-all.
+    dispatch_aim_return( harness, 0 );
+    CHECK( aim_shown( harness, 0 ) );
+    CHECK( g->contexts[0].aim != nullptr );
+    CHECK( ground_knives( apos ) == 0 );
+    CHECK( g->player_at( 0 ).amount_of( itype_knife_combat ) == 20 );
+    CHECK( g->contexts[1].aim == nullptr );
+    CHECK_FALSE( aim_shown( harness, 1 ) );
+
+    // AIM lives in the context, not on the thread stack, so it does not unwind
+    // on teardown the way a stack-held menu does; close it here.
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return !aim_shown( harness, 0 );
+    }, 200 ) );
+    CHECK( g->contexts[0].aim == nullptr );
+}
+
+// AIM's exit refreshes the owning character's encumbrance cache, with no world
+// tick doing it behind the test's back: the partner holds the barrier at its
+// input wait, so no avatar_turn_post runs between the menu closing and the
+// measurement. The comparison is against an explicit calc_encumbrance(), not
+// against get_check_encumbrance() (which may already have cleared the flag).
+TEST_CASE( "aim_exit_rechecks_the_owners_encumbrance", "[mp][menu]" )
+{
+    restore_active_state restore;
+
+    SECTION( "normal close" ) {
+        mp_session_harness harness( 2 );
+        reset_seat_menu_state( 0 );
+        reset_seat_menu_state( 1 );
+        REQUIRE( g->player_at( 0 ).wear_item( item( itype_backpack ), false ).has_value() );
+        REQUIRE( g->player_at( 1 ).wear_item( item( itype_backpack ), false ).has_value() );
+        g->player_at( 0 ).calc_encumbrance();
+        g->player_at( 1 ).calc_encumbrance();
+        const int owner_before = torso_encumbrance( 0 );
+        const int partner_before = torso_encumbrance( 1 );
+
+        // Partner at its input wait: the tick stays open, so nothing but the
+        // menu's own exit may refresh the owner's cache.
+        g->player_at( 1 ).set_moves( 100 );
+        harness.press( 1, 'z' );
+        wait_holding( harness, 1 );
+
+        const tripoint_bub_ms apos = g->player_at( 0 ).pos_bub();
+        seed_knives( apos, 20 );
+        g->player_at( 0 ).set_moves( 100 );
+        open_aim( harness, 0 );
+        choose_center_pane( harness, 0 );
+        // Enough moves to finish the whole move-all in this grant, so AIM is
+        // retained for re-entry and then reopens with no pending activity.
+        g->player_at( 0 ).set_moves( 5000 );
+        harness.press( 0, ',' );
+        // The whole move finishes in this grant and the return reopens AIM; an
+        // empty ground is what proves the move really happened (the marker and
+        // a null activity are both true before the key is read).
+        REQUIRE( harness.run_until( [&]() {
+            return ground_knives( apos ) == 0 && aim_shown( harness, 0 );
+        }, 200 ) );
+        REQUIRE( g->player_at( 0 ).activity.is_null() );
+        CHECK_FALSE( g->contexts[0].open_menu.has_value() );
+
+        harness.press( 0, KEY_ESCAPE );
+        REQUIRE( harness.run_until( [&]() {
+            return !aim_shown( harness, 0 );
+        }, 200 ) );
+        const int owner_observed = torso_encumbrance( 0 );
+        g->player_at( 0 ).calc_encumbrance();
+        CHECK( owner_observed == torso_encumbrance( 0 ) );
+        CHECK( owner_observed != owner_before );
+        CHECK( torso_encumbrance( 1 ) == partner_before );
+    }
+
+    SECTION( "activity and re-entry" ) {
+        mp_session_harness harness( 2 );
+        REQUIRE( g->player_at( 0 ).wear_item( item( itype_backpack ), false ).has_value() );
+        REQUIRE( g->player_at( 1 ).wear_item( item( itype_backpack ), false ).has_value() );
+        g->player_at( 0 ).calc_encumbrance();
+        g->player_at( 1 ).calc_encumbrance();
+        const int owner_before = torso_encumbrance( 0 );
+        const int partner_before = torso_encumbrance( 1 );
+
+        g->player_at( 1 ).set_moves( 100 );
+        harness.press( 1, 'z' );
+        wait_holding( harness, 1 );
+
+        const tripoint_bub_ms apos = g->player_at( 0 ).pos_bub();
+        retain_aim_with_unfinished_activity( harness, 0 );
+        REQUIRE( aim_is_retained( 0 ) );
+        REQUIRE_FALSE( g->player_at( 0 ).activity.is_null() );
+
+        for( int i = 0; i < 40 && !g->player_at( 0 ).activity.is_null(); ++i ) {
+            g->player_at( 0 ).set_moves( 200 );
+            harness.press( 0, 'z' );
+            harness.run_until( [&]() {
+                return g->player_at( 0 ).activity.is_null();
+            }, 3 );
+        }
+        REQUIRE( g->player_at( 0 ).activity.is_null() );
+        dispatch_aim_return( harness, 0 );
+        REQUIRE( aim_shown( harness, 0 ) );
+        REQUIRE( g->contexts[0].aim != nullptr );
+        REQUIRE( ground_knives( apos ) == 0 );
+
+        harness.press( 0, KEY_ESCAPE );
+        REQUIRE( harness.run_until( [&]() {
+            return !aim_shown( harness, 0 );
+        }, 200 ) );
+        const int owner_observed = torso_encumbrance( 0 );
+        g->player_at( 0 ).calc_encumbrance();
+        CHECK( owner_observed == torso_encumbrance( 0 ) );
+        CHECK( owner_observed != owner_before );
+        CHECK( torso_encumbrance( 1 ) == partner_before );
+    }
+}
+
+// Shrinking the roster must drop the removed seat's retained AIM under that
+// seat's stack, leaving the survivor's context, stack and preferences alone.
+// The threads are stopped first: a live thread's stack is never pulled out
+// from under it, and no stand-in adaptor replaces the retained one.
+TEST_CASE( "shrinking_contexts_drops_retained_aim_under_its_owner_stack", "[mp][menu]" )
+{
+    restore_active_state restore;
+
+    SECTION( "retained AIM with a live adaptor" ) {
+        mp_session_harness harness( 2 );
+        reset_seat_menu_state( 0 );
+        retain_aim_with_unfinished_activity( harness, 1 );
+        REQUIRE( aim_is_retained( 1 ) );
+        REQUIRE( g->contexts[1].aim != nullptr );
+
+        advanced_inv_save_state &survivor = mp_context_transfer_save( 0 );
+        survivor.saved_area = 4;
+        survivor.active_left = false;
+        survivor.pane.filter = "survivor";
+        survivor.pane.sort_idx = 3;
+
+        mp_stop_player_threads( mp_active_sched() );
+        mp_activate_player( 0 );
+        g->remove_extra_player_slots();
+        mp_sync_context_count();
+
+        REQUIRE( g->contexts.size() == 1 );
+        CHECK( mp_active_context_ptr() == &g->contexts[0] );
+        CHECK( ui_manager::get_active_stack() == &g->contexts[0].ui_stack );
+        CHECK( mp_context_transfer_save( 0 ).saved_area == 4 );
+        CHECK_FALSE( mp_context_transfer_save( 0 ).active_left );
+        CHECK( mp_context_transfer_save( 0 ).pane.filter == "survivor" );
+        CHECK( mp_context_transfer_save( 0 ).pane.sort_idx == 3 );
+    }
+
+    SECTION( "retained AIM after temp_hide has no adaptor" ) {
+        mp_session_harness harness( 2 );
+        reset_seat_menu_state( 0 );
+        retain_aim_with_unfinished_activity( harness, 1 );
+        REQUIRE( aim_is_retained( 1 ) );
+        REQUIRE( g->contexts[1].aim != nullptr );
+
+        advanced_inv_save_state &survivor = mp_context_transfer_save( 0 );
+        survivor.saved_area = 6;
+        survivor.active_left = true;
+        survivor.pane.filter = "kept";
+        survivor.pane.sort_idx = 5;
+
+        mp_stop_player_threads( mp_active_sched() );
+        // The retained AIM's adaptor is dropped under its own seat, before the
+        // seat goes; the shrink then has an AIM with no adaptor to drop.
+        mp_activate_player( 1 );
+        temp_hide_advanced_inv();
+        CHECK( g->contexts[1].aim != nullptr );
+        mp_activate_player( 0 );
+        g->remove_extra_player_slots();
+        mp_sync_context_count();
+
+        REQUIRE( g->contexts.size() == 1 );
+        CHECK( mp_active_context_ptr() == &g->contexts[0] );
+        CHECK( ui_manager::get_active_stack() == &g->contexts[0].ui_stack );
+        CHECK( mp_context_transfer_save( 0 ).saved_area == 6 );
+        CHECK( mp_context_transfer_save( 0 ).active_left );
+        CHECK( mp_context_transfer_save( 0 ).pane.filter == "kept" );
+        CHECK( mp_context_transfer_save( 0 ).pane.sort_idx == 5 );
+    }
+}
+
+// The destructive terminal case, run only by its own invocation: it tears the
+// global game down inside the process, so it must never be selected together
+// with another case. Every precondition is fatal, because the _Exit below
+// would otherwise hide accumulated failures from the Catch listener.
+TEST_CASE( "retained_aim_survives_game_reset", "[mp][menu][.]" )
+{
+    {
+        restore_active_state restore;
+        {
+            mp_session_harness harness( 1 );
+            retain_aim_with_unfinished_activity( harness, 0 );
+            REQUIRE( aim_is_retained( 0 ) );
+            REQUIRE_FALSE( g->player_at( 0 ).activity.is_null() );
+            // The harness scope ends here: its destructor stops and joins the
+            // player thread and readers before the terminal teardown.
+        }
+        REQUIRE( g->contexts.size() == 1 );
+        REQUIRE( g->contexts[0].aim != nullptr );
+        REQUIRE( mp_context_transfer_save( 0 ).exit_code == aim_exit::re_entry );
+    }
+    // The restore guard above has run; no test helper touches game from here.
+    g.reset();
+    std::_Exit( EXIT_SUCCESS );
 }
 
 // The overmap is the one heavy screen that outlives its input loop: with fast
@@ -412,7 +980,7 @@ TEST_CASE( "two_players_can_hold_the_overmap_open_at_once", "[mp]" )
     harness.press( 1, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker );
-    }, 20 ) );
+    }, 200 ) );
     // A key wakes seat 0's parked overmap loop, which redraws before reading
     // it. The pre-fix build nulled the shared adaptor above, so this redraw is
     // where the other seat notices.
@@ -428,11 +996,11 @@ TEST_CASE( "two_players_can_hold_the_overmap_open_at_once", "[mp]" )
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 1 ), mp_menu_map.marker ) &&
                mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker );
-    }, 20 ) );
+    }, 200 ) );
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 0 ), mp_menu_map.marker );
-    }, 20 ) );
+    }, 200 ) );
     // Same check in the mirror direction: seat 1's retained map must survive
     // seat 0's force_quit().
     harness.press( 1, KEY_RIGHT );
@@ -494,7 +1062,7 @@ TEST_CASE( "two_players_overmaps_do_not_share_a_cursor", "[mp]" )
     // and never one_right, so this still fails on the bug it guards.
     const bool moved = harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 1 ), seat1_one_right.to_string() );
-    }, 20 );
+    }, 200 );
     CAPTURE( seat1_origin.to_string(), seat1_one_right.to_string(),
              seat1_shifted_by_seat0.to_string() );
     // The shared cursor's position must not reach this seat's screen: that is
@@ -558,7 +1126,7 @@ TEST_CASE( "a_player_in_a_menu_holds_the_round", "[mp]" )
     harness.press( 1, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
-    }, 20 ) );
+    }, 200 ) );
     queue_plan_pass( 1 );
     CHECK( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
@@ -609,7 +1177,7 @@ TEST_CASE( "another_players_key_does_not_close_a_mouse_view", "[mp]" )
     queue_plan_pass( 0 );
     REQUIRE( harness.run_until( [turn_before]() {
         return to_turn<int>( calendar::turn ) > turn_before;
-    }, 20 ) );
+    }, 200 ) );
     CHECK( harness.client_connected( 0 ) );
 }
 
@@ -696,7 +1264,7 @@ TEST_CASE( "a_voluntary_quit_leaves_the_table_without_a_replacement", "[mp]" )
     harness.press( 1, 'Y' );
     REQUIRE( harness.run_until( []() {
         return mp_player_is_disconnected( 1 );
-    }, 20 ) );
+    }, 200 ) );
 
     // Leaving voluntarily is not dying: the session goes on, this seat leaves
     // like a lost wire, and no death mark, corpse or replacement menu is left
@@ -791,7 +1359,7 @@ TEST_CASE( "a_player_in_a_menu_keeps_receiving_its_keys", "[mp]" )
     harness.press( 1, KEY_ESCAPE );
     CHECK( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
-    }, 20 ) );
+    }, 200 ) );
 }
 TEST_CASE( "every_client_is_told_why_the_session_ended", "[mp]" )
 {
@@ -880,7 +1448,7 @@ TEST_CASE( "an_unplaced_replacement_keeps_the_dead_character_s_tile", "[mp]" )
     REQUIRE( harness.run_until( [victim]() {
         return !g->player_at( victim ).is_dead_state() &&
                mp_player_holds_barrier( victim );
-    }, 20 ) );
+    }, 200 ) );
     CHECK( g->player_at( victim ).pos_abs() == dead_pos );
 
     // The client leaves while the creator is still open. The creator unwinds,
@@ -925,7 +1493,7 @@ TEST_CASE( "a_second_replacement_anchors_on_a_seat_mid_creation", "[mp]" )
     REQUIRE( harness.run_until( []() {
         return !g->player_at( 0 ).is_dead_state() &&
                mp_player_holds_barrier( 0 );
-    }, 20 ) );
+    }, 200 ) );
     REQUIRE( g->player_at( 0 ).pos_abs() == first_dead );
 
     harness.choose_random_character( 2 );
@@ -1124,7 +1692,7 @@ TEST_CASE( "abandoning_a_character_opens_a_replacement", "[mp]" )
     harness.press( 1, 'z' );
     REQUIRE( harness.run_until( [&harness]() {
         return mp_grid_contains( harness.screen( 1 ), "The End" );
-    }, 20 ) );
+    }, 200 ) );
 
     // Confirm it so is_game_over() returns and the ended branch routes the
     // abandon.
@@ -1134,7 +1702,7 @@ TEST_CASE( "abandoning_a_character_opens_a_replacement", "[mp]" )
     // the session goes on, and the replacement menu opens for this client.
     REQUIRE( harness.run_until( [&harness]() {
         return mp_grid_contains( harness.screen( 1 ), "Join the game" );
-    }, 20 ) );
+    }, 200 ) );
     CHECK_FALSE( mp_session_end_requested() );
     CHECK( g->uquit == QUIT_NO );
     CHECK( corpses_at( corpse ) == 1 );
@@ -1260,7 +1828,7 @@ TEST_CASE( "a_death_recorded_in_a_menu_is_placed_once", "[mp]" )
     // The seat is parked inside its own player_act(), in the inventory menu.
     REQUIRE( harness.run_until( [&harness]() {
         return mp_grid_contains( harness.screen( 1 ), "Item hotkeys assigned" );
-    }, 20 ) );
+    }, 200 ) );
     const tripoint_bub_ms corpse = g->player_at( 1 ).pos_bub();
 
     // The character dies while the seat cannot act. The orchestrator's death
@@ -1281,7 +1849,7 @@ TEST_CASE( "a_death_recorded_in_a_menu_is_placed_once", "[mp]" )
     harness.press( 1, '\n' );
     REQUIRE( harness.run_until( [&harness]() {
         return mp_grid_contains( harness.screen( 1 ), "Join the game" );
-    }, 20 ) );
+    }, 200 ) );
     CHECK( corpses_at( corpse ) == 1 );
 }
 
@@ -2061,7 +2629,7 @@ TEST_CASE( "a_seat_s_menu_state_reaches_the_party_body", "[mp]" )
     harness.press( 1, mp_menu_inventory.key );
     REQUIRE( harness.run_until( [&]() {
         return mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
-    }, 20 ) );
+    }, 200 ) );
     // The seat reports the depth change when it parks in the menu; one more
     // poll turns that into the party body, with no other seat's control needed.
     harness.run_until( []() {
@@ -2076,7 +2644,7 @@ TEST_CASE( "a_seat_s_menu_state_reaches_the_party_body", "[mp]" )
     harness.press( 1, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !mp_grid_contains( harness.screen( 1 ), mp_menu_inventory.marker );
-    }, 20 ) );
+    }, 200 ) );
     harness.run_until( []() {
         return false;
     }, 2 );
@@ -2109,7 +2677,7 @@ TEST_CASE( "a_disconnected_seat_s_committed_plan_does_not_run", "[mp]" )
     harness.drop_client( 1 );
     REQUIRE( harness.run_until( []() {
         return mp_player_is_disconnected( 1 );
-    }, 20 ) );
+    }, 200 ) );
     // Disconnect cancels the committed plan: the round no longer waits on it,
     // and it cannot act for a seat nobody is watching.
     CHECK_FALSE( mp_plan_is_ready( 1 ) );
@@ -2119,7 +2687,7 @@ TEST_CASE( "a_disconnected_seat_s_committed_plan_does_not_run", "[mp]" )
     queue_plan_pass( 0 );
     REQUIRE( harness.run_until( []() {
         return mp_plan_phase() == mp_round_phase::done;
-    }, 20 ) );
+    }, 200 ) );
     CHECK( g->player_at( 1 ).pos_bub() == b_start );
     // The seat's AP may have been refilled by the tick close; what matters is
     // that no action was taken for it.
@@ -2269,7 +2837,7 @@ TEST_CASE( "an_away_player_carrying_an_activity_can_still_come_back", "[mp]" )
     harness.press( 0, ':' );
     CHECK( harness.run_until( []() {
         return !mp_player_is_away( 0 );
-    }, 20 ) );
+    }, 200 ) );
     CHECK( mp_player_is_away( 1 ) );
 }
 
@@ -2867,7 +3435,7 @@ TEST_CASE( "inventory_reopen_cycles_do_not_crash", "[mp]" )
         harness.press( 0, KEY_ESCAPE );
         REQUIRE( harness.run_until( [&]() {
             return !inventory_is_open();
-        }, 20 ) );
+        }, 200 ) );
     }
     SUCCEED( "four inventory reopen cycles did not crash the server" );
 }
@@ -2951,14 +3519,14 @@ TEST_CASE( "a_dead_drop_selection_is_discarded_without_a_crash", "[mp]" )
     harness.press( 0, 'l' );
     REQUIRE( harness.run_until( [&]() {
         return rock_cells() == 0;
-    }, 20 ) );
+    }, 200 ) );
     CHECK( drop_menu_is_open() );
 
     // Cancel: the dead selection is discarded rather than reaching the drop.
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !drop_menu_is_open();
-    }, 20 ) );
+    }, 200 ) );
     CHECK( g->player_at( 0 ).get_wielded_item() );
 }
 
@@ -3022,7 +3590,7 @@ TEST_CASE( "a_prune_does_not_move_the_confirmed_row", "[mp]" )
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !inventory_is_open();
-    }, 20 ) );
+    }, 200 ) );
 }
 
 // Paging walks from the highlight, and the walk used to have no way to notice
@@ -3059,7 +3627,7 @@ TEST_CASE( "paging_survives_a_cleared_highlight", "[mp]" )
     harness.press( 0, KEY_NPAGE );
     REQUIRE_FALSE( harness.run_until( [&]() {
         return !inventory_is_open();
-    }, 20 ) );
+    }, 200 ) );
 
     // PageUp used to loop here. Bounded, like the close below: a reintroduced
     // loop shows up as a failed case rather than a silent hang.
@@ -3067,7 +3635,7 @@ TEST_CASE( "paging_survives_a_cleared_highlight", "[mp]" )
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !inventory_is_open();
-    }, 20 ) );
+    }, 200 ) );
 }
 
 // The filter prompt is a second input wait inside the same menu, and
@@ -3100,7 +3668,7 @@ TEST_CASE( "a_dead_row_is_not_replaced_under_the_filter_prompt", "[mp]" )
     harness.press( 0, '/' );
     REQUIRE( harness.run_until( [&]() {
         return !mp_grids_equal( harness.screen( 0 ), before_prompt );
-    }, 20 ) );
+    }, 200 ) );
 
     // The boundary lands while the prompt is the active wait.
     REQUIRE( take_a_partner_turn( harness ) );
@@ -3120,7 +3688,7 @@ TEST_CASE( "a_dead_row_is_not_replaced_under_the_filter_prompt", "[mp]" )
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !inventory_is_open();
-    }, 20 ) );
+    }, 200 ) );
 }
 // The compare selector kept its selection as raw item pointers. An item on the
 // map is not an avatar member, so a partner's turn that removes it frees the
@@ -3178,7 +3746,7 @@ TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
     harness.press( 0, 'l' );
     REQUIRE( harness.run_until( [&]() {
         return rock_cells() == 2;
-    }, 20 ) );
+    }, 200 ) );
 
     // A pickup would move the rock into an inventory and destroy it at the old
     // address just the same, so clearing the tile is the partner's turn as far
@@ -3205,7 +3773,7 @@ TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
     harness.press( 0, 'l' );
     REQUIRE( harness.run_until( [&]() {
         return !compare_is_open();
-    }, 20 ) );
+    }, 200 ) );
 
     // Close the comparison; the compare selector reopens, so Escape twice returns
     // to the main screen. Reaching it proves the pair was usable and the server
@@ -3215,7 +3783,7 @@ TEST_CASE( "a_dead_compare_selection_is_not_compared", "[mp]" )
     harness.press( 0, KEY_ESCAPE );
     REQUIRE( harness.run_until( [&]() {
         return !compare_is_open();
-    }, 20 ) );
+    }, 200 ) );
 }
 
 TEST_CASE( "mp_session_ui", "[mp]" )
@@ -3268,7 +3836,7 @@ TEST_CASE( "a_round_control_brings_an_away_seat_back", "[mp][coop][ap_debt]" )
     harness.send_plan( 0, 1, mp_plan_kind::move, cell->x, cell->y );
     REQUIRE( harness.run_until( []() {
         return !mp_player_is_away( 0 );
-    }, 50 ) );
+    }, 200 ) );
     CHECK( !mp_player_is_away( 0 ) );
 }
 

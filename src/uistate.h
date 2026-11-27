@@ -186,8 +186,9 @@ class uistatedata
         itype_id adv_inv_container_content_type = itype_id::NULL_ID();
         bool adv_inv_container_in_vehicle = false;
 
-        advanced_inv_save_state transfer_save;
-
+        // The AIM pane state is per seat now (player_context::transfer_save);
+        // uistate.json still writes slot 0's copy -- see
+        // mp_context_transfer_save() in mp/mp_context.h.
         bool unload_auto_contain = true;
         std::optional<bool> hide_entries_override = std::nullopt;
 
@@ -299,13 +300,6 @@ class uistatedata
         std::vector<std::string> &gethistory( const std::string &id ) {
             return input_history[id];
         }
-        /**
-         * A function pointer to be run before the player's next action (but after activities conclude).
-         *
-         * Useful for opening a menu with passed arguments.
-         * As it is not serialized it should not be used for any game state logic! Like moving a character.
-         */
-        std::optional<std::function<void()>> open_menu; // NOLINT(cata-serialize)
 
         // nice little convenience function for serializing an array, regardless of amount. :^)
         template<typename T>

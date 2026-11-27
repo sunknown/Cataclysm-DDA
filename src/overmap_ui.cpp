@@ -2235,7 +2235,7 @@ static tripoint_abs_omt display()
         } else if( action == "look" ) {
             tripoint_abs_ms pos = project_combine( curs, view.origin_remainder );
             tripoint_bub_ms pos_rel = here.get_bub( pos );
-            uistate.open_menu = [pos_rel]() {
+            mp_active_open_menu() = [pos_rel]() {
                 tripoint_bub_ms pos_cpy = pos_rel;
                 g->look_around( true, pos_cpy, pos_rel, false, false, false, false, pos_rel );
             };

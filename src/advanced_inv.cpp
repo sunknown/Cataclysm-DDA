@@ -50,6 +50,7 @@
 #include "localized_comparator.h"
 #include "map.h"
 #include "messages.h"
+#include "mp/mp_context.h"
 #include "options.h"
 #include "output.h"
 #include "panels.h"
@@ -114,28 +115,27 @@ std::string enum_to_string<aim_entry>( const aim_entry v )
 
 } // namespace io
 
-namespace
-{
-std::unique_ptr<advanced_inventory> advinv;
-} // namespace
-
 void create_advanced_inv()
 {
-    if( !advinv ) {
-        advinv = std::make_unique<advanced_inventory>();
+    // The AIM belongs to the seat that opened it: it used to be a file-static,
+    // so whichever seat opened AIM last owned it and another seat's action
+    // could close it. Its ui_adaptor must also die under this seat's stack.
+    if( !mp_active_context().aim ) {
+        mp_active_context().aim = std::make_unique<advanced_inventory>();
     }
-    advinv->display();
+    mp_active_context().aim->display();
     // keep the UI and its ui_adaptor running if we're returning
-    if( uistate.transfer_save.exit_code != aim_exit::re_entry || get_avatar().activity.is_null() ) {
-        advinv.reset();
+    if( mp_active_transfer_save().exit_code != aim_exit::re_entry ||
+        get_avatar().activity.is_null() ) {
+        mp_active_context().aim.reset();
         cancel_aim_processing();
     }
 }
 
 void temp_hide_advanced_inv()
 {
-    if( advinv ) {
-        advinv->temp_hide();
+    if( mp_active_context().aim ) {
+        mp_active_context().aim->temp_hide();
     }
 }
 
@@ -166,7 +166,7 @@ advanced_inventory::advanced_inventory()
     }
 } )
 {
-    save_state = &uistate.transfer_save;
+    save_state = &mp_active_transfer_save();
 }
 // *INDENT-ON*
 
@@ -176,10 +176,10 @@ advanced_inventory::~advanced_inventory()
     if( save_state->exit_code != aim_exit::re_entry ) {
         save_state->exit_code = aim_exit::okay;
     }
-    // Only refresh if we exited manually, otherwise we're going to be right back
-    if( exit ) {
-        get_player_character().check_item_encumbrance_flag();
-    }
+    // No avatar or global lookup here: the destructor also runs at teardown,
+    // under a context that may be dying and with no player active. The
+    // encumbrance recheck moved to display()'s normal exit, where the owning
+    // avatar is at hand.
 }
 
 void advanced_inventory::save_settings( bool only_panes )
@@ -1801,7 +1801,7 @@ void advanced_inventory::action_examine( advanced_inv_listitem *sitem,
             exit = true;
             do_return_entry();
         } else {
-            uistate.transfer_save.exit_code = aim_exit::none;
+            save_state->exit_code = aim_exit::none;
         }
         // Might have changed a stack (activated an item, repaired an item, etc.)
         if( spane.get_area() == AIM_INVENTORY ) {
@@ -2112,6 +2112,15 @@ void advanced_inventory::display()
         }
 
         process_action( ctxt.handle_input() );
+    }
+
+    // Only on a manual exit (the loop above ended with `exit` true), not on the
+    // negative-moves early return or the move-all break: those did not refresh
+    // encumbrance before, and an activity/re-entry exit did, because `exit` is
+    // set before do_return_entry(). Runs while this seat is still active, which
+    // is what get_avatar() needs -- the destructor may run at teardown instead.
+    if( exit ) {
+        player_character.check_item_encumbrance_flag();
     }
 }
 
@@ -2462,7 +2471,7 @@ void advanced_inventory::do_return_entry()
 {
     // only save pane settings
     save_settings( true );
-    uistate.open_menu = create_advanced_inv;
+    mp_active_open_menu() = create_advanced_inv;
     save_state->exit_code = aim_exit::re_entry;
 }
 
@@ -2480,7 +2489,8 @@ bool advanced_inventory::is_processing() const
 
 void cancel_aim_processing()
 {
-    uistate.transfer_save.re_enter_move_all = aim_entry::START;
-    uistate.transfer_save.aim_all_location = AIM_AROUND_BEGIN;
-    uistate.transfer_save.exit_code = aim_exit::none;
+    advanced_inv_save_state &save_state = mp_active_transfer_save();
+    save_state.re_enter_move_all = aim_entry::START;
+    save_state.aim_all_location = AIM_AROUND_BEGIN;
+    save_state.exit_code = aim_exit::none;
 }

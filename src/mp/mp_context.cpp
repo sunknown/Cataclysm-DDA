@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <utility>
 
+#include "advanced_inv.h"
 #include "auto_note.h"
 #include "auto_pickup.h"
 #include "character_creator_ui.h" // character_creator_uistate, for creator_state()
@@ -19,6 +21,7 @@
 #include "panels.h"
 #include "popup.h" // static_popup's complete definition, for wait_popup
 #include "safemode_ui.h"
+#include "uistate.h" // advanced_inv_save_state's complete definition
 
 // Out-of-line so the compiler-generated bodies (including the exception-
 // unwind logic the constructor may need) are emitted only here, where
@@ -28,16 +31,20 @@ player_context::player_context() = default;
 
 player_context::~player_context()
 {
-    // The popups and the retained overmap each raised a ui_adaptor, and
-    // ~ui_adaptor asserts it dies under the stack it registered in. Destruction
-    // can run under any stack -- g.reset() at shutdown, a local context in a
-    // test, or mp_sync_context_count() (which already points the stack here) --
-    // so point it at this context's own stack for the drops and put the
-    // caller's back afterwards. If the caller's
+    // The retained AIM, the popups and the overmap each raised a ui_adaptor,
+    // and ~ui_adaptor asserts it dies under the stack it registered in.
+    // Destruction can run under any stack -- g.reset() at shutdown, a local
+    // context in a test, or mp_sync_context_count() (which already points the
+    // stack here) -- so point it at this context's own stack for the drops and
+    // put the caller's back afterwards. If the caller's
     // stack IS this context's own, it is about to disappear with the context:
     // fall back to the world stack.
     ui_stack_t *const previous = ui_manager::get_active_stack();
     ui_manager::set_active_stack( &ui_stack );
+    // AIM first: its destructor writes the pane settings back through
+    // transfer_save, which is still alive (declared before it), and it may
+    // drop a ui_adaptor that must leave the stack before the stack empties.
+    aim.reset();
     liveview.reset();
     wait_popup.reset();
     overmap_ui.reset();
@@ -242,6 +249,45 @@ overmap_view_state &mp_active_overmap_view()
     return g->overmap_data.overmap_view;
 }
 
+static advanced_inv_save_state &transfer_save_of( player_context &ctx )
+{
+    if( !ctx.transfer_save ) {
+        ctx.transfer_save = std::make_unique<advanced_inv_save_state>();
+    }
+    return *ctx.transfer_save;
+}
+
+advanced_inv_save_state &mp_active_transfer_save()
+{
+    return transfer_save_of( mp_active_context() );
+}
+
+advanced_inv_save_state &mp_context_transfer_save( size_t slot )
+{
+    cata_assert( slot < g->contexts.size() );
+    return transfer_save_of( g->contexts[slot] );
+}
+
+std::optional<std::function<void()>> &mp_active_open_menu()
+{
+    return mp_active_context().open_menu;
+}
+
+bool mp_run_open_menu()
+{
+    // Swap into a local so the slot is empty before the callback runs: the
+    // callback may install its next re-entry, which must survive this dispatch.
+    // The active context is read only here; the callback may move the baton, so
+    // no reference to the context outlives this statement.
+    std::optional<std::function<void()>> pending;
+    std::swap( pending, mp_active_context().open_menu );
+    if( !pending ) {
+        return false;
+    }
+    ( *pending )();
+    return true;
+}
+
 void mp_set_active_context( player_context *ctx )
 {
     // nullptr is a legal reset (needed by tests and, in Phase 3, by leaving a player);
@@ -426,14 +472,14 @@ void mp_sync_context_count()
         // state the invariant here, loudly and locally, rather than let it
         // manifest later as a dangling-pointer read inside ~ui_adaptor().
         //
-        // One adaptor is the context's own, though: the activity progress
-        // popup it holds, the mouse-view hint and the retained overmap adaptor.
-        // A session can end while an activity is still running -- a player
-        // waiting out ten minutes, a server shut down mid-craft -- and a hint
-        // or an overmap can be up when a seat goes, since a TIMEOUT does not
-        // hide them. The context owns all three, so it can drop them safely
-        // here. Any other adaptor (a menu open on a thread that did not unwind)
-        // still trips the assertion below.
+        // Some adaptors are the context's own, though: the retained AIM, the
+        // activity progress popup it holds, the mouse-view hint and the
+        // retained overmap adaptor. A session can end while an activity is
+        // still running -- a player waiting out ten minutes, a server shut down
+        // mid-craft -- and an AIM, a hint or an overmap can be up when a seat
+        // goes, since a TIMEOUT does not hide them. The context owns all four,
+        // so it can drop them safely here. Any other adaptor (a menu open on a
+        // thread that did not unwind) still trips the assertion below.
         //
         // ~ui_adaptor requires its owner stack to be the active one, so point
         // the stack at this context for the drop. The pointer is re-pointed to
@@ -441,6 +487,7 @@ void mp_sync_context_count()
         // use it again.
         player_context &dying = g->contexts.back();
         ui_manager::set_active_stack( &dying.ui_stack );
+        dying.aim.reset();
         dying.wait_popup.reset();
         dying.liveview.reset();
         dying.overmap_ui.reset();

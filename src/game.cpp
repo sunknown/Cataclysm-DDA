@@ -2368,7 +2368,7 @@ int game::inventory_item_menu( item_location locThisItem,
                     if( !locThisItem.get_item()->is_container() ) {
                         avatar_action::eat( u, locThisItem );
                     } else {
-                        uistate.open_menu = [locThisItem = locThisItem]() {
+                        mp_active_open_menu() = [locThisItem = locThisItem]() {
                             avatar_action::eat_or_use( get_avatar_legacy(),
                                                        game_menus::inv::consume( std::string(), locThisItem ) );
                         };
@@ -6510,7 +6510,7 @@ look_around_result game::look_around(
         } else if( action == "TOGGLE_FAST_SCROLL" ) {
             fast_scroll = !fast_scroll;
         } else if( action == "map" ) {
-            uistate.open_menu = [center, &here]() {
+            mp_active_open_menu() = [center, &here]() {
                 ui::omap::look_around_map( here.get_abs( center ) );
             };
             break;

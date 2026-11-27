@@ -359,6 +359,8 @@ TEST_CASE( "menu_actions_are_free_while_waiting_and_costly_ones_are_not", "[mp]"
     CHECK( mp_action_is_free( ACTION_TAKE_OFF ) );
     CHECK( mp_action_is_free( ACTION_UNLOAD ) );
     CHECK( mp_action_is_free( ACTION_ITEMACTION ) );
+    // AIM's menu key: opening it spends no time; a confirmed move inside does.
+    CHECK( mp_action_is_free( ACTION_ADVANCEDINV ) );
     // The read menu opens first; the activity starts on its confirmed choice.
     CHECK( mp_action_is_free( ACTION_READ ) );
 

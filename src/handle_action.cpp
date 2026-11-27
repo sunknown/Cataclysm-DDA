@@ -2046,7 +2046,7 @@ void game::open_consume_item_menu()
     if( query_returned_index >= 0 && query_returned_index < 3 ) {
         const std::array<std::string, 3> comestype_strings = { "FOOD", "DRINK", "MED" };
         const std::string &selected_comestype = comestype_strings[query_returned_index];
-        uistate.open_menu = [selected_comestype = selected_comestype]() {
+        mp_active_open_menu() = [selected_comestype = selected_comestype]() {
             avatar_action::eat_or_use( get_avatar(), game_menus::inv::consume( selected_comestype ) );
         };
     }
@@ -3282,12 +3282,9 @@ bool game::handle_action()
         // starts destination activity after the player successfully reached his destination
         player_character.start_destination_activity();
         return false;
-    } else if( uistate.open_menu ) {
-        // make a copy so that uistate.open_menu can be assigned a new function
-        // during the execution of the copied old function
-        std::optional<std::function<void()>> open_menu_tmp = std::nullopt;
-        std::swap( uistate.open_menu, open_menu_tmp );
-        open_menu_tmp.value()();
+    } else if( mp_run_open_menu() ) {
+        // The deferred menu ran under this seat and cleared its own slot; it
+        // may already have installed this seat's next re-entry.
         return false;
     } else {
         // No auto-move, ask player for input
