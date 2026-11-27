@@ -451,12 +451,18 @@ bool aim_shown( const mp_session_harness &harness, size_t slot )
 // Item names in a pane's list, not the filter footer on the last screen row
 // ("< [f] Filter: rock >" would otherwise satisfy a plain text search). Both
 // panes' footers share that row, so skipping it removes both filter labels.
-bool item_row_shown( const mp_session_harness &harness, size_t slot, const std::string &text )
+// `side`: -1 both panes, 0 left, 1 right. The split is the screen midpoint;
+// the AIM panes meet there, and this keeps a row in the other pane from
+// satisfying a removal check.
+bool item_row_shown( const mp_session_harness &harness, size_t slot, const std::string &text,
+                     int side = -1 )
 {
     const mp_screen_grid &grid = harness.screen( slot );
+    const int first_x = side == 1 ? grid.width() / 2 : 0;
+    const int last_x = side == 0 ? grid.width() / 2 : grid.width();
     for( int y = 0; y + 1 < grid.height(); ++y ) {
         std::string row;
-        for( int x = 0; x < grid.width(); ++x ) {
+        for( int x = first_x; x < last_x; ++x ) {
             row += grid.at( x, y ).ch;
         }
         if( row.find( text ) != std::string::npos ) {
@@ -695,6 +701,69 @@ TEST_CASE( "two_players_can_hold_aim_open_at_once", "[mp][menu]" )
     CHECK( aim_shown( harness, 1 ) );
     CHECK( item_row_shown( harness, 1, "stick" ) );
     CHECK_FALSE( aim_shown( harness, 0 ) );
+}
+
+TEST_CASE( "aim_redraws_after_an_external_item_removal", "[mp][menu]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    reset_seat_menu_state( 0 );
+    g->player_at( 0 ).set_moves( 100 );
+
+    // The pane caches an item_location for this rock.
+    const tripoint_bub_ms pos = g->player_at( 0 ).pos_bub();
+    get_map().add_item( pos, item( itype_rock ) );
+    open_aim( harness, 0 );
+    choose_center_pane( harness, 0 );
+    REQUIRE( harness.run_until( [&]() {
+        return item_row_shown( harness, 0, "rock" );
+    }, 200 ) );
+    const int rock_side = item_row_shown( harness, 0, "rock", 0 ) ? 0 : 1;
+    REQUIRE( item_row_shown( harness, 0, "rock", rock_side ) );
+
+    // Another seat or a world effect removes the item while the pane still
+    // holds its now-expired location. The next redraw must not dereference it.
+    get_map().i_at( pos ).clear();
+    harness.press( 0, 'j' );
+    CHECK( harness.run_until( [&]() {
+        return !item_row_shown( harness, 0, "rock", rock_side );
+    }, 200 ) );
+
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return g->contexts[0].aim == nullptr;
+    }, 200 ) );
+}
+
+TEST_CASE( "aim_redraws_after_owned_items_are_destroyed", "[mp][menu]" )
+{
+    restore_active_state restore;
+    mp_session_harness harness( 1 );
+    reset_seat_menu_state( 0 );
+    g->player_at( 0 ).set_moves( 100 );
+
+    // The worn pane caches locations for the character's own items.
+    REQUIRE( g->player_at( 0 ).wear_item( item( itype_backpack ), false, false ) );
+    open_aim( harness, 0 );
+    harness.press( 0, 'w' );
+    REQUIRE( harness.run_until( [&]() {
+        return item_row_shown( harness, 0, "backpack" );
+    }, 200 ) );
+    const int backpack_side = item_row_shown( harness, 0, "backpack", 0 ) ? 0 : 1;
+    REQUIRE( item_row_shown( harness, 0, "backpack", backpack_side ) );
+
+    // An activity or another effect destroys the worn items; the cached
+    // locations expire while the pane is still open.
+    g->player_at( 0 ).clear_worn();
+    harness.press( 0, 'j' );
+    CHECK( harness.run_until( [&]() {
+        return !item_row_shown( harness, 0, "backpack", backpack_side );
+    }, 200 ) );
+
+    harness.press( 0, KEY_ESCAPE );
+    REQUIRE( harness.run_until( [&]() {
+        return g->contexts[0].aim == nullptr;
+    }, 200 ) );
 }
 
 // A move-all leaves AIM retained for its seat, not file-static state: while

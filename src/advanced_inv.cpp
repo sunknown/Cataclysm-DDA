@@ -825,6 +825,17 @@ void advanced_inventory::redraw_pane( side p )
     input_context ctxt( "ADVANCED_INVENTORY" );
 
     advanced_inventory_pane &pane = panes[p];
+    // Another seat or a world effect can remove an item this pane cached.
+    // Rebuild before drawing instead of dereferencing the expired location.
+    const auto stale_location = []( const advanced_inv_listitem & it ) {
+        return it.items.empty() || std::any_of( it.items.begin(), it.items.end(),
+        []( const item_location & loc ) {
+            return !loc;
+        } );
+    };
+    if( std::any_of( pane.items.begin(), pane.items.end(), stale_location ) ) {
+        pane.recalc = true;
+    }
     if( recalc || pane.recalc ) {
         recalc_pane( p );
     }
